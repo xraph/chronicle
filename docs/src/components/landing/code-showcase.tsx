@@ -4,64 +4,62 @@ import { motion } from "framer-motion";
 import { CodeBlock } from "./code-block";
 import { SectionHeader } from "./section-header";
 
-const sendCode = `package main
+const recordCode = `package main
 
 import (
   "log/slog"
-  "github.com/xraph/relay"
-  "github.com/xraph/relay/store/memory"
+  "github.com/xraph/chronicle"
+  "github.com/xraph/chronicle/scope"
+  "github.com/xraph/chronicle/store"
+  "github.com/xraph/chronicle/store/postgres"
 )
 
 func main() {
-  r, _ := relay.New(
-    relay.WithStore(memory.New()),
-    relay.WithWorkers(4),
-    relay.WithLogger(slog.Default()),
+  pgStore := postgres.New(pool)
+  c, _ := chronicle.New(
+    chronicle.WithStore(store.NewAdapter(pgStore)),
+    chronicle.WithCryptoErasure(true),
+    chronicle.WithLogger(slog.Default()),
   )
 
-  // Register an event type
-  r.Catalog().Register("order.created")
+  ctx = scope.WithAppID(ctx, "myapp")
+  ctx = scope.WithTenantID(ctx, "tenant-1")
+  ctx = scope.WithUserID(ctx, "user-42")
 
-  // Register an endpoint
-  r.Endpoints().Create(ctx, relay.Endpoint{
-    URL: "https://api.acme.co/webhooks",
-    EventTypes: []string{"order.created"},
-  })
-
-  // Send an event
-  r.Send(ctx, relay.Event{
-    Type: "order.created",
-    Payload: orderJSON,
-  })
+  // Record a tamper-proof audit event
+  err = c.Warning(ctx, "perm.escalate", "role", "admin").
+    Category("access").
+    SubjectID("user-42").
+    Meta("from", "viewer").
+    Meta("to", "admin").
+    Record()
 }`;
 
 const verifyCode = `package main
 
 import (
-  "crypto/hmac"
-  "crypto/sha256"
-  "encoding/hex"
-  "io"
-  "net/http"
+  "fmt"
+  "github.com/xraph/chronicle/verify"
 )
 
-func webhookHandler(w http.ResponseWriter, r *http.Request) {
-  body, _ := io.ReadAll(r.Body)
-  signature := r.Header.Get("X-Relay-Signature")
-
-  // Verify HMAC-SHA256 signature
-  mac := hmac.New(sha256.New, []byte(secret))
-  mac.Write(body)
-  expected := hex.EncodeToString(mac.Sum(nil))
-
-  if !hmac.Equal([]byte(signature), []byte(expected)) {
-    http.Error(w, "invalid signature", 401)
-    return
+func auditVerify(c *chronicle.Chronicle, ctx context.Context) {
+  // Verify the full hash chain for a tenant
+  report, err := c.VerifyChain(ctx, &verify.Input{
+    AppID:    "myapp",
+    TenantID: "tenant-1",
+  })
+  if err != nil {
+    log.Fatal(err)
   }
 
-  // Process the verified webhook
-  processEvent(body)
-  w.WriteHeader(200)
+  fmt.Printf(
+    "valid=%v verified=%d gaps=%v tampered=%v\\n",
+    report.Valid,
+    report.Verified,
+    report.Gaps,
+    report.Tampered,
+  )
+  // valid=true verified=8420 gaps=[] tampered=[]
 }`;
 
 export function CodeShowcase() {
@@ -70,12 +68,12 @@ export function CodeShowcase() {
       <div className="container max-w-(--fd-layout-width) mx-auto px-4 sm:px-6">
         <SectionHeader
           badge="Developer Experience"
-          title="Simple API. Production power."
-          description="Send your first webhook in under 20 lines. Verify signatures on the receiver side with standard crypto."
+          title="Simple API. Tamper-proof records."
+          description="Record your first audit event in under 20 lines. Verify the entire hash chain with a single call."
         />
 
         <div className="mt-14 grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Sender side */}
+          {/* Recording side */}
           <motion.div
             initial={{ opacity: 0, x: -20 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -83,15 +81,15 @@ export function CodeShowcase() {
             transition={{ duration: 0.5, delay: 0.1 }}
           >
             <div className="mb-3 flex items-center gap-2">
-              <div className="size-2 rounded-full bg-teal-500" />
+              <div className="size-2 rounded-full bg-amber-500" />
               <span className="text-xs font-medium text-fd-muted-foreground uppercase tracking-wider">
-                Sender
+                Recording
               </span>
             </div>
-            <CodeBlock code={sendCode} filename="main.go" />
+            <CodeBlock code={recordCode} filename="main.go" />
           </motion.div>
 
-          {/* Receiver side */}
+          {/* Verification side */}
           <motion.div
             initial={{ opacity: 0, x: 20 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -101,10 +99,10 @@ export function CodeShowcase() {
             <div className="mb-3 flex items-center gap-2">
               <div className="size-2 rounded-full bg-green-500" />
               <span className="text-xs font-medium text-fd-muted-foreground uppercase tracking-wider">
-                Receiver
+                Verification
               </span>
             </div>
-            <CodeBlock code={verifyCode} filename="receiver.go" />
+            <CodeBlock code={verifyCode} filename="verify.go" />
           </motion.div>
         </div>
       </div>

@@ -5,15 +5,15 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { SectionHeader } from "./section-header";
 
-// ─── Event Type Cycler ───────────────────────────────────────
-const eventTypes = ["order.created", "invoice.paid", "user.signup"];
+// ─── Event Action Cycler ─────────────────────────────────────
+const eventActions = ["user.login", "payment.created", "config.changed"];
 
-function CyclingEventType() {
+function CyclingEventAction() {
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setIndex((prev) => (prev + 1) % eventTypes.length);
+      setIndex((prev) => (prev + 1) % eventActions.length);
     }, 3500);
     return () => clearInterval(interval);
   }, []);
@@ -22,14 +22,14 @@ function CyclingEventType() {
     <div className="relative h-5 overflow-hidden">
       <AnimatePresence mode="wait">
         <motion.span
-          key={eventTypes[index]}
+          key={eventActions[index]}
           initial={{ y: 12, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: -12, opacity: 0 }}
           transition={{ duration: 0.3 }}
-          className="absolute inset-0 text-teal-500 dark:text-teal-400 font-mono text-xs font-medium"
+          className="absolute inset-0 text-amber-500 dark:text-amber-400 font-mono text-xs font-medium"
         >
-          {eventTypes[index]}
+          {eventActions[index]}
         </motion.span>
       </AnimatePresence>
     </div>
@@ -91,13 +91,13 @@ function Connection({
   delay = 0,
   horizontal = true,
 }: {
-  color?: "teal" | "amber" | "green" | "red";
+  color?: "amber" | "orange" | "green" | "red";
   delay?: number;
   horizontal?: boolean;
 }) {
   const colorMap = {
-    teal: { line: "bg-teal-500/30", particle: "bg-teal-400" },
     amber: { line: "bg-amber-500/30", particle: "bg-amber-400" },
+    orange: { line: "bg-orange-500/30", particle: "bg-orange-400" },
     green: { line: "bg-green-500/30", particle: "bg-green-400" },
     red: { line: "bg-red-500/30", particle: "bg-red-400" },
   };
@@ -142,10 +142,10 @@ function Connection({
         className="absolute right-0 border-l-[4px] border-y-[2.5px] border-y-transparent border-l-current opacity-30"
         style={{
           color:
-            color === "teal"
-              ? "#14b8a6"
-              : color === "amber"
-                ? "#f59e0b"
+            color === "amber"
+              ? "#f59e0b"
+              : color === "orange"
+                ? "#f97316"
                 : color === "green"
                   ? "#22c55e"
                   : "#ef4444",
@@ -155,26 +155,25 @@ function Connection({
   );
 }
 
-// ─── Endpoint Row ────────────────────────────────────────────
-function EndpointRow({
-  name,
-  status,
+// ─── Event Row ───────────────────────────────────────────────
+function EventRow({
+  action,
+  severity,
   statusLabel,
   lineColor,
   delay,
 }: {
-  name: string;
-  status: "delivered" | "retry" | "dlq";
+  action: string;
+  severity: "info" | "warning" | "critical";
   statusLabel: string;
-  lineColor: "green" | "teal" | "amber" | "red";
+  lineColor: "green" | "amber" | "orange" | "red";
   delay: number;
 }) {
-  const statusColors = {
-    delivered:
-      "text-green-600 dark:text-green-400 bg-green-500/10 border-green-500/20",
-    retry:
+  const severityColors = {
+    info: "text-green-600 dark:text-green-400 bg-green-500/10 border-green-500/20",
+    warning:
       "text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/20",
-    dlq: "text-red-600 dark:text-red-400 bg-red-500/10 border-red-500/20",
+    critical: "text-red-600 dark:text-red-400 bg-red-500/10 border-red-500/20",
   };
 
   return (
@@ -186,14 +185,14 @@ function EndpointRow({
       className="flex items-center gap-0"
     >
       <Connection color={lineColor} delay={delay * 2} />
-      <div className="rounded-lg border border-fd-border bg-fd-card/60 px-3 py-1.5 font-mono text-[10px] text-fd-muted-foreground min-w-[100px] text-center">
-        {name}
+      <div className="rounded-lg border border-fd-border bg-fd-card/60 px-3 py-1.5 font-mono text-[10px] text-fd-muted-foreground min-w-[110px] text-center">
+        {action}
       </div>
       <Connection color={lineColor} delay={delay * 2 + 0.5} />
       <div
         className={cn(
           "rounded-md border px-2 py-1 font-mono text-[10px] font-medium whitespace-nowrap",
-          statusColors[status],
+          severityColors[severity],
         )}
       >
         {statusLabel}
@@ -202,13 +201,13 @@ function EndpointRow({
   );
 }
 
-// ─── Animated Pipeline Diagram ───────────────────────────────
-function PipelineDiagram() {
-  const [retryResolved, setRetryResolved] = useState(false);
+// ─── Animated Recording Pipeline Diagram ─────────────────────
+function RecordingPipelineDiagram() {
+  const [alertFired, setAlertFired] = useState(false);
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setRetryResolved((prev) => !prev);
+      setAlertFired((prev) => !prev);
     }, 4000);
     return () => clearInterval(interval);
   }, []);
@@ -222,65 +221,64 @@ function PipelineDiagram() {
       className="relative"
     >
       {/* Background glow */}
-      <div className="absolute inset-0 -m-6 bg-gradient-to-br from-teal-500/5 via-transparent to-cyan-500/5 rounded-3xl blur-xl" />
+      <div className="absolute inset-0 -m-6 bg-gradient-to-br from-amber-500/5 via-transparent to-orange-500/5 rounded-3xl blur-xl" />
 
       <div className="relative p-3 sm:p-6 rounded-2xl border border-fd-border/50 bg-fd-card/30 backdrop-blur-sm">
-        {/* Pipeline stages - horizontal on desktop */}
         <div className="flex flex-col items-center gap-4">
-          {/* Stage 1: Top pipeline stages */}
+          {/* Pipeline stages */}
           <div className="flex items-center gap-0 flex-wrap justify-center">
             <Stage
-              label="Send()"
-              sublabel={<CyclingEventType />}
-              color="text-teal-600 dark:text-teal-400"
-              borderColor="border-teal-500/30"
-              bgColor="bg-teal-500/5"
+              label="c.Info()"
+              sublabel={<CyclingEventAction />}
+              color="text-amber-600 dark:text-amber-400"
+              borderColor="border-amber-500/30"
+              bgColor="bg-amber-500/5"
               delay={0.1}
             />
-            <Connection color="teal" delay={0} />
+            <Connection color="amber" delay={0} />
             <Stage
-              label="Catalog"
-              sublabel="validate"
+              label="Scope"
+              sublabel="tenant+user"
               color="text-purple-600 dark:text-purple-400"
               borderColor="border-purple-500/30"
               bgColor="bg-purple-500/5"
               delay={0.2}
             />
-            <Connection color="teal" delay={0.5} />
+            <Connection color="amber" delay={0.5} />
             <Stage
-              label="Fan-Out"
-              sublabel="distribute"
-              color="text-teal-600 dark:text-teal-400"
-              borderColor="border-teal-500/30"
-              bgColor="bg-teal-500/8"
+              label="SHA-256"
+              sublabel="hash chain"
+              color="text-amber-600 dark:text-amber-400"
+              borderColor="border-amber-500/30"
+              bgColor="bg-amber-500/8"
               pulse
               delay={0.3}
             />
           </div>
 
-          {/* Vertical connection from fan-out to endpoints */}
-          <Connection color="teal" horizontal={false} delay={1} />
+          {/* Vertical connection to events */}
+          <Connection color="amber" horizontal={false} delay={1} />
 
-          {/* Stage 2: Endpoints with results */}
+          {/* Event rows with outcomes */}
           <div className="flex flex-col items-start gap-2.5">
-            <EndpointRow
-              name="api.acme.co"
-              status="delivered"
-              statusLabel="200 Delivered"
+            <EventRow
+              action="user.login"
+              severity="info"
+              statusLabel="✓ Recorded"
               lineColor="green"
               delay={0.5}
             />
-            <EndpointRow
-              name="hooks.stripe.io"
-              status={retryResolved ? "delivered" : "retry"}
-              statusLabel={retryResolved ? "200 Delivered" : "503 Retry ↻"}
-              lineColor={retryResolved ? "green" : "amber"}
+            <EventRow
+              action="perm.escalate"
+              severity="warning"
+              statusLabel={alertFired ? "✓ Alerted" : "⚠ Warning"}
+              lineColor={alertFired ? "green" : "amber"}
               delay={0.6}
             />
-            <EndpointRow
-              name="notify.svc"
-              status="dlq"
-              statusLabel="422 → DLQ"
+            <EventRow
+              action="data.wipe"
+              severity="critical"
+              statusLabel="✕ Critical"
               lineColor="red"
               delay={0.7}
             />
@@ -290,19 +288,19 @@ function PipelineDiagram() {
           <div className="flex items-center gap-4 mt-4 text-[10px] text-fd-muted-foreground">
             <div className="flex items-center gap-1.5">
               <div className="size-2 rounded-full bg-green-500" />
-              <span>Delivered</span>
+              <span>Info</span>
             </div>
             <div className="flex items-center gap-1.5">
               <div className="size-2 rounded-full bg-amber-500" />
-              <span>Retry</span>
+              <span>Warning</span>
             </div>
             <div className="flex items-center gap-1.5">
               <div className="size-2 rounded-full bg-red-500" />
-              <span>DLQ</span>
+              <span>Critical</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <div className="size-2 rounded-full bg-gray-400" />
-              <span>Disabled</span>
+              <div className="size-2 rounded-full bg-purple-400" />
+              <span>Plugin</span>
             </div>
           </div>
         </div>
@@ -329,9 +327,9 @@ function FeatureBullet({
       transition={{ duration: 0.4, delay }}
       className="flex items-start gap-3"
     >
-      <div className="mt-1 flex items-center justify-center size-5 rounded-md bg-teal-500/10 shrink-0">
+      <div className="mt-1 flex items-center justify-center size-5 rounded-md bg-amber-500/10 shrink-0">
         <svg
-          className="size-3 text-teal-500"
+          className="size-3 text-amber-500"
           viewBox="0 0 12 12"
           fill="none"
           aria-hidden="true"
@@ -355,38 +353,38 @@ function FeatureBullet({
   );
 }
 
-// ─── Delivery Flow Section ───────────────────────────────────
+// ─── Recording Pipeline Section ──────────────────────────────
 export function DeliveryFlowSection() {
   return (
     <section className="relative w-full py-20 sm:py-28 overflow-hidden">
       {/* Background */}
-      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-teal-500/[0.02] to-transparent" />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-amber-500/[0.02] to-transparent" />
 
       <div className="container max-w-(--fd-layout-width) mx-auto px-4 sm:px-6">
         <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
           {/* Left: Text content */}
           <div className="flex flex-col">
             <SectionHeader
-              badge="Delivery Pipeline"
-              title="From event to endpoint. Automatically."
-              description="Relay orchestrates the entire webhook delivery lifecycle — validation, fan-out, delivery, retries, and dead-letter routing."
+              badge="Recording Pipeline"
+              title="From call to immutable record."
+              description="Chronicle orchestrates the entire audit recording lifecycle — scope stamping, hash chain linking, plugin hooks, and multi-store persistence."
               align="left"
             />
 
             <div className="mt-8 space-y-5">
               <FeatureBullet
-                title="Schema Validation"
-                description="Every event is validated against its registered schema before delivery. Malformed payloads never reach your endpoints."
+                title="Automatic Scope Enforcement"
+                description="Every event is stamped with AppID, TenantID, UserID, and IP from context. Query isolation is enforced at the store layer — no tenant can see another's data."
                 delay={0.2}
               />
               <FeatureBullet
-                title="Smart Fan-Out"
-                description="Events are distributed to all subscribed endpoints in parallel. Each endpoint has independent retry and rate-limit policies."
+                title="Deterministic Hash Chain"
+                description="SHA-256 is computed over sorted metadata: prevHash|timestamp|action|resource|category|outcome|severity. Erasure destroys encrypted payloads but leaves the chain intact."
                 delay={0.3}
               />
               <FeatureBullet
-                title="Decision Matrix"
-                description="2xx = delivered. 429/5xx = retry with backoff. 4xx = dead letter. 410 = auto-disable endpoint."
+                title="Plugin Hooks"
+                description="BeforeRecord can enrich or silently drop events. AfterRecord fires post-persist for metrics and tracing. AlertHandler triggers on severity or category rules."
                 delay={0.4}
               />
             </div>
@@ -399,8 +397,8 @@ export function DeliveryFlowSection() {
               className="mt-8"
             >
               <a
-                href="/docs/relay/architecture"
-                className="inline-flex items-center gap-1 text-sm font-medium text-teal-600 dark:text-teal-400 hover:text-teal-500 transition-colors"
+                href="/docs/architecture"
+                className="inline-flex items-center gap-1 text-sm font-medium text-amber-600 dark:text-amber-400 hover:text-amber-500 transition-colors"
               >
                 Learn about the architecture
                 <svg
@@ -423,7 +421,7 @@ export function DeliveryFlowSection() {
 
           {/* Right: Pipeline diagram */}
           <div className="relative">
-            <PipelineDiagram />
+            <RecordingPipelineDiagram />
           </div>
         </div>
       </div>

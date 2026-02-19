@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import { cn } from "@/lib/cn";
 
-const words = ["Relay", " your", " webhooks"];
+const words = ["Chronicle", " your", " events"];
 
 const charVariants = {
   hidden: {
@@ -48,7 +48,7 @@ export function AnimatedTagline({ className }: { className?: string }) {
                 className={cn(
                   "inline-block",
                   wordIdx === 0 &&
-                    "bg-gradient-to-r from-teal-400 via-cyan-500 to-blue-500 bg-clip-text text-transparent",
+                    "bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500 bg-clip-text text-transparent",
                   wordIdx !== 0 && "text-fd-foreground",
                   char === " " && "w-[0.25em]",
                 )}

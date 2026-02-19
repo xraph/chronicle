@@ -16,9 +16,9 @@ interface FeatureCard {
 
 const features: FeatureCard[] = [
   {
-    title: "Event Catalog",
+    title: "Hash Chain Integrity",
     description:
-      "Type-safe event registration with schema validation. Define your event types once, reference them everywhere.",
+      "Every event is linked by SHA-256 to its predecessor. Tamper any event and the chain breaks — Chronicle detects it instantly.",
     icon: (
       <svg
         className="size-5"
@@ -30,77 +30,21 @@ const features: FeatureCard[] = [
         strokeLinejoin="round"
         aria-hidden="true"
       >
-        <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
-        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
-        <path d="M8 7h8M8 11h6" />
+        <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" />
+        <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" />
       </svg>
     ),
-    code: `r.Catalog().RegisterEventType(
-  "order.created",
-  relay.WithSchema(orderSchema),
-  relay.WithDescription("New order placed"),
-)`,
-    filename: "catalog.go",
+    code: `report, err := c.VerifyChain(ctx, &verify.Input{
+  AppID:    "myapp",
+  TenantID: "tenant-1",
+})
+// valid=true verified=842 gaps=[] tampered=[]`,
+    filename: "verify.go",
   },
   {
-    title: "Guaranteed Delivery",
+    title: "GDPR Crypto-Erasure",
     description:
-      "Configurable retry schedules with exponential backoff. No event is lost, ever.",
-    icon: (
-      <svg
-        className="size-5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-        <path d="M9 12l2 2 4-4" />
-      </svg>
-    ),
-    code: `relay.WithRetrySchedule(
-  5*time.Second,   // 1st retry
-  30*time.Second,  // 2nd retry
-  2*time.Minute,   // 3rd retry
-  15*time.Minute,  // 4th retry
-  1*time.Hour,     // 5th retry
-)`,
-    filename: "retry.go",
-  },
-  {
-    title: "Dead Letter Queue",
-    description:
-      "Failed deliveries are captured automatically. Inspect, debug, and replay them on demand.",
-    icon: (
-      <svg
-        className="size-5"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <rect x="2" y="4" width="20" height="5" rx="1" />
-        <path d="M4 9v9a2 2 0 002 2h12a2 2 0 002-2V9" />
-        <path d="M10 13h4" />
-      </svg>
-    ),
-    code: `items, _ := r.DLQ().List(ctx,
-  dlq.WithEventType("order.created"),
-  dlq.WithLimit(10),
-)
-r.DLQ().Replay(ctx, items[0].ID)`,
-    filename: "dlq.go",
-  },
-  {
-    title: "HMAC Signatures",
-    description:
-      "Every payload is signed with HMAC-SHA256. Receivers verify authenticity with a single call.",
+      "Per-subject AES-256-GCM encryption. Destroy the key — data becomes unrecoverable. Hash chain stays structurally valid.",
     icon: (
       <svg
         className="size-5"
@@ -114,19 +58,21 @@ r.DLQ().Replay(ctx, items[0].ID)`,
       >
         <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
         <path d="M7 11V7a5 5 0 0110 0v4" />
+        <path d="M12 16v-2" />
       </svg>
     ),
-    code: `valid := relay.VerifySignature(
-  payload,
-  header.Get("X-Relay-Signature"),
-  endpoint.Secret,
-)`,
-    filename: "verify.go",
+    code: `result, _ := svc.Erase(ctx, &erasure.Input{
+  SubjectID:   "user-42",
+  Reason:      "GDPR Article 17",
+  RequestedBy: "dpo@company.com",
+}, "myapp", "tenant-1")
+// key_destroyed=true events_affected=12`,
+    filename: "erasure.go",
   },
   {
-    title: "Rate Limiting",
+    title: "Compliance Reports",
     description:
-      "Per-endpoint token bucket rate limiting protects downstream services from being overwhelmed.",
+      "Generate SOC2, HIPAA, EU AI Act, and custom reports with a single call. Export to JSON, CSV, Markdown, or HTML.",
     icon: (
       <svg
         className="size-5"
@@ -138,20 +84,80 @@ r.DLQ().Replay(ctx, items[0].ID)`,
         strokeLinejoin="round"
         aria-hidden="true"
       >
-        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
-        <circle cx="12" cy="12" r="3" />
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+        <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
       </svg>
     ),
-    code: `relay.WithRateLimit(
-  100,            // requests per second
-  time.Second,    // window
-)`,
-    filename: "ratelimit.go",
+    code: `report, _ := engine.SOC2(ctx, &compliance.SOC2Input{
+  Period:      compliance.DateRange{
+    From: q1Start, To: q1End,
+  },
+  AppID:       "myapp",
+  GeneratedBy: "admin@company.com",
+})`,
+    filename: "compliance.go",
+  },
+  {
+    title: "Multi-Tenant Isolation",
+    description:
+      "Scope middleware stamps every event with AppID and TenantID. Query isolation is enforced automatically — no cross-tenant data leaks.",
+    icon: (
+      <svg
+        className="size-5"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
+        <circle cx="9" cy="7" r="4" />
+        <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" />
+      </svg>
+    ),
+    code: `ctx = scope.WithAppID(ctx, "myapp")
+ctx = scope.WithTenantID(ctx, "tenant-1")
+ctx = scope.WithUserID(ctx, "user-42")
+
+// All events and queries are
+// automatically scoped to tenant-1`,
+    filename: "scope.go",
+  },
+  {
+    title: "Plugin System",
+    description:
+      "BeforeRecord and AfterRecord hooks let you enrich or drop events. AlertHandler fires in real time on matching severity or category.",
+    icon: (
+      <svg
+        className="size-5"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M20.24 12.24a6 6 0 00-8.49-8.49L5 10.5V19h8.5z" />
+        <line x1="16" y1="8" x2="2" y2="22" />
+        <line x1="17.5" y1="15" x2="9" y2="15" />
+      </svg>
+    ),
+    code: `func (p *MetricsPlugin) OnAfterRecord(
+  ctx context.Context,
+  ev *audit.Event,
+) error {
+  metrics.Inc("audit.event", ev.Severity)
+  return nil
+}`,
+    filename: "plugin.go",
   },
   {
     title: "Pluggable Stores",
     description:
-      "Ship with in-memory for dev, swap to PostgreSQL for production. Bring your own store with a simple interface.",
+      "Start with in-memory for development, swap to PostgreSQL or Bun ORM for production. Implement your own store in ~36 methods.",
     icon: (
       <svg
         className="size-5"
@@ -168,10 +174,12 @@ r.DLQ().Replay(ctx, items[0].ID)`,
         <path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5" />
       </svg>
     ),
-    code: `r, _ := relay.New(
-  relay.WithStore(postgres.New(db)),
-  relay.WithWorkers(8),
-  relay.WithLogger(slog.Default()),
+    code: `c, _ := chronicle.New(
+  chronicle.WithStore(
+    store.NewAdapter(postgres.New(pool)),
+  ),
+  chronicle.WithCryptoErasure(true),
+  chronicle.WithLogger(slog.Default()),
 )`,
     filename: "main.go",
     colSpan: 2,
@@ -202,8 +210,8 @@ export function FeatureBento() {
       <div className="container max-w-(--fd-layout-width) mx-auto px-4 sm:px-6">
         <SectionHeader
           badge="Features"
-          title="Everything you need for webhook delivery"
-          description="Relay handles the hard parts — retries, signatures, dead letters, rate limits — so you can focus on your business logic."
+          title="Everything you need for audit trails"
+          description="Chronicle handles the hard parts — hash chains, GDPR erasure, compliance reports, multi-tenancy — so you can focus on your business logic."
         />
 
         <motion.div
@@ -218,13 +226,13 @@ export function FeatureBento() {
               key={feature.title}
               variants={itemVariants}
               className={cn(
-                "group relative rounded-xl border border-fd-border bg-fd-card/50 backdrop-blur-sm p-6 hover:border-teal-500/20 hover:bg-fd-card/80 transition-all duration-300",
+                "group relative rounded-xl border border-fd-border bg-fd-card/50 backdrop-blur-sm p-6 hover:border-amber-500/20 hover:bg-fd-card/80 transition-all duration-300",
                 feature.colSpan === 2 && "md:col-span-2",
               )}
             >
               {/* Header */}
               <div className="flex items-start gap-3 mb-4">
-                <div className="flex items-center justify-center size-9 rounded-lg bg-teal-500/10 text-teal-600 dark:text-teal-400 shrink-0">
+                <div className="flex items-center justify-center size-9 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0">
                   {feature.icon}
                 </div>
                 <div>

@@ -6,42 +6,42 @@ import { ThemedLogo } from "@/components/ui/themed-logo";
 const footerLinks = {
   "Getting Started": [
     { label: "Introduction", href: "/docs" },
-    { label: "Quick Start", href: "/docs/relay/quick-start" },
-    { label: "Architecture", href: "/docs/relay/architecture" },
-    { label: "Configuration", href: "/docs/relay/configuration" },
+    { label: "Quick Start", href: "/docs/getting-started" },
+    { label: "Architecture", href: "/docs/architecture" },
+    { label: "Configuration", href: "/docs/concepts/configuration" },
   ],
   Subsystems: [
-    { label: "Catalog", href: "/docs/relay/catalog" },
-    { label: "Endpoints", href: "/docs/relay/endpoints" },
-    { label: "Delivery", href: "/docs/relay/delivery" },
-    { label: "DLQ", href: "/docs/relay/dlq" },
-    { label: "Signatures", href: "/docs/relay/signatures" },
+    { label: "Recording", href: "/docs/subsystems/recording" },
+    { label: "Verification", href: "/docs/subsystems/verification" },
+    { label: "GDPR Erasure", href: "/docs/subsystems/erasure" },
+    { label: "Compliance", href: "/docs/subsystems/compliance" },
+    { label: "Plugins", href: "/docs/subsystems/plugins" },
   ],
   Stores: [
     { label: "Memory", href: "/docs/stores/memory" },
     { label: "PostgreSQL", href: "/docs/stores/postgres" },
     { label: "Bun ORM", href: "/docs/stores/bun" },
-    { label: "Custom Store", href: "/docs/stores/custom" },
+    { label: "Custom Store", href: "/docs/guides/custom-store" },
   ],
   Community: [
     {
       label: "GitHub",
-      href: "https://github.com/xraph/relay",
+      href: "https://github.com/xraph/chronicle",
       external: true,
     },
     {
       label: "Issues",
-      href: "https://github.com/xraph/relay/issues",
+      href: "https://github.com/xraph/chronicle/issues",
       external: true,
     },
     {
       label: "Discussions",
-      href: "https://github.com/xraph/relay/discussions",
+      href: "https://github.com/xraph/chronicle/discussions",
       external: true,
     },
     {
       label: "Contributing",
-      href: "https://github.com/xraph/relay/blob/main/CONTRIBUTING.md",
+      href: "https://github.com/xraph/chronicle/blob/main/CONTRIBUTING.md",
       external: true,
     },
   ],
@@ -57,16 +57,16 @@ export function Footer() {
           <div className="col-span-2 md:col-span-1">
             <Link href="/" className="inline-flex items-center gap-2 mb-4">
               <ThemedLogo />
-              <span className="font-bold text-lg">Relay</span>
+              <span className="font-bold text-lg">Chronicle</span>
             </Link>
             <p className="text-sm text-fd-muted-foreground leading-relaxed max-w-xs">
-              Composable webhook delivery engine for Go. Event catalog,
-              guaranteed delivery, HMAC signatures, and dead letter queues.
+              Immutable audit trail library for Go. Hash-chained events, GDPR
+              crypto-erasure, and SOC2/HIPAA compliance reports.
             </p>
             {/* Social links */}
             <div className="flex items-center gap-3 mt-6">
               <a
-                href="https://github.com/xraph/relay"
+                href="https://github.com/xraph/chronicle"
                 target="_blank"
                 rel="noreferrer"
                 className="text-fd-muted-foreground hover:text-fd-foreground transition-colors"
