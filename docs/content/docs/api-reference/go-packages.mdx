@@ -13,6 +13,14 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 |--------|------|---------|
 | `Chronicle` | struct | Root engine: record, query, verify |
 | `New(opts...)` | func | Constructor. Requires `WithStore`. |
+| `(c) Record(ctx, event)` | method | Persist a pre-built `*audit.Event` |
+| `(c) Info/Warning/Critical(ctx, action, resource, resourceID)` | method | Start an `EventBuilder` at the given severity |
+| `(c) Query(ctx, q)` | method | List events matching a filter |
+| `(c) Aggregate(ctx, q)` | method | Group event counts |
+| `(c) ByUser(ctx, userID, opts)` | method | Events for a specific user |
+| `(c) VerifyChain(ctx, input)` | method | Verify the full hash chain for a scope |
+| `(c) VerifyEvent(ctx, eventID)` | method | Verify a single event's hash (returns bool) |
+| `(c) Store()` | method | Returns the underlying `chronicle.Storer` |
 | `Config` | struct | Runtime configuration |
 | `DefaultConfig()` | func | Returns sensible defaults |
 | `Option` | type | Functional option type |
@@ -192,7 +200,9 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 | `FromContext(ctx)` | func | Extract `scope.Info` |
 | `FromRequest(r)` | func | Extract scope + IP from HTTP request |
 | `ApplyToEvent(ctx, event)` | func | Stamp scope fields onto an event |
-| `ApplyToQuery(ctx, q)` | func | Enforce tenant scope on a query |
+| `ApplyToQuery(ctx, q)` | func | Enforce tenant scope on an `audit.Query` |
+| `ApplyToAggregateQuery(ctx, q)` | func | Enforce tenant scope on an `audit.AggregateQuery` |
+| `ApplyToCountQuery(ctx, q)` | func | Enforce tenant scope on an `audit.CountQuery` |
 
 ## id
 
@@ -245,3 +255,4 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 | `store/memory` | In-memory (zero-dependency, for tests) |
 | `store/postgres` | PostgreSQL via pgx/v5 |
 | `store/bun` | PostgreSQL / MySQL / SQLite via Bun ORM |
+| `store/sqlite` | SQLite via `modernc.org/sqlite` (pure Go, no CGO) |

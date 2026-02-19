@@ -150,3 +150,22 @@ The output of a hash chain verification run.
 | `Tampered` | `[]uint64` | Sequence numbers with hash mismatches |
 | `FirstEvent` | `uint64` | First sequence checked |
 | `LastEvent` | `uint64` | Last sequence checked |
+
+## chronicle.Entity
+
+`chronicle.Entity` is the base struct embedded by every stored entity. It provides common timestamp fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `CreatedAt` | `time.Time` | When the record was first created |
+| `UpdatedAt` | `time.Time` | When the record was last updated |
+
+Use `chronicle.NewEntity()` to initialise a new record with both timestamps set to the current UTC time:
+
+```go
+import "github.com/xraph/chronicle"
+
+r := SomeEntity{Entity: chronicle.NewEntity()}
+```
+
+`chronicle.Entity` is embedded by `stream.Stream`, `erasure.Erasure`, `retention.Policy`, `retention.Archive`, and `compliance.Report`. The immutable `audit.Event` does not embed it — events carry their own `Timestamp` field set at recording time.

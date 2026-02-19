@@ -33,10 +33,14 @@ All three take the same positional arguments: **action** (verb), **resource** (n
 |--------|-------------|
 | `.Category(s)` | Required. Logical group for compliance filtering (e.g. `"auth"`, `"billing"`) |
 | `.UserID(s)` | Override the user ID from context |
+| `.TenantID(s)` | Override the tenant ID from context |
+| `.AppID(s)` | Override the app ID from context |
 | `.SubjectID(s)` | GDPR data subject identifier (required for crypto-erasure) |
 | `.Meta(k, v)` | Add a metadata key-value pair (can be called multiple times) |
 | `.Outcome(s)` | `"success"`, `"failure"`, or `"denied"` |
 | `.Reason(s)` | Human-readable reason string |
+
+The `TenantID` and `AppID` override methods are useful when recording events on behalf of a different scope than the one stored in the context — for example, in an admin or background job context.
 
 ### Terminal methods
 
@@ -82,6 +86,36 @@ event := &audit.Event{
     Outcome:  audit.OutcomeSuccess,
 }
 err := c.Record(ctx, event)
+```
+
+## Severity and outcome constants
+
+The `audit` package exports named constants for severity and outcome to avoid stringly-typed code:
+
+```go
+import "github.com/xraph/chronicle/audit"
+
+// Severity constants
+audit.SeverityInfo     // "info"
+audit.SeverityWarning  // "warning"
+audit.SeverityCritical // "critical"
+
+// Outcome constants
+audit.OutcomeSuccess // "success"
+audit.OutcomeFailure // "failure"
+audit.OutcomeDenied  // "denied"
+```
+
+Use these instead of raw string literals for type-safety and refactor-friendliness:
+
+```go
+event := &audit.Event{
+    Action:   "export",
+    Resource: "report",
+    Category: "billing",
+    Severity: audit.SeverityInfo,
+    Outcome:  audit.OutcomeSuccess,
+}
 ```
 
 ## Querying events

@@ -28,6 +28,8 @@ Any modification to any field changes that event's hash, which breaks every subs
 
 ### Via the Chronicle API
 
+**Verify the full chain** for an app+tenant scope:
+
 ```go
 import "github.com/xraph/chronicle/verify"
 
@@ -43,6 +45,22 @@ if err != nil {
 fmt.Printf("valid=%v verified=%d gaps=%v tampered=%v\n",
     report.Valid, report.Verified, report.Gaps, report.Tampered)
 ```
+
+**Verify a single event** by ID — recomputes the event's hash and confirms it matches the stored value:
+
+```go
+import "github.com/xraph/chronicle/id"
+
+eventID, _ := id.ParseAuditID("audit_01j9vk...")
+
+ok, err := c.VerifyEvent(ctx, eventID)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println("event valid:", ok)
+```
+
+`VerifyEvent` returns `false` (not an error) when the stored hash does not match the recomputed hash, indicating that the event content was modified after recording.
 
 ### Via the HTTP API
 
