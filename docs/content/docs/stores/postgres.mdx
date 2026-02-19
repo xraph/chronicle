@@ -1,0 +1,110 @@
+---
+title: PostgreSQL Store
+description: Production-ready PostgreSQL store using pgx/v5.
+---
+
+The `store/postgres` package implements Chronicle's `store.Store` interface using the `pgx/v5` driver with `pgxpool` for connection pooling. It is the recommended store for production deployments.
+
+## Import
+
+```go
+import (
+    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/xraph/chronicle/store/postgres"
+)
+```
+
+## Constructor
+
+```go
+pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+if err != nil {
+    log.Fatal(err)
+}
+
+pgStore, err := postgres.New(pool)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Migrations
+
+Run schema migrations before using the store. Migrations are embedded SQL files executed in a transaction:
+
+```go
+if err := pgStore.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+Migrations are idempotent — safe to run on every startup.
+
+## Full setup with `chronicle.New`
+
+```go
+import (
+    "context"
+    "log"
+    "os"
+
+    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/xraph/chronicle"
+    "github.com/xraph/chronicle/store"
+    "github.com/xraph/chronicle/store/postgres"
+)
+
+ctx := context.Background()
+
+pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+if err != nil {
+    log.Fatal(err)
+}
+
+pgStore, err := postgres.New(pool)
+if err != nil {
+    log.Fatal(err)
+}
+
+if err := pgStore.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+
+adapter := store.NewAdapter(pgStore)
+
+c, err := chronicle.New(chronicle.WithStore(adapter))
+```
+
+## With the Forge extension
+
+```go
+import "github.com/xraph/chronicle/extension"
+
+ext := extension.New(
+    extension.WithStore(pgStore),
+    // Migrate runs automatically on Start unless WithDisableMigrate(true)
+)
+app.Register(ext)
+```
+
+## Interfaces implemented
+
+`postgres.Store` satisfies:
+
+- `audit.Store`
+- `stream.Store`
+- `verify.Store`
+- `erasure.Store`
+- `retention.Store`
+- `compliance.ReportStore`
+- `store.Store` (composite)
+
+## Characteristics
+
+| Aspect | Detail |
+|--------|--------|
+| Driver | pgx/v5 + pgxpool |
+| Migrations | Embedded SQL, transaction-wrapped |
+| Transactions | Database-level ACID |
+| Ping | `pool.Ping(ctx)` |
+| Close | Delegate to caller — call `pool.Close()` |

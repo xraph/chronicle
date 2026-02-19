@@ -1,0 +1,92 @@
+---
+title: Introduction
+description: Composable immutable audit trail for Go.
+---
+
+Chronicle is a Go library that records every event into a **SHA-256 hash chain**, making tampering cryptographically detectable. It is designed for multi-tenant SaaS applications that need SOC2, HIPAA, or GDPR compliance out of the box.
+
+Chronicle is a **library** — not a service. You bring your own database, HTTP server, and process lifecycle. Chronicle provides the audit plumbing.
+
+## What it does
+
+- **Hash chain integrity** — Every event is linked by SHA-256 hashes. Tampering breaks the chain and is immediately detectable via `VerifyChain`.
+- **GDPR crypto-erasure** — Per-subject AES-256-GCM encryption. Delete the key, the data becomes irrecoverable, but the hash chain stays intact.
+- **Multi-tenant scoping** — Events are automatically scoped to app + tenant from context. Cross-tenant queries are impossible by design.
+- **Compliance reports** — Generate SOC2 Type II, HIPAA, EU AI Act, and custom reports. Export to JSON, CSV, Markdown, or HTML.
+- **Pluggable stores** — Postgres (pgx), Bun ORM, SQLite, and in-memory (testing). All implement the same composite `store.Store` interface.
+- **Fire-and-forget sinks** — Stdout, file, S3, or custom. Sinks never block the record pipeline.
+- **Plugin system** — `BeforeRecord` enrichment, `AfterRecord` notification, `AlertHandler`, `SinkProvider`, and more.
+- **Retention policies** — Automatic archival and purge with configurable schedules.
+- **Admin HTTP API** — 21 endpoints for events, verification, erasure, retention, compliance, and stats.
+- **Forge integration** — Drop-in `forge.Extension` with DI-injected `chronicle.Emitter`.
+
+## Design philosophy
+
+**Library, not service.** Chronicle is a set of Go packages you import. You control `main`, the database connection, and the process lifecycle.
+
+**Interfaces over implementations.** Every subsystem defines a Go interface. Swap any storage backend with a single type change.
+
+**Composable stores.** Each subsystem has its own store interface. The aggregate `store.Store` composes them all. One backend satisfies every subsystem.
+
+**Append-only by design.** There is no `UpdateEvent` or `DeleteEvent`. Compliance and hash chain integrity depend on immutability.
+
+**TypeID everywhere.** All entities use type-prefixed, K-sortable, UUIDv7-based identifiers. Passing an `erasure_` ID where an `audit_` ID is expected is a compile error.
+
+## Quick look
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/xraph/chronicle"
+    "github.com/xraph/chronicle/scope"
+    "github.com/xraph/chronicle/store"
+    "github.com/xraph/chronicle/store/memory"
+)
+
+func main() {
+    ctx := context.Background()
+    ctx = scope.WithAppID(ctx, "myapp")
+    ctx = scope.WithTenantID(ctx, "tenant-1")
+
+    mem := memory.New()
+    adapter := store.NewAdapter(mem)
+
+    c, err := chronicle.New(chronicle.WithStore(adapter))
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Record an event.
+    err = c.Info(ctx, "login", "session", "sess-001").
+        Category("auth").
+        UserID("user-42").
+        Meta("provider", "okta").
+        Record()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Query events.
+    result, err := c.Query(ctx, &audit.Query{Limit: 10})
+    if err != nil {
+        log.Fatal(err)
+    }
+    for _, ev := range result.Events {
+        fmt.Printf("[%s] %s %s/%s\n", ev.Severity, ev.Action, ev.Resource, ev.ResourceID)
+    }
+}
+```
+
+## Where to go next
+
+<Cards>
+  <Card title="Getting started" href="/docs/getting-started" description="Install Chronicle and record your first event in minutes." />
+  <Card title="Architecture" href="/docs/architecture" description="Understand how the packages fit together." />
+  <Card title="Core concepts" href="/docs/concepts/identity" description="Learn about TypeIDs, entities, and configuration." />
+  <Card title="API reference" href="/docs/api-reference/http-api" description="Full HTTP admin API documentation." />
+</Cards>

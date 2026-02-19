@@ -1,0 +1,146 @@
+---
+title: Admin API
+description: HTTP admin API — 21 endpoints for events, verification, erasure, retention, reports, and stats.
+---
+
+The `handler` package exposes 21 REST endpoints using the Forge router with full OpenAPI metadata. Routes are mounted under `/v1/` and require an `AppID` in the request context.
+
+## Setup
+
+```go
+import (
+    "net/http"
+    "log/slog"
+
+    "github.com/xraph/chronicle/handler"
+)
+
+mux := http.NewServeMux()
+
+api := handler.New(handler.Dependencies{
+    AuditStore:     myStore,
+    VerifyStore:    myStore,
+    ErasureStore:   myStore,
+    RetentionStore: myStore,
+    ReportStore:    myStore,
+    Compliance:     complianceEngine,
+    Retention:      retentionEnforcer,
+    Logger:         slog.Default(),
+}, mux)
+
+api.RegisterRoutes(mux)
+
+http.ListenAndServe(":8080", mux)
+```
+
+## Authentication
+
+Every request must have an `AppID` in the context (populated by your auth middleware). Requests without an AppID return `401 Unauthorized`. TenantID is also enforced on all queries to prevent cross-tenant access.
+
+## Error format
+
+```json
+{"error": "chronicle: event not found"}
+```
+
+## Events
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/events` | List events with filters (category, action, severity, outcome, time range) |
+| `GET` | `/v1/events/:id` | Get a single event by ID |
+| `GET` | `/v1/events/user/:userId` | Get events for a specific user |
+| `POST` | `/v1/events/aggregate` | Grouped counts for analytics |
+
+### List events query parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `category` | Filter by event category |
+| `action` | Filter by action verb |
+| `severity` | `info`, `warning`, or `critical` |
+| `outcome` | `success`, `failure`, or `denied` |
+| `from` | Start time (RFC3339) |
+| `to` | End time (RFC3339) |
+| `limit` | Page size (default 20) |
+| `offset` | Page offset |
+| `order` | `asc` or `desc` |
+
+## Verification
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/verify` | Verify hash chain integrity |
+
+Request body:
+
+```json
+{
+  "stream_id": "stream_01j9vk...",
+  "from_seq": 0,
+  "to_seq": 0
+}
+```
+
+Response: `verify.Report` — `valid`, `verified`, `gaps`, `tampered`.
+
+## Erasure
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/erasures` | Request GDPR erasure for a subject |
+| `GET` | `/v1/erasures` | List erasure records |
+| `GET` | `/v1/erasures/:id` | Get a specific erasure record |
+
+## Retention
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/retention` | List retention policies |
+| `POST` | `/v1/retention` | Create or update a retention policy |
+| `DELETE` | `/v1/retention/:id` | Delete a policy |
+| `POST` | `/v1/retention/enforce` | Trigger immediate retention enforcement |
+| `GET` | `/v1/retention/archives` | List archive records |
+
+## Reports
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/reports` | List compliance reports |
+| `POST` | `/v1/reports/soc2` | Generate SOC2 Type II report |
+| `POST` | `/v1/reports/hipaa` | Generate HIPAA report |
+| `POST` | `/v1/reports/euaiact` | Generate EU AI Act report |
+| `POST` | `/v1/reports/custom` | Generate custom report |
+| `GET` | `/v1/reports/:id` | Get a specific report |
+| `GET` | `/v1/reports/:id/export/:format` | Export report (`json`, `csv`, `markdown`, `html`) |
+
+## Stats
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/stats` | Aggregate statistics for audit events |
+
+## Forge extension
+
+When using the Forge extension, routes are registered automatically during `Register` unless `WithDisableRoutes(true)` is set:
+
+```go
+ext := extension.New(
+    extension.WithStore(s),
+    // WithDisableRoutes defaults to false — routes are auto-registered
+)
+app.Register(ext)
+```
+
+Access the underlying `handler.API` for manual control:
+
+```go
+ext.API().RegisterRoutes(customRouter)
+```
+
+Or get an `http.Handler` for standalone use:
+
+```go
+h := ext.Handler()
+http.ListenAndServe(":8080", h)
+```

@@ -1,0 +1,167 @@
+---
+title: Custom Store
+description: Implement your own Chronicle store backend.
+---
+
+To connect Chronicle to a storage backend not covered by the built-in implementations (Postgres, Bun, SQLite, Memory), implement the `store.Store` composite interface.
+
+## The composite interface
+
+`store.Store` embeds 6 sub-store interfaces plus 3 lifecycle methods — approximately 36 methods in total:
+
+```go
+type Store interface {
+    audit.Store        // 9 methods: Append, AppendBatch, Get, Query, Aggregate, ByUser, Count, LastSequence, LastHash
+    stream.Store       // 5 methods: CreateStream, GetStream, GetStreamByScope, ListStreams, UpdateStreamHead
+    verify.Store       // 2 methods: EventRange, Gaps
+    erasure.Store      // ~5 methods: SaveErasure, GetErasure, ListErasures, MarkEventsErased, ListSubjectEvents
+    retention.Store    // ~6 methods: SavePolicy, GetPolicy, ListPolicies, DeletePolicy, EventsOlderThan, SaveArchive, ListArchives
+    compliance.ReportStore // 4 methods: SaveReport, GetReport, ListReports, DeleteReport
+
+    Migrate(ctx context.Context) error
+    Ping(ctx context.Context) error
+    Close() error
+}
+```
+
+## Sub-interface reference
+
+| Interface | Package | Key methods |
+|-----------|---------|-------------|
+| `audit.Store` | `audit` | `Append`, `AppendBatch`, `Get`, `Query`, `Aggregate`, `ByUser`, `Count`, `LastSequence`, `LastHash` |
+| `stream.Store` | `stream` | `CreateStream`, `GetStream`, `GetStreamByScope`, `ListStreams`, `UpdateStreamHead` |
+| `verify.Store` | `verify` | `EventRange`, `Gaps` |
+| `erasure.Store` | `erasure` | `SaveErasure`, `GetErasure`, `ListErasures`, `MarkEventsErased` |
+| `retention.Store` | `retention` | `SavePolicy`, `GetPolicy`, `ListPolicies`, `DeletePolicy`, `EventsOlderThan`, `SaveArchive`, `ListArchives` |
+| `compliance.ReportStore` | `compliance` | `SaveReport`, `GetReport`, `ListReports`, `DeleteReport` |
+
+## Scaffold
+
+```go
+package mystore
+
+import (
+    "context"
+
+    "github.com/xraph/chronicle/audit"
+    "github.com/xraph/chronicle/compliance"
+    "github.com/xraph/chronicle/erasure"
+    "github.com/xraph/chronicle/id"
+    "github.com/xraph/chronicle/retention"
+    "github.com/xraph/chronicle/stream"
+    "github.com/xraph/chronicle/verify"
+)
+
+// Store implements store.Store using your custom backend.
+type Store struct {
+    // your fields
+}
+
+// Compile-time check.
+var _ interface {
+    audit.Store
+    stream.Store
+    verify.Store
+    erasure.Store
+    retention.Store
+    compliance.ReportStore
+} = (*Store)(nil)
+
+// ─── audit.Store ───────────────────────────────────────────────────────────────
+
+func (s *Store) Append(ctx context.Context, event *audit.Event) error               { panic("not implemented") }
+func (s *Store) AppendBatch(ctx context.Context, events []*audit.Event) error        { panic("not implemented") }
+func (s *Store) Get(ctx context.Context, eventID id.ID) (*audit.Event, error)        { panic("not implemented") }
+func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, error) { panic("not implemented") }
+// ... (implement all methods)
+
+// ─── Lifecycle ─────────────────────────────────────────────────────────────────
+
+func (s *Store) Migrate(ctx context.Context) error { return nil }
+func (s *Store) Ping(ctx context.Context) error    { return nil }
+func (s *Store) Close() error                      { return nil }
+```
+
+## Use the memory store as a fallback
+
+During development, embed `*memory.Store` and promote all methods, then override only the ones you've implemented:
+
+```go
+import "github.com/xraph/chronicle/store/memory"
+
+type Store struct {
+    *memory.Store // satisfies all unimplemented interfaces
+    db            *mydb.Client
+}
+
+// Override only the methods you've implemented.
+func (s *Store) Append(ctx context.Context, event *audit.Event) error {
+    return s.db.Insert(ctx, event)
+}
+```
+
+## Error mapping
+
+Map backend-specific "not found" errors to Chronicle sentinel errors so callers can use `errors.Is` consistently:
+
+```go
+import (
+    "errors"
+    "github.com/xraph/chronicle"
+)
+
+func (s *Store) Get(ctx context.Context, eventID id.ID) (*audit.Event, error) {
+    event, err := s.db.FindEvent(ctx, eventID.String())
+    if errors.Is(err, mydb.ErrNotFound) {
+        return nil, chronicle.ErrEventNotFound
+    }
+    return event, err
+}
+```
+
+## Wire with `store.NewAdapter`
+
+After implementing your store, wrap it with `store.NewAdapter` before passing to `chronicle.New`:
+
+```go
+import "github.com/xraph/chronicle/store"
+
+myStore := mystore.New(cfg)
+adapter := store.NewAdapter(myStore)
+c, err := chronicle.New(chronicle.WithStore(adapter))
+```
+
+Or pass directly to the extension:
+
+```go
+ext := extension.New(extension.WithStore(myStore))
+```
+
+## Testing
+
+Use the `store/memory` store as a reference implementation to validate your store's behaviour:
+
+```go
+func TestMyStore(t *testing.T) {
+    ctx := context.Background()
+    s := mystore.NewTest()  // a clean in-memory instance for testing
+
+    event := &audit.Event{
+        Action:   "login",
+        Resource: "session",
+        Category: "auth",
+        AppID:    "test",
+    }
+    if err := s.Append(ctx, event); err != nil {
+        t.Fatal(err)
+    }
+
+    got, err := s.Get(ctx, event.ID)
+    if err != nil {
+        t.Fatal(err)
+    }
+    if got.Action != event.Action {
+        t.Errorf("got action %q, want %q", got.Action, event.Action)
+    }
+}
+```

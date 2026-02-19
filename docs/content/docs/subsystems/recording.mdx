@@ -1,0 +1,120 @@
+---
+title: Recording Events
+description: The EventBuilder API and how Chronicle persists events to the hash chain.
+---
+
+## EventBuilder
+
+All events are created through the fluent `EventBuilder` API. Start with a severity constructor on the `chronicle.Chronicle` (or `chronicle.Emitter`) instance, chain builder methods, then call `Record()`:
+
+```go
+err := c.Info(ctx, "login", "session", "sess-001").
+    Category("auth").
+    UserID("user-42").
+    SubjectID("user-42").
+    Meta("provider", "okta").
+    Outcome("success").
+    Record()
+```
+
+### Severity constructors
+
+| Method | Severity | Description |
+|--------|----------|-------------|
+| `c.Info(ctx, action, resource, resourceID)` | `"info"` | Routine operational events |
+| `c.Warning(ctx, action, resource, resourceID)` | `"warning"` | Anomalies needing attention |
+| `c.Critical(ctx, action, resource, resourceID)` | `"critical"` | Security events or failures |
+
+All three take the same positional arguments: **action** (verb), **resource** (noun), and **resourceID** (ID of the specific instance).
+
+### Builder methods
+
+| Method | Description |
+|--------|-------------|
+| `.Category(s)` | Required. Logical group for compliance filtering (e.g. `"auth"`, `"billing"`) |
+| `.UserID(s)` | Override the user ID from context |
+| `.SubjectID(s)` | GDPR data subject identifier (required for crypto-erasure) |
+| `.Meta(k, v)` | Add a metadata key-value pair (can be called multiple times) |
+| `.Outcome(s)` | `"success"`, `"failure"`, or `"denied"` |
+| `.Reason(s)` | Human-readable reason string |
+
+### Terminal methods
+
+| Method | Description |
+|--------|-------------|
+| `.Record()` | Build and persist the event. Returns an error. |
+| `.Event()` | Build and return the `*audit.Event` without persisting. |
+
+### Required fields
+
+Chronicle rejects events missing any of these three fields:
+
+- **Action** — the positional first argument to `c.Info` / `c.Warning` / `c.Critical`
+- **Resource** — the positional second argument
+- **Category** — set via `.Category(s)`
+
+`AppID` is also required and is extracted from the context automatically.
+
+## Record pipeline
+
+When `Record()` is called, Chronicle executes these 7 steps:
+
+1. **Apply scope** — `scope.ApplyToEvent(ctx, event)` stamps AppID, TenantID, UserID, IP.
+2. **Assign identity** — assigns a `audit_` TypeID and the current timestamp.
+3. **Validate** — returns an error if Action, Resource, Category, or AppID are missing.
+4. **Resolve stream** — looks up (or creates) the stream for the app+tenant scope.
+5. **Compute hash** — `SHA256(prevHash|timestamp|action|resource|category|resourceID|outcome|severity|metadata_json)`.
+6. **Store.Append** — persists the event via the `chronicle.Storer` interface.
+7. **Update stream head** — advances HeadHash and HeadSeq on the stream.
+
+Plugin `BeforeRecord` hooks fire between steps 3 and 4. Plugin `AfterRecord` hooks fire after step 7.
+
+## Direct record
+
+You can also construct an `audit.Event` directly and call `c.Record(ctx, event)`:
+
+```go
+event := &audit.Event{
+    Action:   "export",
+    Resource: "report",
+    Category: "billing",
+    Severity: audit.SeverityInfo,
+    Outcome:  audit.OutcomeSuccess,
+}
+err := c.Record(ctx, event)
+```
+
+## Querying events
+
+```go
+result, err := c.Query(ctx, &audit.Query{
+    Category: "auth",
+    Severity: "critical",
+    Limit:    50,
+    Order:    "desc",
+})
+```
+
+Queries are always scoped to the app + tenant from the context. Available filters:
+
+| Field | Description |
+|-------|-------------|
+| `Category` | Filter by event category |
+| `Action` | Filter by action verb |
+| `Resource` | Filter by resource noun |
+| `UserID` | Filter by user |
+| `Severity` | Filter by severity level |
+| `Outcome` | Filter by outcome |
+| `From` / `To` | Time range filter |
+| `Limit` / `Offset` | Pagination |
+| `Order` | `"asc"` or `"desc"` (by timestamp) |
+
+## Aggregate queries
+
+```go
+result, err := c.Aggregate(ctx, &audit.AggregateQuery{
+    GroupBy: "category",
+    AppID:   "myapp",
+})
+// result.Buckets: []AggregateItem{Name, Count}
+```

@@ -1,0 +1,247 @@
+---
+title: Go Packages
+description: Quick reference for all Chronicle Go packages and their public APIs.
+---
+
+This is a reference map of every package in the `github.com/xraph/chronicle` module, what it exports, and when you'd use it.
+
+## chronicle (root)
+
+**Import:** `github.com/xraph/chronicle`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Chronicle` | struct | Root engine: record, query, verify |
+| `New(opts...)` | func | Constructor. Requires `WithStore`. |
+| `Config` | struct | Runtime configuration |
+| `DefaultConfig()` | func | Returns sensible defaults |
+| `Option` | type | Functional option type |
+| `WithStore(s)` | func | Set the backing `chronicle.Storer` (use `store.NewAdapter(backend)`) |
+| `WithLogger(l)` | func | Set `*slog.Logger` |
+| `WithBatchSize(n)` | func | Max events per batch |
+| `WithFlushInterval(d)` | func | Max time between flushes |
+| `WithCryptoErasure(b)` | func | Enable GDPR AES-256-GCM encryption |
+| `Emitter` | interface | Minimal interface for DI injection: `Info/Warning/Critical/Record/Query` |
+| `Storer` | interface | Minimal store interface (avoids import cycle with `store` package) |
+| `StreamInfo` | struct | Stream snapshot used by the record pipeline |
+| `Entity` | struct | Base entity with `CreatedAt`, `UpdatedAt` |
+| `ErrNoStore`, `ErrEventNotFound`, `ErrStreamNotFound`, `ErrChainBroken`, `ErrSubjectNotFound`, `ErrPolicyNotFound`, `ErrReportNotFound`, `ErrErasureNotFound`, `ErrErasureKeyNotFound`, `ErrInvalidQuery`, `ErrUnauthorized`, `ErrStoreClosed`, `ErrMigrationFailed` | errors | Sentinel errors |
+
+## audit
+
+**Import:** `github.com/xraph/chronicle/audit`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Event` | struct | Immutable audit event |
+| `SeverityInfo`, `SeverityWarning`, `SeverityCritical` | const | Severity level strings |
+| `OutcomeSuccess`, `OutcomeFailure`, `OutcomeDenied` | const | Outcome strings |
+| `Query` | struct | Filter + pagination for event listing |
+| `QueryResult` | struct | `Events []*Event`, `Total int64` |
+| `AggregateQuery` | struct | GroupBy field, filters |
+| `AggregateResult` | struct | `Buckets []AggregateItem` |
+| `CountQuery` | struct | Count-only query (no event fetch) |
+| `TimeRange` | struct | `From`, `To` for `ByUser` |
+| `Store` | interface | Append, AppendBatch, Get, Query, Aggregate, ByUser, Count, LastSequence, LastHash |
+
+## stream
+
+**Import:** `github.com/xraph/chronicle/stream`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Stream` | struct | Hash chain head: ID, AppID, TenantID, HeadHash, HeadSeq |
+| `ListOpts` | struct | Limit, Offset for listing |
+| `Store` | interface | CreateStream, GetStream, GetStreamByScope, ListStreams, UpdateStreamHead |
+
+## hash
+
+**Import:** `github.com/xraph/chronicle/hash`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Chain(event *audit.Event, prevHash string)` | func | Compute SHA-256 hash for an event |
+
+## verify
+
+**Import:** `github.com/xraph/chronicle/verify`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Input` | struct | StreamID, FromSeq, ToSeq, AppID, TenantID |
+| `Report` | struct | Valid, Verified, Gaps []uint64, Tampered []uint64, FirstEvent, LastEvent |
+| `Store` | interface | EventRange, Gaps |
+
+## store
+
+**Import:** `github.com/xraph/chronicle/store`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Store` | interface | Composite: all 6 sub-stores + Migrate + Ping + Close |
+| `NewAdapter(s Store)` | func | Bridges `store.Store` → `chronicle.Storer` |
+
+## crypto
+
+**Import:** `github.com/xraph/chronicle/crypto`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Encryptor` | struct | AES-256-GCM encrypt/decrypt |
+| `NewEncryptor()` | func | Constructor |
+| `Encrypt(key, plaintext)` | method | Returns ciphertext with random nonce |
+| `Decrypt(key, ciphertext)` | method | Returns plaintext |
+| `InMemoryKeyStore` | struct | In-memory key store (dev/test only) |
+| `NewInMemoryKeyStore()` | func | Constructor |
+| `KeyStore` | interface | GetOrCreate, Get, Delete |
+
+## erasure
+
+**Import:** `github.com/xraph/chronicle/erasure`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Erasure` | struct | Erasure record entity |
+| `Input` | struct | SubjectID, Reason, RequestedBy |
+| `Result` | struct | ID, SubjectID, EventsAffected, KeyDestroyed |
+| `Service` | struct | Erase logic: find events → mark erased → destroy key |
+| `NewService(store, keyStore)` | func | Constructor |
+| `Store` | interface | SaveErasure, GetErasure, ListErasures, MarkEventsErased |
+
+## compliance
+
+**Import:** `github.com/xraph/chronicle/compliance`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Engine` | struct | Report generation |
+| `NewEngine(auditStore, verifyStore, reportStore, logger)` | func | Constructor |
+| `Report` | struct | Generated compliance report |
+| `Section` | struct | Report section with events and stats |
+| `Stats` | struct | TotalEvents, CriticalEvents, FailedEvents, DeniedEvents |
+| `DateRange` | struct | From, To time range |
+| `SOC2Input`, `HIPAAInput`, `EUAIActInput`, `CustomInput` | struct | Report inputs |
+| `FormatJSON`, `FormatCSV`, `FormatMarkdown`, `FormatHTML`, `FormatPDF` | const | Export format constants |
+| `ReportStore` | interface | SaveReport, GetReport, ListReports, DeleteReport |
+
+## retention
+
+**Import:** `github.com/xraph/chronicle/retention`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Policy` | struct | Retention policy: Category, Duration, Archive, AppID |
+| `Archive` | struct | Archive record: PolicyID, EventsArchived, EventsPurged |
+| `Enforcer` | struct | Policy runner |
+| `NewEnforcer(store, archiveSink, logger)` | func | Constructor |
+| `EnforceResult` | struct | Archived, Purged, Retained int64 |
+| `Store` | interface | SavePolicy, GetPolicy, ListPolicies, DeletePolicy, EventsOlderThan, SaveArchive, ListArchives |
+
+## sink
+
+**Import:** `github.com/xraph/chronicle/sink`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Sink` | interface | Name, Write, Flush, Close |
+| `NewStdout()` | func | Stdout sink |
+| `NewFile(path)` | func | File sink |
+| `NewS3(client, bucket, prefix)` | func | S3 sink |
+| `NewMulti(sinks...)` | func | Fan-out sink |
+
+## plugin
+
+**Import:** `github.com/xraph/chronicle/plugin`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Plugin` | interface | `Name() string` base interface |
+| `OnInit`, `OnShutdown` | interface | Lifecycle hooks |
+| `BeforeRecord` | interface | `OnBeforeRecord(ctx, event) error` |
+| `AfterRecord` | interface | `OnAfterRecord(ctx, event) error` |
+| `SinkProvider` | interface | `Sink() sink.Sink` |
+| `AlertHandler` | interface | `OnAlert(ctx, event, rule) error` |
+| `Exporter` | interface | `Format() / Export(...)` |
+| `ComplianceReporter` | interface | `ReportType() string` |
+| `Registry` | struct | Discovery-based plugin dispatcher |
+| `NewRegistry(logger)` | func | Constructor |
+| `AlertRule` | struct | Name, Severity, Category, Outcome for alert matching |
+| `ErrSkipEvent` | error | Return from BeforeRecord to silently drop the event |
+
+## batcher
+
+**Import:** `github.com/xraph/chronicle/batcher`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Batcher` | struct | Accumulates events and flushes in batches |
+| `New(store, size, interval)` | func | Constructor |
+
+## scope
+
+**Import:** `github.com/xraph/chronicle/scope`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Info` | struct | AppID, TenantID, UserID, IP |
+| `WithAppID(ctx, s)` | func | Store AppID in context |
+| `WithTenantID(ctx, s)` | func | Store TenantID in context |
+| `WithUserID(ctx, s)` | func | Store UserID in context |
+| `WithIP(ctx, s)` | func | Store IP in context |
+| `WithInfo(ctx, info)` | func | Store all scope fields at once |
+| `FromContext(ctx)` | func | Extract `scope.Info` |
+| `FromRequest(r)` | func | Extract scope + IP from HTTP request |
+| `ApplyToEvent(ctx, event)` | func | Stamp scope fields onto an event |
+| `ApplyToQuery(ctx, q)` | func | Enforce tenant scope on a query |
+
+## id
+
+**Import:** `github.com/xraph/chronicle/id`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `ID` | struct | Unified TypeID |
+| `Prefix` | type | String alias for entity prefix |
+| `PrefixAudit`, `PrefixStream`, `PrefixErasure`, `PrefixReport`, `PrefixPolicy`, `PrefixArchive`, `PrefixPlugin` | const | Entity prefixes |
+| `New(prefix)` | func | Create a new ID with the given prefix |
+| `NewAuditID()`, `NewStreamID()`, `NewErasureID()`, `NewReportID()`, `NewPolicyID()`, `NewArchiveID()` | func | Per-entity constructors |
+| `Parse(s)` | func | Parse TypeID string (any prefix) |
+| `ParseAuditID(s)`, `ParseStreamID(s)`, etc. | func | Parse with prefix validation |
+| `ParseAny(s)` | func | Alias for `Parse` |
+
+## handler
+
+**Import:** `github.com/xraph/chronicle/handler`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `API` | struct | HTTP handler with all 21 routes |
+| `New(deps, router)` | func | Constructor |
+| `Dependencies` | struct | AuditStore, VerifyStore, ErasureStore, RetentionStore, ReportStore, Compliance, Retention, Logger |
+| `RegisterRoutes(router)` | method | Mount all routes |
+| `Handler()` | method | Returns standalone `http.Handler` |
+
+## extension
+
+**Import:** `github.com/xraph/chronicle/extension`
+
+| Export | Type | Purpose |
+|--------|------|---------|
+| `Extension` | struct | Forge extension wrapping the full Chronicle stack |
+| `New(opts...)` | func | Constructor |
+| `Option` | type | Functional option type |
+| `WithStore(s)`, `WithBatchSize(n)`, `WithFlushInterval(d)`, `WithCryptoErasure(b)`, `WithRetentionInterval(d)`, `WithArchiveSink(s)`, `WithLogger(l)`, `WithDisableRoutes(b)`, `WithDisableMigrate(b)` | func | Option constructors |
+| `Chronicle()` | method | Returns `*chronicle.Chronicle` |
+| `Emitter()` | method | Returns `chronicle.Emitter` |
+| `ComplianceEngine()` | method | Returns `*compliance.Engine` |
+| `RetentionEnforcer()` | method | Returns `*retention.Enforcer` |
+| `API()` | method | Returns `*handler.API` |
+| `Handler()` | method | Returns standalone `http.Handler` |
+
+## Store backends
+
+| Package | Driver |
+|---------|--------|
+| `store/memory` | In-memory (zero-dependency, for tests) |
+| `store/postgres` | PostgreSQL via pgx/v5 |
+| `store/bun` | PostgreSQL / MySQL / SQLite via Bun ORM |

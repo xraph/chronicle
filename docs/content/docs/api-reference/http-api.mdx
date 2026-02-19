@@ -1,0 +1,408 @@
+---
+title: HTTP Admin API
+description: Complete reference for the Chronicle admin API — 21 endpoints.
+---
+
+The admin API is served by `handler.New(deps, router)`. All routes are mounted under `/v1`. Requests and responses use JSON. All requests require an `AppID` in the context; missing AppID returns `401 Unauthorized`.
+
+## Setup
+
+```go
+import "github.com/xraph/chronicle/handler"
+
+api := handler.New(handler.Dependencies{
+    AuditStore:     myStore,
+    VerifyStore:    myStore,
+    ErasureStore:   myStore,
+    RetentionStore: myStore,
+    ReportStore:    myStore,
+    Compliance:     complianceEngine,
+    Retention:      retentionEnforcer,
+    Logger:         slog.Default(),
+}, mux)
+api.RegisterRoutes(mux)
+```
+
+When using the Forge extension, routes are registered automatically unless `WithDisableRoutes(true)` is set.
+
+## Error format
+
+```json
+{"error": "chronicle: event not found"}
+```
+
+| Code | Condition |
+|------|-----------|
+| `400` | Invalid request body or query parameters |
+| `401` | Missing AppID |
+| `404` | Entity not found |
+| `500` | Internal error |
+
+---
+
+## Events
+
+### List events
+
+```http
+GET /v1/events
+```
+
+Query parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `category` | string | Filter by event category |
+| `action` | string | Filter by action verb |
+| `severity` | string | `info`, `warning`, or `critical` |
+| `outcome` | string | `success`, `failure`, or `denied` |
+| `from` | RFC3339 | Start time |
+| `to` | RFC3339 | End time |
+| `limit` | int | Page size (default 20) |
+| `offset` | int | Page offset |
+| `order` | string | `asc` or `desc` (by timestamp) |
+
+**Response `200 OK`:** `audit.QueryResult`
+
+```json
+{
+  "events": [
+    {
+      "id": "audit_01j9vk...",
+      "timestamp": "2025-01-15T10:00:00Z",
+      "sequence": 42,
+      "hash": "abc123...",
+      "prev_hash": "def456...",
+      "stream_id": "stream_01j9vk...",
+      "app_id": "myapp",
+      "tenant_id": "tenant-1",
+      "user_id": "user-42",
+      "action": "login",
+      "resource": "session",
+      "category": "auth",
+      "resource_id": "sess-001",
+      "outcome": "success",
+      "severity": "info"
+    }
+  ],
+  "total": 1
+}
+```
+
+### Get event
+
+```http
+GET /v1/events/:id
+```
+
+**Response `200 OK`:** Single `audit.Event`.
+
+**Response `404 Not Found`**
+
+### Events by user
+
+```http
+GET /v1/events/user/:userId
+```
+
+Query parameters: `from`, `to` (RFC3339), `limit`, `offset`.
+
+**Response `200 OK`:** `audit.QueryResult`
+
+### Aggregate events
+
+```http
+POST /v1/events/aggregate
+```
+
+Request body: `audit.AggregateQuery`
+
+```json
+{
+  "group_by": "category",
+  "from": "2025-01-01T00:00:00Z",
+  "to": "2025-01-31T23:59:59Z"
+}
+```
+
+**Response `200 OK`:** `audit.AggregateResult`
+
+```json
+{
+  "buckets": [
+    {"name": "auth", "count": 142},
+    {"name": "billing", "count": 38}
+  ]
+}
+```
+
+---
+
+## Verification
+
+### Verify hash chain
+
+```http
+POST /v1/verify
+```
+
+Request body:
+
+```json
+{
+  "stream_id": "stream_01j9vk...",
+  "from_seq": 0,
+  "to_seq": 0
+}
+```
+
+`from_seq` and `to_seq` default to `0` (full chain). `stream_id` is optional if `app_id` and `tenant_id` are in context.
+
+**Response `200 OK`:** `verify.Report`
+
+```json
+{
+  "valid": true,
+  "verified": 42,
+  "gaps": [],
+  "tampered": [],
+  "first_event": 1,
+  "last_event": 42
+}
+```
+
+---
+
+## Erasure
+
+### Request erasure
+
+```http
+POST /v1/erasures
+```
+
+Request body:
+
+```json
+{
+  "subject_id": "user-42",
+  "reason": "GDPR Article 17",
+  "requested_by": "dpo@company.com"
+}
+```
+
+**Response `201 Created`:** `erasure.Result`
+
+```json
+{
+  "id": "erasure_01j9vk...",
+  "subject_id": "user-42",
+  "events_affected": 5,
+  "key_destroyed": true
+}
+```
+
+### List erasures
+
+```http
+GET /v1/erasures
+```
+
+Query parameters: `limit`, `offset`.
+
+**Response `200 OK`:** `[]*erasure.Erasure`
+
+### Get erasure
+
+```http
+GET /v1/erasures/:id
+```
+
+**Response `200 OK`:** `erasure.Erasure`
+
+**Response `404 Not Found`**
+
+---
+
+## Retention
+
+### List policies
+
+```http
+GET /v1/retention
+```
+
+**Response `200 OK`:** `[]*retention.Policy`
+
+### Save policy
+
+```http
+POST /v1/retention
+```
+
+Request body:
+
+```json
+{
+  "category": "auth",
+  "duration": "2160h",
+  "archive": true
+}
+```
+
+**Response `201 Created`:** `retention.Policy`
+
+### Delete policy
+
+```http
+DELETE /v1/retention/:id
+```
+
+**Response `204 No Content`**
+
+### Enforce retention
+
+Immediately runs all retention policies once.
+
+```http
+POST /v1/retention/enforce
+```
+
+**Response `200 OK`:** `retention.EnforceResult`
+
+```json
+{
+  "archived": 150,
+  "purged": 150,
+  "retained": 8420
+}
+```
+
+### List archives
+
+```http
+GET /v1/retention/archives
+```
+
+**Response `200 OK`:** `[]*retention.Archive`
+
+---
+
+## Reports
+
+### List reports
+
+```http
+GET /v1/reports
+```
+
+Query parameters: `limit`, `offset`.
+
+**Response `200 OK`:** `[]*compliance.Report`
+
+### Generate SOC2 report
+
+```http
+POST /v1/reports/soc2
+```
+
+Request body: `compliance.SOC2Input`
+
+```json
+{
+  "period": {"from": "2025-01-01T00:00:00Z", "to": "2025-03-31T23:59:59Z"},
+  "app_id": "myapp",
+  "tenant_id": "tenant-1",
+  "generated_by": "admin@company.com"
+}
+```
+
+**Response `201 Created`:** `compliance.Report`
+
+### Generate HIPAA report
+
+```http
+POST /v1/reports/hipaa
+```
+
+Request body: `compliance.HIPAAInput` (same shape as SOC2Input).
+
+**Response `201 Created`:** `compliance.Report`
+
+### Generate EU AI Act report
+
+```http
+POST /v1/reports/euaiact
+```
+
+Request body: `compliance.EUAIActInput`.
+
+**Response `201 Created`:** `compliance.Report`
+
+### Generate custom report
+
+```http
+POST /v1/reports/custom
+```
+
+Request body: `compliance.CustomInput`
+
+```json
+{
+  "period": {"from": "2025-01-01T00:00:00Z", "to": "2025-01-31T23:59:59Z"},
+  "app_id": "myapp",
+  "title": "Q1 Security Review",
+  "categories": ["auth", "billing"],
+  "generated_by": "admin@company.com"
+}
+```
+
+**Response `201 Created`:** `compliance.Report`
+
+### Get report
+
+```http
+GET /v1/reports/:id
+```
+
+**Response `200 OK`:** `compliance.Report`
+
+**Response `404 Not Found`**
+
+### Export report
+
+```http
+GET /v1/reports/:id/export/:format
+```
+
+`:format` is one of: `json`, `csv`, `markdown`, `html`.
+
+**Response `200 OK`:** Report content in the requested format (Content-Type varies).
+
+---
+
+## Stats
+
+### Chronicle stats
+
+```http
+GET /v1/stats
+```
+
+**Response `200 OK`:**
+
+```json
+{
+  "total_events": 8420,
+  "events_by_severity": {
+    "info": 7800,
+    "warning": 580,
+    "critical": 40
+  },
+  "events_by_outcome": {
+    "success": 8100,
+    "failure": 250,
+    "denied": 70
+  }
+}
+```

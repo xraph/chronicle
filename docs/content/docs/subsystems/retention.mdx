@@ -1,0 +1,116 @@
+---
+title: Retention
+description: Policy-based event archival and purge.
+---
+
+Chronicle's retention system automatically archives and purges audit events according to configurable policies. The `retention.Enforcer` runs periodically (or on demand) and applies each policy to its matching events.
+
+## Policy
+
+A `retention.Policy` defines how long events of a given category are kept:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ID` | TypeID with `retpol_` prefix |
+| `Category` | `string` | Category to apply to. Use `"*"` for all categories. |
+| `Duration` | `time.Duration` | Retain events for this duration. Events older than this are candidates. |
+| `Archive` | `bool` | If `true`, write to the archive sink before purging. |
+| `AppID` | `string` | Application scope. |
+
+## Create a policy
+
+### Via the HTTP API
+
+```
+POST /v1/retention
+```
+
+Request body:
+
+```json
+{
+  "category": "auth",
+  "duration": "2160h",
+  "archive": true
+}
+```
+
+### Via the store directly
+
+```go
+import (
+    "time"
+    "github.com/xraph/chronicle/retention"
+    "github.com/xraph/chronicle/id"
+)
+
+policy := &retention.Policy{
+    ID:       id.NewPolicyID(),
+    Category: "auth",
+    Duration: 90 * 24 * time.Hour, // 90 days
+    Archive:  true,
+    AppID:    "myapp",
+}
+err := store.SavePolicy(ctx, policy)
+```
+
+## Enforcer
+
+`retention.NewEnforcer(store, archiveSink, logger)` creates the enforcer. `archiveSink` may be nil if no archival is needed.
+
+```go
+import "github.com/xraph/chronicle/retention"
+
+enforcer := retention.NewEnforcer(myStore, s3Sink, logger)
+
+result, err := enforcer.Enforce(ctx)
+fmt.Printf("archived=%d purged=%d retained=%d\n",
+    result.Archived, result.Purged, result.Retained)
+```
+
+`Enforce` iterates all policies, finds events older than `Duration`, optionally writes them to the archive sink, then deletes them from the store.
+
+### EnforceResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Archived` | `int64` | Events written to the archive sink |
+| `Purged` | `int64` | Events removed from the store |
+| `Retained` | `int64` | Events still within retention window |
+
+## Archive sink
+
+When `Policy.Archive = true`, the enforcer writes the events to the configured `sink.Sink` before purging. The archive sink receives the batch via `sink.Write(ctx, events)`.
+
+Configure the archive sink via the extension:
+
+```go
+ext := extension.New(
+    extension.WithStore(s),
+    extension.WithArchiveSink(s3Sink),
+)
+```
+
+## Automated scheduling
+
+The `extension.WithRetentionInterval(d)` option starts a background goroutine that calls `Enforce` every `d`:
+
+```go
+ext := extension.New(
+    extension.WithStore(s),
+    extension.WithRetentionInterval(24 * time.Hour),
+    extension.WithArchiveSink(s3Sink),
+)
+```
+
+Set to `0` to disable automatic enforcement.
+
+## HTTP endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/retention` | List retention policies |
+| `POST` | `/v1/retention` | Create or update a policy |
+| `DELETE` | `/v1/retention/:id` | Delete a policy |
+| `POST` | `/v1/retention/enforce` | Trigger immediate enforcement |
+| `GET` | `/v1/retention/archives` | List archive records |

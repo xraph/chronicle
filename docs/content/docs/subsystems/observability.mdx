@@ -1,0 +1,113 @@
+---
+title: Observability
+description: Logging, AfterRecord plugins for metrics and tracing, and AlertHandler for real-time alerting.
+---
+
+Chronicle does not ship a built-in OpenTelemetry package — observability is composable via the plugin system and structured logging.
+
+## Structured logging
+
+Chronicle uses `log/slog` throughout. Provide your own logger:
+
+```go
+c, err := chronicle.New(
+    chronicle.WithStore(adapter),
+    chronicle.WithLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil))),
+)
+```
+
+Or via the extension:
+
+```go
+ext := extension.New(
+    extension.WithStore(s),
+    extension.WithLogger(myLogger),
+)
+```
+
+Chronicle emits log records for:
+
+- `chronicle.record` — every persisted event (level Debug)
+- `chronicle.verify` — verification runs (level Info)
+- `retention enforcement complete` — enforcement results (level Info)
+- `chronicle: migration failed` — schema migration errors (level Error)
+- `retention: enforce policy failed` — per-policy errors (level Error)
+
+Each log record includes the relevant scope fields (`app_id`, `tenant_id`) when available.
+
+## Metrics via AfterRecord
+
+Use an `AfterRecord` plugin to emit metrics after every successful event:
+
+```go
+type MetricsPlugin struct{}
+
+func (p *MetricsPlugin) Name() string { return "metrics" }
+
+func (p *MetricsPlugin) OnAfterRecord(ctx context.Context, event *audit.Event) error {
+    otelCounter.Add(ctx, 1,
+        attribute.String("category", event.Category),
+        attribute.String("severity", event.Severity),
+        attribute.String("outcome", event.Outcome),
+    )
+    return nil
+}
+```
+
+Register with the plugin registry and pass the registry to `chronicle.New` (or configure it through the extension).
+
+## Tracing via AfterRecord
+
+Add OpenTelemetry spans for each recorded event:
+
+```go
+func (p *TracingPlugin) OnAfterRecord(ctx context.Context, event *audit.Event) error {
+    _, span := tracer.Start(ctx, "chronicle.event.recorded")
+    span.SetAttributes(
+        attribute.String("event.id", event.ID.String()),
+        attribute.String("event.action", event.Action),
+        attribute.String("event.category", event.Category),
+    )
+    span.End()
+    return nil
+}
+```
+
+The `handler` package automatically creates OTel spans for all 21 HTTP endpoints using tracer name `github.com/xraph/chronicle/handler`.
+
+## Real-time alerting via AlertHandler
+
+Use the `AlertHandler` interface for real-time alerting when events match criteria:
+
+```go
+type PagerDutyAlertPlugin struct {
+    client pagerduty.Client
+}
+
+func (p *PagerDutyAlertPlugin) Name() string { return "pagerduty-alerts" }
+
+func (p *PagerDutyAlertPlugin) OnAlert(ctx context.Context, event *audit.Event, rule *plugin.AlertRule) error {
+    return p.client.Trigger(ctx, &pagerduty.Event{
+        Summary:  fmt.Sprintf("Chronicle alert: %s — %s/%s", rule.Name, event.Action, event.Resource),
+        Severity: "critical",
+    })
+}
+
+registry := plugin.NewRegistry(logger)
+registry.Register(&PagerDutyAlertPlugin{client: pd})
+registry.SetAlertRules([]plugin.AlertRule{
+    {Name: "critical-auth", Severity: "critical", Category: "auth"},
+    {Name: "all-denied",    Outcome: "denied"},
+})
+```
+
+## Retention monitoring
+
+The extension logs every enforcement cycle:
+
+```
+INFO chronicle: retention enforcement complete archived=150 purged=150
+ERROR chronicle: retention enforcement failed error="..."
+```
+
+Set `WithRetentionInterval(0)` to disable automatic scheduling and call `enforcer.Enforce(ctx)` manually in your own monitoring loop.

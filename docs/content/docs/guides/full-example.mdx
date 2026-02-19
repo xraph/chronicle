@@ -1,0 +1,155 @@
+---
+title: Full Example
+description: Complete audit server with PostgreSQL, events, verification, compliance reports, and the admin API.
+---
+
+This guide walks through a complete Chronicle setup: PostgreSQL store, recording multiple event types, querying, verifying the hash chain, generating a SOC2 report, and mounting the admin HTTP API.
+
+## 1. Install dependencies
+
+```bash
+go get github.com/xraph/chronicle
+go get github.com/jackc/pgx/v5
+```
+
+## 2. Create the store and run migrations
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "log/slog"
+    "net/http"
+    "os"
+    "time"
+
+    "github.com/jackc/pgx/v5/pgxpool"
+
+    "github.com/xraph/chronicle"
+    "github.com/xraph/chronicle/audit"
+    "github.com/xraph/chronicle/compliance"
+    "github.com/xraph/chronicle/handler"
+    "github.com/xraph/chronicle/retention"
+    "github.com/xraph/chronicle/scope"
+    "github.com/xraph/chronicle/store"
+    "github.com/xraph/chronicle/store/postgres"
+    "github.com/xraph/chronicle/verify"
+)
+
+func main() {
+    ctx := context.Background()
+    logger := slog.Default()
+
+    // 1. Connect to PostgreSQL.
+    pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer pool.Close()
+
+    // 2. Create and migrate the store.
+    pgStore, err := postgres.New(pool)
+    if err != nil {
+        log.Fatal(err)
+    }
+    if err := pgStore.Migrate(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    // 3. Build Chronicle.
+    adapter := store.NewAdapter(pgStore)
+    c, err := chronicle.New(
+        chronicle.WithStore(adapter),
+        chronicle.WithLogger(logger),
+        chronicle.WithBatchSize(100),
+        chronicle.WithCryptoErasure(true),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 4. Set up a scoped context.
+    ctx = scope.WithAppID(ctx, "myapp")
+    ctx = scope.WithTenantID(ctx, "tenant-acme")
+    ctx = scope.WithUserID(ctx, "user-42")
+
+    // 5. Record events.
+    events := []struct {
+        action, resource, resourceID, category string
+        severity                               string
+    }{
+        {"login", "session", "sess-001", "auth", "info"},
+        {"export", "report", "report-99", "billing", "warning"},
+        {"delete", "user", "user-7", "admin", "critical"},
+    }
+    for _, e := range events {
+        err = c.Info(ctx, e.action, e.resource, e.resourceID).
+            Category(e.category).
+            Outcome("success").
+            Record()
+        if err != nil {
+            log.Fatal(err)
+        }
+    }
+
+    // 6. Query recent events.
+    result, err := c.Query(ctx, &audit.Query{Limit: 10, Order: "desc"})
+    if err != nil {
+        log.Fatal(err)
+    }
+    for _, ev := range result.Events {
+        slog.Info("event", "id", ev.ID, "action", ev.Action, "category", ev.Category)
+    }
+
+    // 7. Verify the hash chain.
+    vReport, err := c.VerifyChain(ctx, &verify.Input{
+        AppID:    "myapp",
+        TenantID: "tenant-acme",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    slog.Info("verification", "valid", vReport.Valid, "verified", vReport.Verified)
+
+    // 8. Generate a SOC2 report.
+    engine := compliance.NewEngine(pgStore, pgStore, pgStore, logger)
+    report, err := engine.SOC2(ctx, &compliance.SOC2Input{
+        Period:      compliance.DateRange{From: time.Now().Add(-30 * 24 * time.Hour), To: time.Now()},
+        AppID:       "myapp",
+        TenantID:    "tenant-acme",
+        GeneratedBy: "admin@acme.com",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    slog.Info("soc2 report", "id", report.ID, "sections", len(report.Sections))
+
+    // 9. Mount the admin HTTP API.
+    enforcer := retention.NewEnforcer(pgStore, nil, logger)
+    mux := http.NewServeMux()
+
+    api := handler.New(handler.Dependencies{
+        AuditStore:     pgStore,
+        VerifyStore:    pgStore,
+        ErasureStore:   pgStore,
+        RetentionStore: pgStore,
+        ReportStore:    pgStore,
+        Compliance:     engine,
+        Retention:      enforcer,
+        Logger:         logger,
+    }, mux)
+    api.RegisterRoutes(mux)
+
+    slog.Info("listening on :8080")
+    log.Fatal(http.ListenAndServe(":8080", mux))
+}
+```
+
+## Key points
+
+- `store.NewAdapter(pgStore)` is always required before `chronicle.New` (see [Architecture](/docs/architecture)).
+- The same `pgStore` value satisfies all three interface arguments to `compliance.NewEngine` and all five fields of `handler.Dependencies`.
+- `scope.WithXxx(ctx, ...)` must be called before recording or querying events.
+- `WithCryptoErasure(true)` enables GDPR per-subject encryption — see [GDPR Erasure](/docs/guides/gdpr-erasure).

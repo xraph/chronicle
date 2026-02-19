@@ -1,0 +1,84 @@
+---
+title: Configuration
+description: Options and defaults for chronicle.New and the Forge extension.
+---
+
+## `chronicle.New` options
+
+`chronicle.New` accepts a variadic list of `chronicle.Option` functions:
+
+```go
+c, err := chronicle.New(
+    chronicle.WithStore(adapter),               // required
+    chronicle.WithLogger(logger),               // optional
+    chronicle.WithBatchSize(200),               // optional
+    chronicle.WithFlushInterval(2*time.Second), // optional
+    chronicle.WithCryptoErasure(true),          // optional
+)
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `WithStore(s)` | `chronicle.Storer` | — | **Required.** Pass `store.NewAdapter(yourBackend)`. |
+| `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Structured logger for internal events. |
+| `WithBatchSize(n)` | `int` | `100` | Max events to accumulate before flushing to the store. |
+| `WithFlushInterval(d)` | `time.Duration` | `1s` | Max time between store flushes. |
+| `WithCryptoErasure(b)` | `bool` | `false` | Enable AES-256-GCM per-subject encryption for GDPR. |
+
+### Config defaults
+
+```go
+Config{
+    BatchSize:              100,
+    FlushInterval:          1 * time.Second,
+    ShutdownTimeout:        30 * time.Second,
+    EnableCryptoErasure:    false,
+    RetentionCheckInterval: 24 * time.Hour,
+}
+```
+
+`ShutdownTimeout` and `RetentionCheckInterval` are set via `DefaultConfig()` and are not currently exposed as `WithXxx` options on the root package — use the extension options below to control the retention interval.
+
+## Store adapter
+
+`chronicle.New` accepts `chronicle.Storer`, not `store.Store` directly. You must always wrap your backend with `store.NewAdapter`:
+
+```go
+mem := memory.New()
+adapter := store.NewAdapter(mem)
+c, err := chronicle.New(chronicle.WithStore(adapter))
+```
+
+See [Architecture](/docs/architecture) for the import-cycle reason behind this.
+
+## Forge extension options
+
+The `extension.New` function accepts its own set of options:
+
+```go
+ext := extension.New(
+    extension.WithStore(pgStore),
+    extension.WithBatchSize(200),
+    extension.WithFlushInterval(2*time.Second),
+    extension.WithCryptoErasure(true),
+    extension.WithRetentionInterval(12*time.Hour),
+    extension.WithArchiveSink(s3Sink),
+    extension.WithLogger(logger),
+    extension.WithDisableRoutes(false),
+    extension.WithDisableMigrate(false),
+)
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `WithStore(s)` | `store.Store` | — | **Required.** Composite store backend. |
+| `WithBatchSize(n)` | `int` | `100` | Passed to `chronicle.WithBatchSize`. |
+| `WithFlushInterval(d)` | `time.Duration` | `1s` | Passed to `chronicle.WithFlushInterval`. |
+| `WithCryptoErasure(b)` | `bool` | `false` | Enable GDPR crypto-erasure. |
+| `WithRetentionInterval(d)` | `time.Duration` | `24h` | How often retention policies are enforced. Set to `0` to disable. |
+| `WithArchiveSink(s)` | `sink.Sink` | `nil` | Sink used to write events before they are purged. |
+| `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Logger for all Chronicle components. |
+| `WithDisableRoutes(b)` | `bool` | `false` | Skip HTTP route registration in the Forge router. |
+| `WithDisableMigrate(b)` | `bool` | `false` | Skip `store.Migrate` on `Start`. |
+
+The extension calls `store.NewAdapter` internally — pass the raw `store.Store`, not an already-adapted `chronicle.Storer`.

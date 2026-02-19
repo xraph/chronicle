@@ -1,0 +1,184 @@
+---
+title: Getting Started
+description: Install Chronicle and record your first audit event in under five minutes.
+---
+
+## Prerequisites
+
+- Go 1.25 or later
+- A Go module (`go mod init`)
+
+## Install
+
+```bash
+go get github.com/xraph/chronicle
+```
+
+## Step 1: Create the store and adapter
+
+Every Chronicle instance requires a store backend. For development and testing, use the in-memory store:
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/xraph/chronicle"
+    "github.com/xraph/chronicle/store"
+    "github.com/xraph/chronicle/store/memory"
+)
+
+func main() {
+    ctx := context.Background()
+
+    mem := memory.New()
+    adapter := store.NewAdapter(mem) // bridges store.Store → chronicle.Storer
+
+    c, err := chronicle.New(chronicle.WithStore(adapter))
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    _ = c
+}
+```
+
+`store.NewAdapter` is required. `chronicle.New` accepts `chronicle.Storer` (not `store.Store` directly). The adapter bridges the two, avoiding an import cycle between the root package and the store package.
+
+## Step 2: Set up a scoped context
+
+Chronicle extracts the app ID, tenant ID, user ID, and IP from the context and stamps them onto every event automatically:
+
+```go
+import "github.com/xraph/chronicle/scope"
+
+ctx = scope.WithAppID(ctx, "myapp")
+ctx = scope.WithTenantID(ctx, "tenant-1")
+ctx = scope.WithUserID(ctx, "user-42")
+```
+
+`AppID` is required. `TenantID` isolates events between tenants. `UserID` and `IP` are optional but recommended for compliance.
+
+## Step 3: Record an event
+
+Use the fluent `EventBuilder` to construct and record events:
+
+```go
+import "github.com/xraph/chronicle/audit"
+
+err = c.Info(ctx, "login", "session", "sess-001").
+    Category("auth").
+    Meta("provider", "okta").
+    Record()
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+The three positional arguments to `c.Info` are **action**, **resource**, and **resource ID**. `Category` is required for compliance filtering. Other builder methods:
+
+| Method | Description |
+|--------|-------------|
+| `c.Info(...)` | Severity info |
+| `c.Warning(...)` | Severity warning |
+| `c.Critical(...)` | Severity critical |
+| `.Category(s)` | Logical category (e.g. "auth", "billing") |
+| `.UserID(s)` | Override user ID from context |
+| `.SubjectID(s)` | GDPR data subject identifier |
+| `.Meta(k, v)` | Add a metadata key-value pair |
+| `.Outcome(s)` | "success", "failure", or "denied" |
+| `.Reason(s)` | Human-readable reason string |
+
+## Step 4: Query events
+
+```go
+result, err := c.Query(ctx, &audit.Query{
+    Limit: 20,
+    Order: "desc",
+})
+if err != nil {
+    log.Fatal(err)
+}
+for _, ev := range result.Events {
+    fmt.Printf("[%s] %s %s/%s\n", ev.Severity, ev.Action, ev.Resource, ev.ResourceID)
+}
+```
+
+Queries are automatically scoped to the app + tenant from the context. Cross-tenant access is impossible.
+
+## Step 5: Verify the hash chain
+
+```go
+import "github.com/xraph/chronicle/verify"
+
+report, err := c.VerifyChain(ctx, &verify.Input{
+    AppID:    "myapp",
+    TenantID: "tenant-1",
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("valid=%v verified=%d gaps=%v tampered=%v\n",
+    report.Valid, report.Verified, report.Gaps, report.Tampered)
+```
+
+## Step 6: Mount the admin API (optional)
+
+```go
+import (
+    "net/http"
+
+    "github.com/xraph/chronicle/handler"
+    "log/slog"
+)
+
+mux := http.NewServeMux()
+
+api := handler.New(handler.Dependencies{
+    AuditStore:     mem,
+    VerifyStore:    mem,
+    ErasureStore:   mem,
+    RetentionStore: mem,
+    ReportStore:    mem,
+    Logger:         slog.Default(),
+}, mux)
+api.RegisterRoutes(mux)
+
+log.Fatal(http.ListenAndServe(":8080", mux))
+```
+
+This mounts 21 endpoints under `/chronicle/` for events, verification, erasure, retention, compliance reports, and stats.
+
+## Step 7: Switch to PostgreSQL for production
+
+```go
+import (
+    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/xraph/chronicle/store/postgres"
+)
+
+pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+if err != nil {
+    log.Fatal(err)
+}
+
+pgStore, err := postgres.New(pool)
+if err != nil {
+    log.Fatal(err)
+}
+if err := pgStore.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+
+adapter := store.NewAdapter(pgStore)
+c, err := chronicle.New(chronicle.WithStore(adapter))
+```
+
+## Next steps
+
+- [Architecture](/docs/architecture) — Understand how the packages fit together
+- [Recording events](/docs/subsystems/recording) — Full EventBuilder API reference
+- [GDPR erasure](/docs/guides/gdpr-erasure) — End-to-end crypto-erasure walkthrough
+- [Stores](/docs/stores/postgres) — Connect to PostgreSQL for production

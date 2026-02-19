@@ -1,0 +1,72 @@
+---
+title: Memory Store
+description: In-memory store for development, testing, and prototyping.
+---
+
+The `store/memory` package provides a fully in-memory implementation of Chronicle's `store.Store` interface. It requires no external dependencies and is safe for concurrent use via `sync.RWMutex`.
+
+## When to use
+
+- Unit tests and integration tests
+- Local development and examples
+- Prototyping before choosing a production backend
+
+**Not suitable for production** — all data is lost when the process exits.
+
+## Import and constructor
+
+```go
+import "github.com/xraph/chronicle/store/memory"
+
+mem := memory.New()
+```
+
+`New()` returns a `*memory.Store` that implements all 6 sub-store interfaces plus `Migrate`, `Ping`, and `Close`. All three lifecycle methods are no-ops.
+
+## Usage with `chronicle.New`
+
+```go
+import (
+    "github.com/xraph/chronicle"
+    "github.com/xraph/chronicle/store"
+    "github.com/xraph/chronicle/store/memory"
+)
+
+mem := memory.New()
+adapter := store.NewAdapter(mem)
+
+c, err := chronicle.New(chronicle.WithStore(adapter))
+```
+
+## Usage with the Forge extension
+
+```go
+import "github.com/xraph/chronicle/extension"
+
+mem := memory.New()
+ext := extension.New(extension.WithStore(mem))
+```
+
+The extension calls `store.NewAdapter` internally — no need to do it yourself.
+
+## Interfaces implemented
+
+`memory.Store` satisfies at compile time:
+
+- `audit.Store`
+- `stream.Store`
+- `verify.Store`
+- `erasure.Store`
+- `retention.Store`
+- `compliance.ReportStore`
+- `store.Store` (composite)
+
+## Characteristics
+
+| Aspect | Detail |
+|--------|--------|
+| Concurrency | `sync.RWMutex` — reads concurrent, writes exclusive |
+| Migrate | No-op |
+| Ping | No-op (always succeeds) |
+| Close | No-op |
+| Persistence | None — all data lost on process exit |

@@ -1,0 +1,152 @@
+---
+title: GDPR Erasure
+description: Crypto-erasure — destroying per-subject encryption keys to make data irrecoverable.
+---
+
+Chronicle implements GDPR Article 17 (right to erasure) through **crypto-erasure**: each data subject's sensitive fields are encrypted with a per-subject AES-256-GCM key. On erasure request, the key is destroyed — making the encrypted payload irrecoverable — while the hash chain remains structurally valid.
+
+## Enable crypto-erasure
+
+```go
+c, err := chronicle.New(
+    chronicle.WithStore(adapter),
+    chronicle.WithCryptoErasure(true),
+)
+```
+
+Or via the extension:
+
+```go
+ext := extension.New(
+    extension.WithStore(s),
+    extension.WithCryptoErasure(true),
+)
+```
+
+## Record events with a subject ID
+
+When recording events, set `SubjectID` to associate the event with a data subject:
+
+```go
+c.Info(ctx, "profile_update", "user", "user-42").
+    Category("account").
+    SubjectID("user-42").
+    Meta("email", "alice@example.com").
+    Record()
+```
+
+## Perform erasure
+
+### Via the erasure service
+
+```go
+import "github.com/xraph/chronicle/erasure"
+
+svc := erasure.NewService(store, keyStore)
+
+result, err := svc.Erase(ctx, &erasure.Input{
+    SubjectID:   "user-42",
+    Reason:      "GDPR Article 17",
+    RequestedBy: "dpo@company.com",
+}, appID, tenantID)
+
+fmt.Printf("keyDestroyed=%v eventsAffected=%d\n",
+    result.KeyDestroyed, result.EventsAffected)
+```
+
+### Via the HTTP API
+
+```
+POST /v1/erasures
+```
+
+Request body:
+
+```json
+{
+  "subject_id": "user-42",
+  "reason": "GDPR Article 17",
+  "requested_by": "dpo@company.com"
+}
+```
+
+Response: `erasure.Result` JSON.
+
+## What erasure does
+
+1. Looks up all events with `SubjectID = "user-42"` in the given app+tenant scope.
+2. For each event, sets `Erased = true`, `ErasedAt`, and `ErasureID`.
+3. Destroys the per-subject encryption key from the `KeyStore`.
+4. Saves an `erasure.Erasure` record to the store.
+5. Returns an `erasure.Result` with `KeyDestroyed = true` and `EventsAffected`.
+
+After erasure, attempting `ks.Get("user-42")` returns `chronicle.ErrErasureKeyNotFound`. The ciphertext in the store cannot be decrypted.
+
+## Hash chain integrity after erasure
+
+Hashes are computed over event metadata — not the encrypted payload. Destroying the key does not change any hash value, so `VerifyChain` still returns `Valid = true` for streams that contain erased events.
+
+## erasure types
+
+### erasure.Input
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `SubjectID` | `string` | The data subject to erase |
+| `Reason` | `string` | Erasure justification (e.g. `"GDPR Article 17"`) |
+| `RequestedBy` | `string` | Identity of the requestor |
+
+### erasure.Result
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ID` | TypeID of the erasure record |
+| `SubjectID` | `string` | The erased subject |
+| `EventsAffected` | `int64` | Number of events marked as erased |
+| `KeyDestroyed` | `bool` | Whether the encryption key was destroyed |
+
+### erasure.Erasure (stored record)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ID` | `erasure_` TypeID |
+| `SubjectID` | `string` | The erased subject |
+| `Reason` | `string` | Erasure reason |
+| `RequestedBy` | `string` | Requestor identity |
+| `EventsAffected` | `int64` | Events affected |
+| `KeyDestroyed` | `bool` | Key destruction status |
+| `AppID` / `TenantID` | `string` | Scope |
+
+## Crypto primitives
+
+The `crypto` package provides `Encryptor` (AES-256-GCM with random nonces) and `KeyStore`:
+
+```go
+import "github.com/xraph/chronicle/crypto"
+
+enc := crypto.NewEncryptor()
+ks  := crypto.NewInMemoryKeyStore()
+
+// Get or create the key for a subject
+key, keyID, err := ks.GetOrCreate("user-42")
+
+// Encrypt
+ciphertext, err := enc.Encrypt(key, []byte("sensitive data"))
+
+// Decrypt
+plaintext, err := enc.Decrypt(key, ciphertext)
+
+// Erase: destroy the key
+err = ks.Delete("user-42")
+// Any subsequent Decrypt with this key is impossible
+```
+
+For production, replace `InMemoryKeyStore` with a backend that delegates to AWS KMS, HashiCorp Vault, or similar.
+
+## HTTP endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/erasures` | Request erasure for a subject |
+| `GET` | `/v1/erasures` | List erasure records |
+| `GET` | `/v1/erasures/:id` | Get a specific erasure record |

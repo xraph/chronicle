@@ -1,0 +1,70 @@
+---
+title: Error Handling
+description: Sentinel errors returned by Chronicle operations.
+---
+
+Chronicle defines sentinel errors in the root `chronicle` package. Use `errors.Is` to check for them:
+
+```go
+import (
+    "errors"
+    "github.com/xraph/chronicle"
+)
+
+event, err := c.GetEvent(ctx, id)
+if errors.Is(err, chronicle.ErrEventNotFound) {
+    // handle not-found
+}
+```
+
+## Sentinel errors
+
+| Error | Description |
+|-------|-------------|
+| `chronicle.ErrNoStore` | No store configured — `chronicle.New` called without `WithStore`. |
+| `chronicle.ErrEventNotFound` | The requested audit event does not exist. |
+| `chronicle.ErrStreamNotFound` | The requested hash chain stream does not exist. |
+| `chronicle.ErrChainBroken` | Hash chain verification detected tampering or a gap. |
+| `chronicle.ErrSubjectNotFound` | The requested GDPR data subject does not exist. |
+| `chronicle.ErrPolicyNotFound` | The requested retention policy does not exist. |
+| `chronicle.ErrReportNotFound` | The requested compliance report does not exist. |
+| `chronicle.ErrErasureNotFound` | The requested erasure record does not exist. |
+| `chronicle.ErrErasureKeyNotFound` | The per-subject encryption key has been destroyed or never existed. Returned after successful crypto-erasure when attempting to decrypt. |
+| `chronicle.ErrInvalidQuery` | A query has invalid or missing parameters. |
+| `chronicle.ErrUnauthorized` | The caller lacks permission for the requested operation. |
+| `chronicle.ErrStoreClosed` | An operation was attempted on a closed store. |
+| `chronicle.ErrMigrationFailed` | Database schema migrations failed on `Start`. |
+
+## Plugin error
+
+The `plugin` package defines one additional sentinel:
+
+| Error | Description |
+|-------|-------------|
+| `plugin.ErrSkipEvent` | Returned by a `BeforeRecord` plugin to abort recording the current event without treating it as an error. |
+
+```go
+func (p *MyPlugin) OnBeforeRecord(ctx context.Context, event *audit.Event) error {
+    if event.Category == "internal" {
+        return plugin.ErrSkipEvent // silently drop the event
+    }
+    return nil
+}
+```
+
+## HTTP API error format
+
+The Admin API returns errors as JSON:
+
+```json
+{"error": "chronicle: event not found"}
+```
+
+Status codes:
+
+| Code | Condition |
+|------|-----------|
+| `400` | Invalid request body or query parameters |
+| `401` | Missing AppID in context (no scope) |
+| `404` | Entity not found |
+| `500` | Unexpected internal error |

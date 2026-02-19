@@ -1,0 +1,157 @@
+---
+title: Plugins
+description: The Chronicle plugin system — hook interfaces, the registry, and ErrSkipEvent.
+---
+
+Chronicle's plugin system allows you to extend the record pipeline and react to system events without modifying Chronicle internals. Plugins implement any subset of the hook interfaces. The registry discovers capabilities at registration time for O(1) per-event dispatch overhead.
+
+## Plugin base interface
+
+Every plugin must implement `plugin.Plugin`:
+
+```go
+type Plugin interface {
+    Name() string
+}
+```
+
+Implement any additional interfaces below to opt into specific hooks.
+
+## Hook interfaces
+
+### `OnInit` / `OnShutdown`
+
+```go
+func (p *MyPlugin) OnInit(ctx context.Context) error { ... }
+func (p *MyPlugin) OnShutdown(ctx context.Context) error { ... }
+```
+
+`OnInit` fires when Chronicle starts. `OnShutdown` fires when Chronicle stops.
+
+### `BeforeRecord`
+
+```go
+func (p *MyPlugin) OnBeforeRecord(ctx context.Context, event *audit.Event) error {
+    event.Metadata["server"] = "us-east-1"  // enrich
+    return nil
+}
+```
+
+Fires **before** `store.Append`. Use for:
+- **Enrichment** — add computed metadata fields
+- **Filtering** — return `plugin.ErrSkipEvent` to silently discard the event
+- **Transformation** — modify any non-identity, non-hash field
+
+### `AfterRecord`
+
+```go
+func (p *MyPlugin) OnAfterRecord(ctx context.Context, event *audit.Event) error {
+    notify(event)
+    return nil
+}
+```
+
+Fires **after** `store.Append` succeeds. Use for notifications, alerting, forwarding, metrics counters.
+
+### `SinkProvider`
+
+```go
+func (p *MySinkPlugin) Sink() sink.Sink {
+    return sink.NewS3(client, "audit-bucket", "events/")
+}
+```
+
+Provides a custom `sink.Sink` that is added to Chronicle's fan-out.
+
+### `AlertHandler`
+
+```go
+func (p *MyPlugin) OnAlert(ctx context.Context, event *audit.Event, rule *plugin.AlertRule) error {
+    send(fmt.Sprintf("ALERT: %s fired for event %s", rule.Name, event.ID))
+    return nil
+}
+```
+
+Fires when a recorded event matches an alert rule set on the registry.
+
+### `Exporter`
+
+```go
+func (p *MyPlugin) Format() string { return "ndjson" }
+func (p *MyPlugin) Export(ctx context.Context, data any, w io.Writer) error { ... }
+```
+
+Provides a custom export format for compliance reports.
+
+### `ComplianceReporter`
+
+```go
+func (p *MyPlugin) ReportType() string { return "pci-dss" }
+```
+
+Provides a custom compliance report type.
+
+## Hook interface summary
+
+| Interface | Method | When |
+|-----------|--------|------|
+| `OnInit` | `OnInit(ctx)` | Chronicle starts |
+| `OnShutdown` | `OnShutdown(ctx)` | Chronicle stops |
+| `BeforeRecord` | `OnBeforeRecord(ctx, event)` | Before `store.Append` |
+| `AfterRecord` | `OnAfterRecord(ctx, event)` | After `store.Append` succeeds |
+| `SinkProvider` | `Sink()` | Once at registration |
+| `AlertHandler` | `OnAlert(ctx, event, rule)` | When an alert rule matches |
+| `Exporter` | `Format() / Export(...)` | On report export |
+| `ComplianceReporter` | `ReportType()` | On compliance report generation |
+
+## ErrSkipEvent
+
+Returning `plugin.ErrSkipEvent` from `OnBeforeRecord` aborts the record pipeline for that event. No error is propagated to the caller — the event is silently dropped.
+
+```go
+func (p *MyPlugin) OnBeforeRecord(ctx context.Context, event *audit.Event) error {
+    if event.Category == "debug" {
+        return plugin.ErrSkipEvent
+    }
+    return nil
+}
+```
+
+## Registry
+
+```go
+import "github.com/xraph/chronicle/plugin"
+
+registry := plugin.NewRegistry(logger)
+registry.Register(&MyPlugin{})
+registry.Register(&MySinkPlugin{})
+
+// Set alert rules
+registry.SetAlertRules([]plugin.AlertRule{
+    {Name: "critical-auth", Severity: "critical", Category: "auth"},
+})
+```
+
+The registry inspects each plugin at `Register` time to determine which interfaces it implements. At event time, only the registered interface paths are called — there is no runtime `interface{}` type assertion per event.
+
+## Full example
+
+```go
+type EnrichmentPlugin struct{}
+
+func (p *EnrichmentPlugin) Name() string { return "enrichment" }
+
+func (p *EnrichmentPlugin) OnBeforeRecord(ctx context.Context, event *audit.Event) error {
+    event.Metadata["region"] = "us-east-1"
+    event.Metadata["version"] = "2.1.0"
+    return nil
+}
+
+func (p *EnrichmentPlugin) OnAfterRecord(ctx context.Context, event *audit.Event) error {
+    metrics.Counter("chronicle.events.recorded", 1, tag("category", event.Category))
+    return nil
+}
+
+registry := plugin.NewRegistry(slog.Default())
+registry.Register(&EnrichmentPlugin{})
+```

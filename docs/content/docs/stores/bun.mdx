@@ -1,0 +1,128 @@
+---
+title: Bun Store
+description: SQL store using the Bun ORM — supports PostgreSQL, MySQL, and SQLite.
+---
+
+The `store/bun` package implements Chronicle's `store.Store` interface using the [Bun ORM](https://bun.uptrace.dev). The Go package name is `bunstore`.
+
+Bun supports multiple SQL dialects, so this backend can connect to PostgreSQL, MySQL/MariaDB, or SQLite — useful when you need multi-database compatibility.
+
+## Import
+
+```go
+import (
+    "github.com/uptrace/bun"
+    bunstore "github.com/xraph/chronicle/store/bun"
+)
+```
+
+Note the alias `bunstore` — the package name is `bunstore` to avoid a naming conflict with the upstream `bun` package.
+
+## Constructor
+
+```go
+bunDB := bun.NewDB(sqlDB, dialect)
+
+s, err := bunstore.New(bunDB)
+```
+
+`New` takes a `*bun.DB` configured with your chosen dialect.
+
+## PostgreSQL example
+
+```go
+import (
+    "database/sql"
+
+    "github.com/jackc/pgx/v5/stdlib"
+    "github.com/uptrace/bun"
+    "github.com/uptrace/bun/dialect/pgdialect"
+    bunstore "github.com/xraph/chronicle/store/bun"
+)
+
+sqlDB, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
+if err != nil {
+    log.Fatal(err)
+}
+
+bunDB := bun.NewDB(sqlDB, pgdialect.New())
+
+s, err := bunstore.New(bunDB)
+if err != nil {
+    log.Fatal(err)
+}
+
+if err := s.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+## SQLite example
+
+```go
+import (
+    "database/sql"
+
+    _ "github.com/mattn/go-sqlite3"
+    "github.com/uptrace/bun"
+    "github.com/uptrace/bun/dialect/sqlitedialect"
+    bunstore "github.com/xraph/chronicle/store/bun"
+)
+
+sqlDB, err := sql.Open("sqlite3", "chronicle.db")
+if err != nil {
+    log.Fatal(err)
+}
+
+bunDB := bun.NewDB(sqlDB, sqlitedialect.New())
+
+s, err := bunstore.New(bunDB)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Migrations
+
+```go
+if err := s.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+Migrations are embedded SQL files executed in a transaction. They are idempotent.
+
+## With the Forge extension
+
+```go
+import "github.com/xraph/chronicle/extension"
+
+ext := extension.New(extension.WithStore(s))
+app.Register(ext)
+```
+
+## Interfaces implemented
+
+`bunstore.Store` satisfies:
+
+- `audit.Store`
+- `stream.Store`
+- `verify.Store`
+- `erasure.Store`
+- `retention.Store`
+- `compliance.ReportStore`
+- `store.Store` (composite)
+
+## Error mapping
+
+`bunstore` maps `sql.ErrNoRows` to the appropriate Chronicle sentinel errors (`chronicle.ErrEventNotFound`, `chronicle.ErrStreamNotFound`, etc.) so callers can use `errors.Is` consistently across backends.
+
+## Characteristics
+
+| Aspect | Detail |
+|--------|--------|
+| ORM | Bun v1 with struct-based models |
+| Dialects | PostgreSQL, MySQL/MariaDB, SQLite |
+| Migrations | Embedded SQL, transaction-wrapped |
+| Ping | `db.PingContext(ctx)` |
+| Close | `db.Close()` |

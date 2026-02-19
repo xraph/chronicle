@@ -1,0 +1,103 @@
+---
+title: Multi-Tenancy
+description: How Chronicle scopes audit events and queries to app and tenant contexts.
+---
+
+Multi-tenancy is built into Chronicle via the `scope` package. Every event is stamped with `AppID` and `TenantID` from the context before it is persisted, and every query has `TenantID` forcibly overridden to match the caller's tenant — making cross-tenant data access structurally impossible.
+
+## scope.Info
+
+`scope.Info` carries the four scope fields:
+
+```go
+type Info struct {
+    AppID    string
+    TenantID string
+    UserID   string
+    IP       string
+}
+```
+
+## Setting scope on a context
+
+Use the `With*` functions to attach scope values:
+
+```go
+import "github.com/xraph/chronicle/scope"
+
+ctx = scope.WithAppID(ctx, "myapp")
+ctx = scope.WithTenantID(ctx, "tenant-acme")
+ctx = scope.WithUserID(ctx, "user-42")
+ctx = scope.WithIP(ctx, "203.0.113.5")
+
+// Or set all at once
+ctx = scope.WithInfo(ctx, scope.Info{
+    AppID:    "myapp",
+    TenantID: "tenant-acme",
+    UserID:   "user-42",
+})
+```
+
+`AppID` is required. If it is absent, `handler` middleware returns `401 Unauthorized`.
+
+## Extracting scope from a context
+
+```go
+info := scope.FromContext(ctx)
+// info.AppID, info.TenantID, info.UserID, info.IP
+```
+
+`FromContext` returns a zero `Info` if no scope is present — Chronicle degrades gracefully in standalone (non-Forge) mode.
+
+## Extracting IP from an HTTP request
+
+```go
+info := scope.FromRequest(r)
+// Checks X-Forwarded-For → X-Real-IP → RemoteAddr
+```
+
+`FromRequest` merges the IP from HTTP headers into any scope already present in the request context.
+
+## How scope is enforced
+
+### On events: `ApplyToEvent`
+
+```go
+scope.ApplyToEvent(ctx, event)
+```
+
+Stamps AppID, TenantID, UserID, and IP onto the event. Fields already set on the event are **not** overwritten (the caller can explicitly set a different UserID on the builder).
+
+### On queries: `ApplyToQuery`
+
+```go
+scope.ApplyToQuery(ctx, q)
+```
+
+This function is **security-critical**:
+
+- Sets `q.AppID` from context if not already set.
+- **Forcibly** sets `q.TenantID` to the context's TenantID — overwriting whatever the caller passed.
+
+This means a tenant member can never query another tenant's events, regardless of what TenantID they put in the query. The same enforcement applies to `ApplyToAggregateQuery` and `ApplyToCountQuery`.
+
+## Admin API middleware
+
+The `handler` package's `scopeMiddleware` reads AppID from the context. If AppID is absent, it returns `401` before the handler runs. This prevents unauthenticated access to any admin endpoint.
+
+## Forge integration
+
+When running inside a Forge app, scope is typically populated by Forge's authentication middleware, which extracts the tenant from the JWT and stores it in the context. Chronicle's `scope` package reads these values transparently.
+
+In standalone mode, populate scope manually in your HTTP middleware:
+
+```go
+func scopeMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        ctx := scope.WithAppID(r.Context(), "myapp")
+        ctx = scope.WithTenantID(ctx, tenantFromJWT(r))
+        ctx = scope.WithUserID(ctx, userFromJWT(r))
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+```

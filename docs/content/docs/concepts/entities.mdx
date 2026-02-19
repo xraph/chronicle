@@ -1,0 +1,152 @@
+---
+title: Entities
+description: The core data types in Chronicle — events, streams, erasures, policies, archives, and reports.
+---
+
+Chronicle defines a small set of entity types that flow through the system. All entities embed `chronicle.Entity` which carries `CreatedAt` and `UpdatedAt` timestamps.
+
+## audit.Event
+
+`audit.Event` is the central type. It is **immutable once recorded** — there is no update or delete path for individual events.
+
+### Identity fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ID` | TypeID with `audit_` prefix |
+| `Timestamp` | `time.Time` | When the event occurred |
+| `Sequence` | `uint64` | Monotonically increasing per stream |
+
+### Hash chain fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Hash` | `string` | SHA-256 hash of this event's content |
+| `PrevHash` | `string` | Hash of the predecessor event (empty for first) |
+| `StreamID` | `id.ID` | The chain (`stream_` ID) this event belongs to |
+
+### Scope fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `AppID` | `string` | Application identifier (required) |
+| `TenantID` | `string` | Tenant within the application |
+| `UserID` | `string` | User who performed the action |
+| `IP` | `string` | Client IP address |
+
+Scope fields are automatically applied from the context by `chronicle.Record` via `scope.ApplyToEvent`.
+
+### Action fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Action` | `string` | Verb — what happened (e.g. `"login"`, `"delete"`) |
+| `Resource` | `string` | Noun — what was acted on (e.g. `"session"`, `"user"`) |
+| `Category` | `string` | Logical group (e.g. `"auth"`, `"billing"`) |
+
+`Action`, `Resource`, and `Category` are required fields. Chronicle rejects events missing any of them.
+
+### Detail fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ResourceID` | `string` | ID of the specific resource instance |
+| `Metadata` | `map[string]any` | Arbitrary key-value context |
+| `Outcome` | `string` | `"success"`, `"failure"`, or `"denied"` |
+| `Severity` | `string` | `"info"`, `"warning"`, or `"critical"` |
+| `Reason` | `string` | Human-readable explanation |
+
+### GDPR fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `SubjectID` | `string` | Data subject for GDPR crypto-erasure |
+| `EncryptionKeyID` | `string` | Key ID used to encrypt sensitive payload |
+
+### Erasure state fields
+
+These fields are set by the erasure engine — never by the caller.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Erased` | `bool` | True after crypto-erasure |
+| `ErasedAt` | `*time.Time` | When erasure occurred |
+| `ErasureID` | `string` | ID of the erasure record |
+
+## stream.Stream
+
+A Stream is the **head pointer** of a hash chain. One stream exists per app+tenant combination.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ID` | TypeID with `stream_` prefix |
+| `AppID` | `string` | Application identifier |
+| `TenantID` | `string` | Tenant identifier |
+| `HeadHash` | `string` | Hash of the most recently appended event |
+| `HeadSeq` | `uint64` | Sequence number of the most recently appended event |
+
+## erasure.Erasure
+
+Records a completed GDPR erasure operation.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ID` | TypeID with `erasure_` prefix |
+| `SubjectID` | `string` | The erased data subject |
+| `AppID` / `TenantID` | `string` | Scope |
+| `Reason` | `string` | Erasure reason (e.g. `"GDPR Article 17"`) |
+| `RequestedBy` | `string` | Who initiated the erasure |
+| `KeyDestroyed` | `bool` | Whether the encryption key was destroyed |
+| `EventsAffected` | `int` | Number of events that were erased |
+
+## retention.Policy
+
+A retention policy governs how long events are kept and what happens when they age out.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ID` | TypeID with `retpol_` prefix |
+| `Category` | `string` | Event category this policy applies to (empty = all) |
+| `Duration` | `time.Duration` | How long to keep events |
+| `Archive` | `bool` | If true, write to archive sink before purge |
+| `AppID` / `TenantID` | `string` | Scope |
+
+## retention.Archive
+
+Records the output of a retention enforcement run.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ID` | TypeID with `archive_` prefix |
+| `PolicyID` | `id.ID` | The policy that triggered this archive |
+| `EventsArchived` | `int` | Events written to the archive sink |
+| `EventsPurged` | `int` | Events removed from the store |
+
+## compliance.Report
+
+Stores a generated compliance report.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ID` | TypeID with `report_` prefix |
+| `Type` | `string` | `"soc2"`, `"hipaa"`, `"euaiact"`, or `"custom"` |
+| `Period` | `DateRange` | From / To time range |
+| `Sections` | `[]Section` | Report sections with events and stats |
+| `Stats` | `*Stats` | Aggregate counts (total, critical, failed, denied) |
+| `Verification` | `*verify.Report` | Optional hash chain integrity snapshot |
+| `GeneratedBy` | `string` | Requestor identity |
+| `Format` | `Format` | Export format used |
+| `Data` | `[]byte` | Raw exported bytes |
+
+## verify.Report
+
+The output of a hash chain verification run.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Valid` | `bool` | True if no gaps and no tampered hashes |
+| `Verified` | `int64` | Number of events checked |
+| `Gaps` | `[]uint64` | Missing sequence numbers (deleted events) |
+| `Tampered` | `[]uint64` | Sequence numbers with hash mismatches |
+| `FirstEvent` | `uint64` | First sequence checked |
+| `LastEvent` | `uint64` | Last sequence checked |

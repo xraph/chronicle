@@ -1,0 +1,14 @@
+{
+  "title": "Subsystems",
+  "pages": [
+    "recording",
+    "verification",
+    "erasure",
+    "retention",
+    "compliance",
+    "sinks",
+    "plugins",
+    "observability",
+    "admin-api"
+  ]
+}

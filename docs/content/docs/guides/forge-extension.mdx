@@ -1,0 +1,134 @@
+---
+title: Forge Extension
+description: Mount Chronicle into a Forge application as a first-class extension.
+---
+
+Chronicle ships as a `forge.Extension` that integrates with the Forge framework's lifecycle, DI container, and router. This is the recommended approach for Forge applications.
+
+## Register the extension
+
+```go
+import (
+    "github.com/xraph/chronicle/extension"
+    "github.com/xraph/chronicle/store/postgres"
+)
+
+pgStore, err := postgres.New(pool)
+if err != nil {
+    log.Fatal(err)
+}
+
+ext := extension.New(
+    extension.WithStore(pgStore),
+    extension.WithCryptoErasure(true),
+    extension.WithRetentionInterval(24 * time.Hour),
+    extension.WithArchiveSink(s3Sink),
+    extension.WithLogger(myLogger),
+)
+
+app.Register(ext)
+```
+
+`app.Register(ext)` calls `ext.Register(app)` which:
+1. Runs `store.NewAdapter` and builds `chronicle.New`.
+2. Creates `compliance.Engine`, `retention.Enforcer`, and `handler.API`.
+3. Registers all 21 HTTP routes in the Forge router (unless `WithDisableRoutes(true)`).
+4. Provides `chronicle.Emitter` in the Vessel DI container.
+
+`app.Start(ctx)` calls `ext.Start(ctx)` which:
+1. Runs `pgStore.Migrate(ctx)` (unless `WithDisableMigrate(true)`).
+2. Launches the retention scheduler goroutine.
+
+## Receive the Emitter via DI
+
+Other extensions receive the `chronicle.Emitter` interface from the DI container without importing Chronicle internals:
+
+```go
+import (
+    "github.com/xraph/vessel"
+    "github.com/xraph/chronicle"
+)
+
+type MyExtension struct {
+    emitter chronicle.Emitter
+}
+
+func (e *MyExtension) Register(app forge.App) error {
+    return vessel.Invoke(app.Container(), func(emitter chronicle.Emitter) {
+        e.emitter = emitter
+    })
+}
+
+func (e *MyExtension) doSomething(ctx context.Context) {
+    e.emitter.Info(ctx, "action", "resource", "id").
+        Category("myservice").
+        Record()
+}
+```
+
+## Access extension components
+
+If you need direct access to Chronicle internals (e.g. to mount custom routes or run manual enforcement):
+
+```go
+// The Chronicle engine for direct record/query
+c := ext.Chronicle()
+
+// The Emitter (same as what DI provides)
+emitter := ext.Emitter()
+
+// The compliance engine
+engine := ext.ComplianceEngine()
+
+// The retention enforcer
+enforcer := ext.RetentionEnforcer()
+
+// The handler.API (for manual route registration)
+api := ext.API()
+
+// An http.Handler for standalone use
+h := ext.Handler()
+```
+
+## Disable automatic routes
+
+If you want to mount routes on a sub-path or a different router:
+
+```go
+ext := extension.New(
+    extension.WithStore(pgStore),
+    extension.WithDisableRoutes(true),
+)
+app.Register(ext)
+
+// Mount manually in your own router
+customRouter.Mount("/audit", ext.Handler())
+```
+
+## Disable automatic migrations
+
+```go
+ext := extension.New(
+    extension.WithStore(pgStore),
+    extension.WithDisableMigrate(true),
+)
+// Run migrations yourself before starting
+if err := pgStore.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+app.Register(ext)
+```
+
+## Full option reference
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `WithStore(s)` | — | **Required.** `store.Store` backend. |
+| `WithBatchSize(n)` | 100 | Event batch size. |
+| `WithFlushInterval(d)` | 1s | Batch flush interval. |
+| `WithCryptoErasure(b)` | false | Enable GDPR crypto-erasure. |
+| `WithRetentionInterval(d)` | 24h | Retention enforcement interval (0 = off). |
+| `WithArchiveSink(s)` | nil | Archive sink for retention. |
+| `WithLogger(l)` | `slog.Default()` | Logger. |
+| `WithDisableRoutes(b)` | false | Skip auto route registration. |
+| `WithDisableMigrate(b)` | false | Skip `Migrate` on `Start`. |

@@ -1,0 +1,165 @@
+---
+title: GDPR Erasure
+description: End-to-end walkthrough of crypto-erasure for GDPR Article 17 compliance.
+---
+
+This guide walks through a complete GDPR Article 17 (right to erasure) implementation using Chronicle's crypto-erasure system: recording events with subject IDs, triggering erasure, and verifying the hash chain remains intact.
+
+## What Chronicle's erasure does
+
+1. Associates events with a data subject via `SubjectID`.
+2. Encrypts sensitive fields with a per-subject AES-256-GCM key stored in `KeyStore`.
+3. On erasure: destroys the key — making encrypted data irrecoverable.
+4. Marks affected events as `Erased = true` in the store.
+5. Records an `erasure.Erasure` record for audit and compliance purposes.
+6. The hash chain stays structurally valid (hashes cover metadata, not encrypted payload).
+
+## Step 1: Enable crypto-erasure
+
+```go
+c, err := chronicle.New(
+    chronicle.WithStore(adapter),
+    chronicle.WithCryptoErasure(true),
+)
+```
+
+Or via the extension:
+
+```go
+ext := extension.New(
+    extension.WithStore(pgStore),
+    extension.WithCryptoErasure(true),
+)
+```
+
+## Step 2: Record events with a SubjectID
+
+```go
+ctx = scope.WithAppID(ctx, "myapp")
+ctx = scope.WithTenantID(ctx, "tenant-1")
+
+// Record several events for user "alice"
+for _, action := range []string{"profile_view", "email_change", "export_data"} {
+    err = c.Info(ctx, action, "user", "alice").
+        Category("account").
+        SubjectID("alice").
+        Meta("email", "alice@example.com").
+        Record()
+    if err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+## Step 3: Verify the events exist
+
+```go
+import "github.com/xraph/chronicle/audit"
+
+result, err := c.Query(ctx, &audit.Query{
+    Category: "account",
+    Limit:    20,
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("events before erasure: %d\n", len(result.Events))
+// events before erasure: 3
+```
+
+## Step 4: Erase via the HTTP API
+
+```
+POST /v1/erasures
+Content-Type: application/json
+
+{
+  "subject_id": "alice",
+  "reason": "GDPR Article 17 — right to erasure",
+  "requested_by": "dpo@company.com"
+}
+```
+
+Response:
+
+```json
+{
+  "id": "erasure_01j9vk...",
+  "subject_id": "alice",
+  "events_affected": 3,
+  "key_destroyed": true
+}
+```
+
+## Step 4 (alternative): Erase programmatically
+
+```go
+import "github.com/xraph/chronicle/erasure"
+
+svc := erasure.NewService(pgStore, keyStore)
+
+result, err := svc.Erase(ctx, &erasure.Input{
+    SubjectID:   "alice",
+    Reason:      "GDPR Article 17",
+    RequestedBy: "dpo@company.com",
+}, "myapp", "tenant-1")
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("key_destroyed=%v events_affected=%d\n",
+    result.KeyDestroyed, result.EventsAffected)
+// key_destroyed=true events_affected=3
+```
+
+## Step 5: Verify events are marked as erased
+
+```go
+result, err = c.Query(ctx, &audit.Query{Category: "account", Limit: 20})
+if err != nil {
+    log.Fatal(err)
+}
+for _, ev := range result.Events {
+    fmt.Printf("event=%s erased=%v\n", ev.ID, ev.Erased)
+}
+// event=audit_01j9vk... erased=true
+// event=audit_01j9vk... erased=true
+// event=audit_01j9vk... erased=true
+```
+
+## Step 6: Verify the hash chain is still valid
+
+```go
+import "github.com/xraph/chronicle/verify"
+
+vReport, err := c.VerifyChain(ctx, &verify.Input{
+    AppID:    "myapp",
+    TenantID: "tenant-1",
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("valid=%v verified=%d gaps=%v tampered=%v\n",
+    vReport.Valid, vReport.Verified, vReport.Gaps, vReport.Tampered)
+// valid=true verified=3 gaps=[] tampered=[]
+```
+
+The chain is valid because hashes are computed over event metadata (action, resource, timestamps), not the encrypted payload.
+
+## Production key store
+
+The `crypto.NewInMemoryKeyStore()` is suitable for development only. For production, implement the `crypto.KeyStore` interface backed by AWS KMS, HashiCorp Vault, or a database:
+
+```go
+type KeyStore interface {
+    GetOrCreate(subjectID string) (key []byte, keyID string, err error)
+    Get(subjectID string) (key []byte, err error)
+    Delete(subjectID string) error
+}
+```
+
+The key store is separate from the Chronicle store — Chronicle does not manage it. Provision it yourself and pass it to `erasure.NewService`.
+
+## Erasure record retention
+
+Erasure records (`erasure.Erasure`) are **not** automatically purged by retention policies — they are compliance records. Store them for as long as your compliance framework requires (typically at least 7 years).

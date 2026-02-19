@@ -1,0 +1,115 @@
+---
+title: Compliance Reports
+description: Generating SOC2, HIPAA, EU AI Act, and custom compliance reports from audit data.
+---
+
+Chronicle generates compliance reports directly from your audit data. The `compliance.Engine` queries events, runs aggregate statistics, optionally verifies the hash chain, and produces a structured `compliance.Report` that can be exported to JSON, CSV, Markdown, or HTML.
+
+## Engine
+
+```go
+import (
+    "github.com/xraph/chronicle/compliance"
+    "log/slog"
+)
+
+engine := compliance.NewEngine(
+    s,          // audit.Store
+    s,          // verify.Store
+    s,          // compliance.ReportStore
+    slog.Default(),
+)
+```
+
+All three store arguments typically point to the same composite backend.
+
+## Report types
+
+### SOC2 Type II
+
+```go
+report, err := engine.SOC2(ctx, &compliance.SOC2Input{
+    Period:      compliance.DateRange{From: from, To: to},
+    AppID:       "myapp",
+    TenantID:    "tenant-1",
+    GeneratedBy: "admin@company.com",
+})
+```
+
+Covers: access events, authentication, authorisation denials, critical errors. Maps to SOC2 Trust Service Criteria CC6/CC7.
+
+### HIPAA
+
+```go
+report, err := engine.HIPAA(ctx, &compliance.HIPAAInput{
+    Period:      compliance.DateRange{From: from, To: to},
+    AppID:       "myapp",
+    TenantID:    "tenant-1",
+    GeneratedBy: "compliance@company.com",
+})
+```
+
+Covers: PHI access events, user activity, audit controls (HIPAA §164.312(b)).
+
+### EU AI Act
+
+```go
+report, err := engine.EUAIAct(ctx, &compliance.EUAIActInput{
+    Period:      compliance.DateRange{From: from, To: to},
+    AppID:       "myapp",
+    TenantID:    "tenant-1",
+    GeneratedBy: "ai-officer@company.com",
+})
+```
+
+Covers: AI system interactions, decisions, and outcomes.
+
+### Custom
+
+```go
+report, err := engine.Custom(ctx, &compliance.CustomInput{
+    Period:      compliance.DateRange{From: from, To: to},
+    AppID:       "myapp",
+    TenantID:    "tenant-1",
+    GeneratedBy: "admin@company.com",
+    Title:       "Q4 Security Review",
+    Categories:  []string{"auth", "billing"},
+})
+```
+
+## Export
+
+```go
+import "os"
+
+err = engine.Export(ctx, report, compliance.FormatMarkdown, os.Stdout)
+```
+
+| Format | Constant | Description |
+|--------|----------|-------------|
+| JSON | `compliance.FormatJSON` | Machine-readable JSON |
+| CSV | `compliance.FormatCSV` | Spreadsheet-compatible |
+| Markdown | `compliance.FormatMarkdown` | Human-readable |
+| HTML | `compliance.FormatHTML` | Browser or email |
+| PDF | `compliance.FormatPDF` | Defined but not yet implemented |
+
+## Report structure
+
+A `compliance.Report` contains:
+
+- **Sections** — `[]Section`, each with a `Title`, `Events`, aggregate `Stats`, and `Notes`
+- **Stats** — `*Stats` with `TotalEvents`, `CriticalEvents`, `FailedEvents`, `DeniedEvents`
+- **Verification** — optional `*verify.Report` snapshot of chain integrity at generation time
+- **Data** — raw exported bytes (populated by `Export`)
+
+## HTTP endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/reports` | List compliance reports |
+| `POST` | `/v1/reports/soc2` | Generate SOC2 Type II report |
+| `POST` | `/v1/reports/hipaa` | Generate HIPAA report |
+| `POST` | `/v1/reports/euaiact` | Generate EU AI Act report |
+| `POST` | `/v1/reports/custom` | Generate custom report |
+| `GET` | `/v1/reports/:id` | Get a specific report |
+| `GET` | `/v1/reports/:id/export/:format` | Export report in given format |

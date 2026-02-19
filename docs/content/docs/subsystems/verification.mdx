@@ -1,0 +1,105 @@
+---
+title: Verification
+description: Hash chain integrity verification — detecting tampered or deleted events.
+---
+
+## How the hash chain works
+
+Every event in Chronicle is linked to its predecessor via SHA-256:
+
+```
+Hash = SHA256(prevHash | timestamp | action | resource | category |
+              resourceID | outcome | severity | metadata_json)
+```
+
+Where `|` is a literal pipe byte separator and `metadata_json` uses sorted keys for determinism. The first event in a stream has `PrevHash = ""`.
+
+Any modification to any field changes that event's hash, which breaks every subsequent hash in the chain — making tampering detectable by re-deriving hashes from scratch.
+
+## Verification types
+
+| Condition | Detected as |
+|-----------|-------------|
+| Event deleted from store | Gap (missing sequence number) |
+| Event content modified | Tampered (stored hash ≠ recomputed hash) |
+| Encryption key destroyed (GDPR erasure) | Not a break — hashes cover metadata, not payload |
+
+## Running verification
+
+### Via the Chronicle API
+
+```go
+import "github.com/xraph/chronicle/verify"
+
+report, err := c.VerifyChain(ctx, &verify.Input{
+    AppID:    "myapp",
+    TenantID: "tenant-1",
+    // FromSeq and ToSeq are optional (0 = full chain)
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("valid=%v verified=%d gaps=%v tampered=%v\n",
+    report.Valid, report.Verified, report.Gaps, report.Tampered)
+```
+
+### Via the HTTP API
+
+```
+POST /v1/verify
+```
+
+Request body:
+
+```json
+{
+  "stream_id": "stream_01j9vk...",
+  "from_seq": 0,
+  "to_seq": 0
+}
+```
+
+Response: `verify.Report` JSON.
+
+## verify.Input
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `StreamID` | `id.ID` | Stream to verify (optional — resolved from AppID+TenantID if omitted) |
+| `FromSeq` | `uint64` | Start of verification range (0 = beginning) |
+| `ToSeq` | `uint64` | End of verification range (0 = current head) |
+| `AppID` | `string` | Required for scope enforcement |
+| `TenantID` | `string` | Required for scope enforcement |
+
+## verify.Report
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Valid` | `bool` | `true` if no gaps and no tampered hashes |
+| `Verified` | `int64` | Number of events checked |
+| `Gaps` | `[]uint64` | Sequence numbers absent from the store |
+| `Tampered` | `[]uint64` | Sequence numbers with hash mismatches |
+| `FirstEvent` | `uint64` | First sequence number checked |
+| `LastEvent` | `uint64` | Last sequence number checked |
+
+## GDPR erasure and chain validity
+
+GDPR crypto-erasure destroys the per-subject encryption key, making payload data irrecoverable. It does **not** modify the hash chain:
+
+- Hashes are computed over event metadata (action, resource, category, timestamps), not the encrypted payload.
+- After erasure, `event.Erased = true` and `event.ErasedAt` is set, but the stored `Hash` is unchanged.
+- `VerifyChain` reports `Valid = true` even for streams with erased events.
+
+## verify.Store
+
+The `verify.Store` interface provides the data access needed for verification:
+
+```go
+type Store interface {
+    EventRange(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64) ([]*audit.Event, error)
+    Gaps(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64) ([]uint64, error)
+}
+```
+
+All Chronicle backends implement this interface as part of the composite `store.Store`.
