@@ -158,7 +158,7 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 	}
 
 	// Count total matching events.
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM chronicle_events %s", whereClause) //nolint:gosec // query built from safe column conditions
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM chronicle_events %s", whereClause)
 	var total int64
 	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("failed to count events: %w", err)
@@ -171,7 +171,6 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 	}
 
 	// Query events with pagination.
-	//nolint:gosec // query built from safe column conditions, not user input
 	eventsQuery := fmt.Sprintf(`
 		SELECT
 			id, stream_id, sequence, hash, prev_hash,
@@ -380,7 +379,7 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	query := fmt.Sprintf("SELECT COUNT(*) FROM chronicle_events %s", whereClause) //nolint:gosec // query built from safe column conditions
+	query := fmt.Sprintf("SELECT COUNT(*) FROM chronicle_events %s", whereClause)
 
 	var count int64
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)

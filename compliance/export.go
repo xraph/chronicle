@@ -102,10 +102,10 @@ func exportMarkdown(r *Report, w io.Writer) error {
 		b.WriteString("## Summary\n\n")
 		b.WriteString("| Metric | Count |\n")
 		b.WriteString("| --- | --- |\n")
-		b.WriteString(fmt.Sprintf("| Total Events | %d |\n", r.Stats.TotalEvents))
-		b.WriteString(fmt.Sprintf("| Critical Events | %d |\n", r.Stats.CriticalEvents))
-		b.WriteString(fmt.Sprintf("| Failed Events | %d |\n", r.Stats.FailedEvents))
-		b.WriteString(fmt.Sprintf("| Denied Events | %d |\n", r.Stats.DeniedEvents))
+		fmt.Fprintf(&b, "| Total Events | %d |\n", r.Stats.TotalEvents)
+		fmt.Fprintf(&b, "| Critical Events | %d |\n", r.Stats.CriticalEvents)
+		fmt.Fprintf(&b, "| Failed Events | %d |\n", r.Stats.FailedEvents)
+		fmt.Fprintf(&b, "| Denied Events | %d |\n", r.Stats.DeniedEvents)
 		b.WriteString("\n")
 	}
 
@@ -128,14 +128,14 @@ func exportMarkdown(r *Report, w io.Writer) error {
 		b.WriteString("| --- | --- | --- | --- | --- | --- |\n")
 
 		for _, ev := range s.Events {
-			b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n",
 				ev.Timestamp.UTC().Format("2006-01-02 15:04:05"),
 				ev.Action,
 				ev.Resource,
 				ev.Category,
 				ev.Outcome,
 				ev.Severity,
-			))
+			)
 		}
 
 		b.WriteString("\n")
