@@ -1,75 +1,67 @@
 ---
 title: Identity (TypeID)
-description: How Chronicle uses type-safe, prefix-qualified identifiers for every entity.
+description: How Chronicle uses prefix-qualified, globally unique identifiers for every entity.
 ---
 
-Every entity in Chronicle has a TypeID. TypeIDs are globally unique, K-sortable, URL-safe identifiers built on UUIDv7 with a human-readable prefix that tells you what kind of entity you're looking at.
+Every entity in Chronicle has a TypeID. TypeIDs are globally unique, sortable, URL-safe identifiers built on UUIDv7 with a human-readable prefix that tells you what kind of entity you're looking at.
 
 A TypeID looks like this:
 
 ```
-audit_01j9vk2qz3p4r5t6w7x8y9z0ab
-stream_01j9vk2qz3p4r5t6w7x8y9z0ab
-erasure_01j9vk2qz3p4r5t6w7x8y9z0ab
+audit_01h455vb4pex5vsknk084sn02q
 ```
 
-## Prefixes
+The `audit` prefix identifies this as an audit event. The suffix is a base32-encoded UUIDv7 that encodes creation time, so IDs sort chronologically.
 
-Chronicle defines seven entity prefixes:
+## The `id` package
 
-| Prefix | Entity | Constructor |
-|--------|--------|-------------|
-| `audit_` | Audit event | `id.NewAuditID()` |
-| `stream_` | Hash chain stream | `id.NewStreamID()` |
-| `erasure_` | GDPR erasure record | `id.NewErasureID()` |
-| `report_` | Compliance report | `id.NewReportID()` |
-| `retpol_` | Retention policy | `id.NewPolicyID()` |
-| `archive_` | Retention archive | `id.NewArchiveID()` |
-| `plugin_` | Plugin registration | `id.New(id.PrefixPlugin)` |
+The `id` package wraps the [TypeID Go library](https://github.com/jetify-com/typeid-go) (v2) with a single `ID` struct. All entity types share the same struct -- the prefix distinguishes them.
 
-## The `id.ID` struct
-
-All entity types use the same `id.ID` struct with a `valid` flag. A zero-value `id.ID` represents a nil / unset identifier. You always construct IDs through the constructors or parsers — never by initialising the struct directly.
+### Creating IDs
 
 ```go
 import "github.com/xraph/chronicle/id"
 
-// Create new IDs
-auditID  := id.NewAuditID()
-streamID := id.NewStreamID()
-
-// Parse from string (any prefix)
-parsed, err := id.ParseAny("audit_01j9vk...")
-
-// Parse with prefix validation (returns error if wrong prefix)
-auditID, err := id.ParseAuditID("audit_01j9vk...")
-streamID, err := id.ParseStreamID("stream_01j9vk...")
-
-// Check for nil
-if auditID.IsNil() { ... }
-
-// Format as string
-s := auditID.String() // "audit_01j9vk..."
+auditID   := id.New(id.PrefixAudit)    // audit_01h455vb...
+streamID  := id.New(id.PrefixStream)   // stream_01h455vb...
+erasureID := id.New(id.PrefixErasure)  // erasure_01h455vb...
 ```
 
-Passing an `erasure_` string to `id.ParseAuditID` returns an error — prefix validation is type-safe at parse time.
+Convenience constructors: `id.NewAuditID()`, `id.NewStreamID()`, `id.NewErasureID()`, `id.NewReportID()`, `id.NewPolicyID()`, `id.NewArchiveID()`, `id.NewPluginID()`.
 
-## Serialization
+### Parsing IDs
 
-`id.ID` implements all standard interfaces out of the box:
+```go
+parsed, err := id.Parse("audit_01h455vb4pex5vsknk084sn02q")
+parsed, err := id.ParseWithPrefix("audit_01h455vb...", id.PrefixAudit)  // validates prefix
+parsed, err := id.ParseAuditID("audit_01h455vb...")                     // convenience
+```
 
-| Interface | Representation |
-|-----------|---------------|
-| `encoding.TextMarshaler` / `TextUnmarshaler` | `"audit_01j9vk..."` |
-| `json.Marshaler` / `json.Unmarshaler` | `"audit_01j9vk..."` |
-| `driver.Valuer` (database write) | `"audit_01j9vk..."` as string |
-| `sql.Scanner` (database read) | accepts string or `[]byte` |
+### Nil ID
 
-Nil IDs marshal as `""` in JSON and as `NULL` in SQL.
+```go
+var empty id.ID
+empty.IsNil()  // true
+empty.String() // ""
+id.Nil.IsNil() // true
+```
 
-## Why TypeIDs?
+### Database storage
 
-- **K-sortable** — UUIDv7 embeds a millisecond timestamp, so IDs naturally sort by creation time in database indexes.
-- **Human-readable** — the prefix tells you at a glance what kind of record you're looking at in logs, URLs, and database queries.
-- **Type safety** — `ParseAuditID` vs `ParseStreamID` catches mismatched IDs at parse time rather than at query time.
-- **Compact** — base32-encoded UUIDs are shorter than UUID hex strings.
+`id.ID` implements `Scanner` and `driver.Valuer`. Stores as a string, returns `NULL` for nil IDs.
+
+### JSON serialization
+
+`id.ID` implements `TextMarshaler` and `TextUnmarshaler`. Nil IDs serialize as empty strings.
+
+## Prefix reference
+
+| Constant | Prefix | Entity |
+|----------|--------|--------|
+| `id.PrefixAudit` | `audit` | Audit event |
+| `id.PrefixStream` | `stream` | Hash chain stream |
+| `id.PrefixErasure` | `erasure` | GDPR erasure record |
+| `id.PrefixReport` | `report` | Compliance report |
+| `id.PrefixPolicy` | `retpol` | Retention policy |
+| `id.PrefixArchive` | `archive` | Retention archive |
+| `id.PrefixPlugin` | `plugin` | Plugin registration |

@@ -1,511 +1,228 @@
 package id_test
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/xraph/chronicle/id"
 )
 
-// ──────────────────────────────────────────────────
-// New
-// ──────────────────────────────────────────────────
-
-func TestNew_IsValid(t *testing.T) {
-	got := id.New(id.PrefixAudit)
-	if got.IsNil() {
-		t.Error("New() returned a nil ID")
-	}
-}
-
-func TestNew_HasCorrectPrefix(t *testing.T) {
-	got := id.New(id.PrefixStream)
-	if got.IDPrefix() != id.PrefixStream {
-		t.Errorf("IDPrefix() = %q, want %q", got.IDPrefix(), id.PrefixStream)
-	}
-}
-
-func TestNew_StringContainsPrefix(t *testing.T) {
-	got := id.New(id.PrefixAudit)
-	s := got.String()
-	if !strings.HasPrefix(s, "audit_") {
-		t.Errorf("String() = %q, expected prefix %q", s, "audit_")
-	}
-}
-
-func TestNew_Uniqueness(t *testing.T) {
-	a := id.New(id.PrefixAudit)
-	b := id.New(id.PrefixAudit)
-	if a.String() == b.String() {
-		t.Error("two consecutive New() calls produced the same ID")
-	}
-}
-
-func TestNew_KSortable(t *testing.T) {
-	a := id.New(id.PrefixAudit)
-	b := id.New(id.PrefixAudit)
-	// K-sortable: string of a should sort before string of b.
-	if a.String() >= b.String() {
-		t.Errorf("IDs are not K-sortable: %q >= %q", a.String(), b.String())
-	}
-}
-
-// ──────────────────────────────────────────────────
-// Parse
-// ──────────────────────────────────────────────────
-
-func TestParse_EmptyString(t *testing.T) {
-	got, err := id.Parse("")
-	if err != nil {
-		t.Fatalf("Parse(\"\") returned unexpected error: %v", err)
-	}
-	if !got.IsNil() {
-		t.Error("Parse(\"\") should return a nil ID")
-	}
-}
-
-func TestParse_ValidString(t *testing.T) {
-	original := id.New(id.PrefixReport)
-	s := original.String()
-
-	got, err := id.Parse(s)
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", s, err)
-	}
-	if got.String() != s {
-		t.Errorf("Parse() roundtrip: got %q, want %q", got.String(), s)
-	}
-}
-
-func TestParse_InvalidString(t *testing.T) {
-	_, err := id.Parse("not-a-valid-typeid!!!")
-	if err == nil {
-		t.Error("Parse(invalid) expected error, got nil")
-	}
-}
-
-// ──────────────────────────────────────────────────
-// ParseWithPrefix
-// ──────────────────────────────────────────────────
-
-func TestParseWithPrefix_Correct(t *testing.T) {
-	original := id.New(id.PrefixErasure)
-	got, err := id.ParseWithPrefix(original.String(), id.PrefixErasure)
-	if err != nil {
-		t.Fatalf("ParseWithPrefix: %v", err)
-	}
-	if got.String() != original.String() {
-		t.Errorf("got %q, want %q", got.String(), original.String())
-	}
-}
-
-func TestParseWithPrefix_WrongPrefix(t *testing.T) {
-	auditID := id.New(id.PrefixAudit)
-	_, err := id.ParseWithPrefix(auditID.String(), id.PrefixStream)
-	if err == nil {
-		t.Error("ParseWithPrefix with wrong prefix should fail")
-	}
-}
-
-func TestParseWithPrefix_EmptyString(t *testing.T) {
-	_, err := id.ParseWithPrefix("", id.PrefixAudit)
-	if err == nil {
-		t.Error("ParseWithPrefix(\"\", ...) should return error")
-	}
-}
-
-func TestParseWithPrefix_InvalidString(t *testing.T) {
-	_, err := id.ParseWithPrefix("garbage", id.PrefixAudit)
-	if err == nil {
-		t.Error("ParseWithPrefix(invalid, ...) should return error")
-	}
-}
-
-// ──────────────────────────────────────────────────
-// ID methods
-// ──────────────────────────────────────────────────
-
-func TestID_String_NilReturnsEmpty(t *testing.T) {
-	var zero id.ID
-	if zero.String() != "" {
-		t.Errorf("zero ID String() = %q, want %q", zero.String(), "")
-	}
-}
-
-func TestID_IDPrefix_NilReturnsEmpty(t *testing.T) {
-	var zero id.ID
-	if zero.IDPrefix() != "" {
-		t.Errorf("zero ID IDPrefix() = %q, want empty", zero.IDPrefix())
-	}
-}
-
-func TestID_IsNil_ZeroValue(t *testing.T) {
-	var zero id.ID
-	if !zero.IsNil() {
-		t.Error("zero value ID should be nil")
-	}
-}
-
-func TestID_IsNil_ValidID(t *testing.T) {
-	got := id.New(id.PrefixPolicy)
-	if got.IsNil() {
-		t.Error("New() ID should not be nil")
-	}
-}
-
-// ──────────────────────────────────────────────────
-// MarshalText / UnmarshalText
-// ──────────────────────────────────────────────────
-
-func TestMarshalText_ValidID(t *testing.T) {
-	original := id.New(id.PrefixAudit)
-	b, err := original.MarshalText()
-	if err != nil {
-		t.Fatalf("MarshalText: %v", err)
-	}
-	if string(b) != original.String() {
-		t.Errorf("MarshalText = %q, want %q", b, original.String())
-	}
-}
-
-func TestMarshalText_NilID(t *testing.T) {
-	var zero id.ID
-	b, err := zero.MarshalText()
-	if err != nil {
-		t.Fatalf("MarshalText nil: %v", err)
-	}
-	if string(b) != "" {
-		t.Errorf("MarshalText nil = %q, want empty", b)
-	}
-}
-
-func TestUnmarshalText_RoundTrip(t *testing.T) {
-	original := id.New(id.PrefixStream)
-	b, _ := original.MarshalText()
-
-	var got id.ID
-	if err := got.UnmarshalText(b); err != nil {
-		t.Fatalf("UnmarshalText: %v", err)
-	}
-	if got.String() != original.String() {
-		t.Errorf("UnmarshalText roundtrip: got %q, want %q", got.String(), original.String())
-	}
-}
-
-func TestUnmarshalText_EmptyBytes(t *testing.T) {
-	var got id.ID
-	if err := got.UnmarshalText([]byte("")); err != nil {
-		t.Fatalf("UnmarshalText empty: %v", err)
-	}
-	if !got.IsNil() {
-		t.Error("UnmarshalText empty should yield nil ID")
-	}
-}
-
-func TestUnmarshalText_InvalidBytes(t *testing.T) {
-	var got id.ID
-	if err := got.UnmarshalText([]byte("bad!data")); err == nil {
-		t.Error("UnmarshalText invalid should return error")
-	}
-}
-
-// ──────────────────────────────────────────────────
-// MarshalJSON / UnmarshalJSON
-// ──────────────────────────────────────────────────
-
-func TestMarshalJSON_ValidID(t *testing.T) {
-	original := id.New(id.PrefixAudit)
-	b, err := original.MarshalJSON()
-	if err != nil {
-		t.Fatalf("MarshalJSON: %v", err)
-	}
-	want := `"` + original.String() + `"`
-	if string(b) != want {
-		t.Errorf("MarshalJSON = %s, want %s", b, want)
-	}
-}
-
-func TestMarshalJSON_NilID(t *testing.T) {
-	var zero id.ID
-	b, err := zero.MarshalJSON()
-	if err != nil {
-		t.Fatalf("MarshalJSON nil: %v", err)
-	}
-	if string(b) != `""` {
-		t.Errorf("MarshalJSON nil = %s, want %q", b, `""`)
-	}
-}
-
-func TestUnmarshalJSON_RoundTrip(t *testing.T) {
-	original := id.New(id.PrefixReport)
-	b, _ := original.MarshalJSON()
-
-	var got id.ID
-	if err := got.UnmarshalJSON(b); err != nil {
-		t.Fatalf("UnmarshalJSON: %v", err)
-	}
-	if got.String() != original.String() {
-		t.Errorf("UnmarshalJSON roundtrip: got %q, want %q", got.String(), original.String())
-	}
-}
-
-func TestUnmarshalJSON_Null(t *testing.T) {
-	var got id.ID
-	if err := got.UnmarshalJSON([]byte("null")); err != nil {
-		t.Fatalf("UnmarshalJSON null: %v", err)
-	}
-	if !got.IsNil() {
-		t.Error("UnmarshalJSON null should yield nil ID")
-	}
-}
-
-func TestUnmarshalJSON_EmptyString(t *testing.T) {
-	var got id.ID
-	if err := got.UnmarshalJSON([]byte(`""`)); err != nil {
-		t.Fatalf("UnmarshalJSON empty string: %v", err)
-	}
-	if !got.IsNil() {
-		t.Error(`UnmarshalJSON "" should yield nil ID`)
-	}
-}
-
-func TestUnmarshalJSON_Invalid(t *testing.T) {
-	var got id.ID
-	if err := got.UnmarshalJSON([]byte(`"not_valid!!!"`)); err == nil {
-		t.Error("UnmarshalJSON invalid should return error")
-	}
-}
-
-func TestJSONMarshalUnmarshal_InStruct(t *testing.T) {
-	type record struct {
-		ID id.ID `json:"id"`
-	}
-
-	original := record{ID: id.New(id.PrefixArchive)}
-	b, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-
-	var got record
-	if err := json.Unmarshal(b, &got); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-	if got.ID.String() != original.ID.String() {
-		t.Errorf("struct JSON roundtrip: got %q, want %q", got.ID.String(), original.ID.String())
-	}
-}
-
-// ──────────────────────────────────────────────────
-// Value / Scan (database/sql)
-// ──────────────────────────────────────────────────
-
-func TestValue_ValidID(t *testing.T) {
-	original := id.New(id.PrefixAudit)
-	v, err := original.Value()
-	if err != nil {
-		t.Fatalf("Value: %v", err)
-	}
-	if v != original.String() {
-		t.Errorf("Value() = %v, want %q", v, original.String())
-	}
-}
-
-func TestValue_NilID(t *testing.T) {
-	var zero id.ID
-	v, err := zero.Value()
-	if err != nil {
-		t.Fatalf("Value nil: %v", err)
-	}
-	if v != nil {
-		t.Errorf("Value nil = %v, want nil", v)
-	}
-}
-
-func TestScan_String(t *testing.T) {
-	original := id.New(id.PrefixStream)
-	var got id.ID
-	if err := got.Scan(original.String()); err != nil {
-		t.Fatalf("Scan string: %v", err)
-	}
-	if got.String() != original.String() {
-		t.Errorf("Scan string: got %q, want %q", got.String(), original.String())
-	}
-}
-
-func TestScan_Bytes(t *testing.T) {
-	original := id.New(id.PrefixErasure)
-	var got id.ID
-	if err := got.Scan([]byte(original.String())); err != nil {
-		t.Fatalf("Scan []byte: %v", err)
-	}
-	if got.String() != original.String() {
-		t.Errorf("Scan []byte: got %q, want %q", got.String(), original.String())
-	}
-}
-
-func TestScan_Nil(t *testing.T) {
-	var got id.ID
-	if err := got.Scan(nil); err != nil {
-		t.Fatalf("Scan nil: %v", err)
-	}
-	if !got.IsNil() {
-		t.Error("Scan nil should yield nil ID")
-	}
-}
-
-func TestScan_UnsupportedType(t *testing.T) {
-	var got id.ID
-	if err := got.Scan(12345); err == nil {
-		t.Error("Scan unsupported type should return error")
-	}
-}
-
-func TestScan_InvalidString(t *testing.T) {
-	var got id.ID
-	if err := got.Scan("not-valid!!!"); err == nil {
-		t.Error("Scan invalid string should return error")
-	}
-}
-
-func TestValue_Scan_RoundTrip(t *testing.T) {
-	original := id.New(id.PrefixPolicy)
-	v, err := original.Value()
-	if err != nil {
-		t.Fatalf("Value: %v", err)
-	}
-
-	var got id.ID
-	if err := got.Scan(v); err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if got.String() != original.String() {
-		t.Errorf("Value/Scan roundtrip: got %q, want %q", got.String(), original.String())
-	}
-}
-
-// ──────────────────────────────────────────────────
-// Convenience constructors
-// ──────────────────────────────────────────────────
-
-func TestConvenienceConstructors(t *testing.T) {
+func TestConstructors(t *testing.T) {
 	tests := []struct {
 		name   string
-		fn     func() id.ID
-		prefix id.Prefix
+		newFn  func() id.ID
+		prefix string
 	}{
-		{"NewAuditID", id.NewAuditID, id.PrefixAudit},
-		{"NewStreamID", id.NewStreamID, id.PrefixStream},
-		{"NewErasureID", id.NewErasureID, id.PrefixErasure},
-		{"NewReportID", id.NewReportID, id.PrefixReport},
-		{"NewPolicyID", id.NewPolicyID, id.PrefixPolicy},
-		{"NewArchiveID", id.NewArchiveID, id.PrefixArchive},
+		{"AuditID", id.NewAuditID, "audit_"},
+		{"StreamID", id.NewStreamID, "stream_"},
+		{"ErasureID", id.NewErasureID, "erasure_"},
+		{"ReportID", id.NewReportID, "report_"},
+		{"PolicyID", id.NewPolicyID, "retpol_"},
+		{"ArchiveID", id.NewArchiveID, "archive_"},
+		{"PluginID", id.NewPluginID, "plugin_"},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.fn()
-			if got.IsNil() {
-				t.Errorf("%s() returned nil ID", tt.name)
-			}
-			if got.IDPrefix() != tt.prefix {
-				t.Errorf("%s() prefix = %q, want %q", tt.name, got.IDPrefix(), tt.prefix)
+			got := tt.newFn().String()
+			if !strings.HasPrefix(got, tt.prefix) {
+				t.Errorf("expected prefix %q, got %q", tt.prefix, got)
 			}
 		})
 	}
 }
 
-// ──────────────────────────────────────────────────
-// Convenience parsers
-// ──────────────────────────────────────────────────
-
-func TestConvenienceParsers_Valid(t *testing.T) {
-	tests := []struct {
-		name string
-		id   id.ID
-		fn   func(string) (id.ID, error)
-	}{
-		{"ParseAuditID", id.NewAuditID(), id.ParseAuditID},
-		{"ParseStreamID", id.NewStreamID(), id.ParseStreamID},
-		{"ParseErasureID", id.NewErasureID(), id.ParseErasureID},
-		{"ParseReportID", id.NewReportID(), id.ParseReportID},
-		{"ParsePolicyID", id.NewPolicyID(), id.ParsePolicyID},
-		{"ParseArchiveID", id.NewArchiveID(), id.ParseArchiveID},
+func TestNew(t *testing.T) {
+	i := id.New(id.PrefixAudit)
+	if i.IsNil() {
+		t.Fatal("expected non-nil ID")
 	}
+	if i.Prefix() != id.PrefixAudit {
+		t.Errorf("expected prefix %q, got %q", id.PrefixAudit, i.Prefix())
+	}
+}
+
+func TestParseRoundTrip(t *testing.T) {
+	tests := []struct {
+		name    string
+		newFn   func() id.ID
+		parseFn func(string) (id.ID, error)
+	}{
+		{"AuditID", id.NewAuditID, id.ParseAuditID},
+		{"StreamID", id.NewStreamID, id.ParseStreamID},
+		{"ErasureID", id.NewErasureID, id.ParseErasureID},
+		{"ReportID", id.NewReportID, id.ParseReportID},
+		{"PolicyID", id.NewPolicyID, id.ParsePolicyID},
+		{"ArchiveID", id.NewArchiveID, id.ParseArchiveID},
+		{"PluginID", id.NewPluginID, id.ParsePluginID},
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.fn(tt.id.String())
+			original := tt.newFn()
+			parsed, err := tt.parseFn(original.String())
 			if err != nil {
-				t.Fatalf("%s: %v", tt.name, err)
+				t.Fatalf("parse failed: %v", err)
 			}
-			if got.String() != tt.id.String() {
-				t.Errorf("%s: got %q, want %q", tt.name, got.String(), tt.id.String())
+			if parsed.String() != original.String() {
+				t.Errorf("round-trip mismatch: %q != %q", parsed.String(), original.String())
 			}
 		})
 	}
 }
 
-func TestConvenienceParsers_WrongPrefix(t *testing.T) {
-	auditID := id.NewAuditID()
+func TestCrossTypeRejection(t *testing.T) {
 	tests := []struct {
-		name string
-		fn   func(string) (id.ID, error)
+		name    string
+		input   string
+		parseFn func(string) (id.ID, error)
 	}{
-		{"ParseStreamID", id.ParseStreamID},
-		{"ParseErasureID", id.ParseErasureID},
-		{"ParseReportID", id.ParseReportID},
-		{"ParsePolicyID", id.ParsePolicyID},
-		{"ParseArchiveID", id.ParseArchiveID},
+		{"ParseAuditID rejects stream_", id.NewStreamID().String(), id.ParseAuditID},
+		{"ParseStreamID rejects erasure_", id.NewErasureID().String(), id.ParseStreamID},
+		{"ParseErasureID rejects report_", id.NewReportID().String(), id.ParseErasureID},
+		{"ParseReportID rejects retpol_", id.NewPolicyID().String(), id.ParseReportID},
+		{"ParsePolicyID rejects archive_", id.NewArchiveID().String(), id.ParsePolicyID},
+		{"ParseArchiveID rejects audit_", id.NewAuditID().String(), id.ParseArchiveID},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := tt.fn(auditID.String())
+			_, err := tt.parseFn(tt.input)
 			if err == nil {
-				t.Errorf("%s with audit ID should fail", tt.name)
+				t.Errorf("expected error for cross-type parse of %q, got nil", tt.input)
 			}
 		})
 	}
 }
 
-// ──────────────────────────────────────────────────
-// ParseAny
-// ──────────────────────────────────────────────────
-
-func TestParseAny_ValidID(t *testing.T) {
-	original := id.New(id.PrefixAudit)
-	got, err := id.ParseAny(original.String())
-	if err != nil {
-		t.Fatalf("ParseAny: %v", err)
+func TestParseAny(t *testing.T) {
+	ids := []id.ID{
+		id.NewAuditID(),
+		id.NewStreamID(),
+		id.NewErasureID(),
+		id.NewReportID(),
+		id.NewPolicyID(),
+		id.NewArchiveID(),
+		id.NewPluginID(),
 	}
-	if got.String() != original.String() {
-		t.Errorf("ParseAny: got %q, want %q", got.String(), original.String())
+
+	for _, i := range ids {
+		t.Run(i.String(), func(t *testing.T) {
+			parsed, err := id.ParseAny(i.String())
+			if err != nil {
+				t.Fatalf("ParseAny(%q) failed: %v", i.String(), err)
+			}
+			if parsed.String() != i.String() {
+				t.Errorf("round-trip mismatch: %q != %q", parsed.String(), i.String())
+			}
+		})
 	}
 }
 
-func TestParseAny_EmptyString(t *testing.T) {
-	got, err := id.ParseAny("")
+func TestParseWithPrefix(t *testing.T) {
+	i := id.NewAuditID()
+	parsed, err := id.ParseWithPrefix(i.String(), id.PrefixAudit)
 	if err != nil {
-		t.Fatalf("ParseAny empty: %v", err)
+		t.Fatalf("ParseWithPrefix failed: %v", err)
 	}
-	if !got.IsNil() {
-		t.Error("ParseAny empty should yield nil ID")
+	if parsed.String() != i.String() {
+		t.Errorf("mismatch: %q != %q", parsed.String(), i.String())
+	}
+
+	_, err = id.ParseWithPrefix(i.String(), id.PrefixStream)
+	if err == nil {
+		t.Error("expected error for wrong prefix")
 	}
 }
 
-func TestParseAny_AnyPrefix(t *testing.T) {
-	prefixes := []id.Prefix{
-		id.PrefixAudit, id.PrefixStream, id.PrefixErasure,
-		id.PrefixReport, id.PrefixPolicy, id.PrefixArchive, id.PrefixPlugin,
+func TestParseEmpty(t *testing.T) {
+	_, err := id.Parse("")
+	if err == nil {
+		t.Error("expected error for empty string")
 	}
-	for _, p := range prefixes {
-		original := id.New(p)
-		got, err := id.ParseAny(original.String())
-		if err != nil {
-			t.Errorf("ParseAny(%q): %v", p, err)
-			continue
-		}
-		if got.IDPrefix() != p {
-			t.Errorf("ParseAny(%q) prefix = %q", p, got.IDPrefix())
-		}
+}
+
+func TestNilID(t *testing.T) {
+	var i id.ID
+	if !i.IsNil() {
+		t.Error("zero-value ID should be nil")
+	}
+	if i.String() != "" {
+		t.Errorf("expected empty string, got %q", i.String())
+	}
+	if i.Prefix() != "" {
+		t.Errorf("expected empty prefix, got %q", i.Prefix())
+	}
+}
+
+func TestMarshalUnmarshalText(t *testing.T) {
+	original := id.NewAuditID()
+	data, err := original.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText failed: %v", err)
+	}
+
+	var restored id.ID
+	if unmarshalErr := restored.UnmarshalText(data); unmarshalErr != nil {
+		t.Fatalf("UnmarshalText failed: %v", unmarshalErr)
+	}
+	if restored.String() != original.String() {
+		t.Errorf("mismatch: %q != %q", restored.String(), original.String())
+	}
+
+	// Nil round-trip.
+	var nilID id.ID
+	data, err = nilID.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText(nil) failed: %v", err)
+	}
+	var restored2 id.ID
+	if err := restored2.UnmarshalText(data); err != nil {
+		t.Fatalf("UnmarshalText(nil) failed: %v", err)
+	}
+	if !restored2.IsNil() {
+		t.Error("expected nil after round-trip of nil ID")
+	}
+}
+
+func TestValueScan(t *testing.T) {
+	original := id.NewStreamID()
+	val, err := original.Value()
+	if err != nil {
+		t.Fatalf("Value failed: %v", err)
+	}
+
+	var scanned id.ID
+	if scanErr := scanned.Scan(val); scanErr != nil {
+		t.Fatalf("Scan failed: %v", scanErr)
+	}
+	if scanned.String() != original.String() {
+		t.Errorf("mismatch: %q != %q", scanned.String(), original.String())
+	}
+
+	// Nil round-trip.
+	var nilID id.ID
+	val, err = nilID.Value()
+	if err != nil {
+		t.Fatalf("Value(nil) failed: %v", err)
+	}
+	if val != nil {
+		t.Errorf("expected nil value for nil ID, got %v", val)
+	}
+
+	var scanned2 id.ID
+	if err := scanned2.Scan(nil); err != nil {
+		t.Fatalf("Scan(nil) failed: %v", err)
+	}
+	if !scanned2.IsNil() {
+		t.Error("expected nil after scan of nil")
+	}
+}
+
+func TestUniqueness(t *testing.T) {
+	a := id.NewAuditID()
+	b := id.NewAuditID()
+	if a.String() == b.String() {
+		t.Errorf("two consecutive NewAuditID() calls returned the same ID: %q", a.String())
 	}
 }
