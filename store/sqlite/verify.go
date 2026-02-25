@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
@@ -10,31 +9,23 @@ import (
 
 // EventRange returns events in a sequence range for chain verification.
 func (s *Store) EventRange(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64) ([]*audit.Event, error) {
-	query := `
-		SELECT
-			id, stream_id, sequence, hash, prev_hash,
-			app_id, tenant_id, user_id, ip,
-			action, resource, category, resource_id, metadata,
-			outcome, severity, reason,
-			subject_id, encryption_key_id,
-			erased, erased_at, erasure_id,
-			timestamp
-		FROM chronicle_events
-		WHERE stream_id = ? AND sequence >= ? AND sequence <= ?
-		ORDER BY sequence ASC`
-
-	rows, err := s.db.QueryContext(ctx, query, streamID.String(), fromSeq, toSeq)
+	var models []EventModel
+	err := s.sdb.NewSelect(&models).
+		Where("e.stream_id = ?", streamID.String()).
+		Where("e.sequence >= ?", fromSeq).
+		Where("e.sequence <= ?", toSeq).
+		OrderExpr("e.sequence ASC").
+		Scan(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query event range: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
 
-	return s.scanEvents(rows)
+	return toEventSlice(models)
 }
 
 // Gaps detects missing sequence numbers in a range.
-// Since SQLite does not have generate_series, we query existing sequences
-// and compute the gaps in Go.
+// Since SQLite does not have generate_series by default, we query existing
+// sequences and compute the gaps in Go.
 func (s *Store) Gaps(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64) ([]uint64, error) {
 	query := `
 		SELECT sequence
@@ -42,24 +33,24 @@ func (s *Store) Gaps(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64)
 		WHERE stream_id = ? AND sequence >= ? AND sequence <= ?
 		ORDER BY sequence ASC`
 
-	rows, err := s.db.QueryContext(ctx, query, streamID.String(), fromSeq, toSeq)
+	rows, err := s.sdb.Query(ctx, query, streamID.String(), fromSeq, toSeq)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query sequences for gap detection: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Collect all existing sequences into a set.
 	existing := make(map[uint64]struct{})
 	for rows.Next() {
 		var seq uint64
 		if err := rows.Scan(&seq); err != nil {
-			return nil, fmt.Errorf("failed to scan sequence: %w", err)
+			return nil, err
 		}
 		existing[seq] = struct{}{}
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate sequence rows: %w", err)
+		return nil, err
 	}
 
 	// Compute gaps by checking every expected sequence.

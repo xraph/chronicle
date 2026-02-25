@@ -1,15 +1,16 @@
 ---
 title: PostgreSQL Store
-description: Production-ready PostgreSQL store using pgx/v5.
+description: Production-ready PostgreSQL store using grove ORM with pgdriver.
 ---
 
-The `store/postgres` package implements Chronicle's `store.Store` interface using the `pgx/v5` driver with `pgxpool` for connection pooling. It is the recommended store for production deployments.
+The `store/postgres` package implements Chronicle's `store.Store` interface using the grove ORM with the PostgreSQL driver. It is the recommended store for production deployments.
 
 ## Import
 
 ```go
 import (
-    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/pgdriver"
     "github.com/xraph/chronicle/store/postgres"
 )
 ```
@@ -17,28 +18,23 @@ import (
 ## Constructor
 
 ```go
-pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+db, err := grove.Open(pgdriver.Open(os.Getenv("DATABASE_URL")))
 if err != nil {
     log.Fatal(err)
 }
 
-pgStore, err := postgres.New(pool)
-if err != nil {
-    log.Fatal(err)
-}
+s := postgres.New(db)
 ```
 
 ## Migrations
 
-Run schema migrations before using the store. Migrations are embedded SQL files executed in a transaction:
+Run schema migrations before using the store. Migrations are idempotent -- safe to run on every startup:
 
 ```go
-if err := pgStore.Migrate(ctx); err != nil {
+if err := s.Migrate(ctx); err != nil {
     log.Fatal(err)
 }
 ```
-
-Migrations are idempotent — safe to run on every startup.
 
 ## Full setup with `chronicle.New`
 
@@ -48,7 +44,8 @@ import (
     "log"
     "os"
 
-    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/pgdriver"
     "github.com/xraph/chronicle"
     "github.com/xraph/chronicle/store"
     "github.com/xraph/chronicle/store/postgres"
@@ -56,21 +53,17 @@ import (
 
 ctx := context.Background()
 
-pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+db, err := grove.Open(pgdriver.Open(os.Getenv("DATABASE_URL")))
 if err != nil {
     log.Fatal(err)
 }
 
-pgStore, err := postgres.New(pool)
-if err != nil {
+s := postgres.New(db)
+if err := s.Migrate(ctx); err != nil {
     log.Fatal(err)
 }
 
-if err := pgStore.Migrate(ctx); err != nil {
-    log.Fatal(err)
-}
-
-adapter := store.NewAdapter(pgStore)
+adapter := store.NewAdapter(s)
 
 c, err := chronicle.New(chronicle.WithStore(adapter))
 ```
@@ -81,7 +74,7 @@ c, err := chronicle.New(chronicle.WithStore(adapter))
 import "github.com/xraph/chronicle/extension"
 
 ext := extension.New(
-    extension.WithStore(pgStore),
+    extension.WithStore(s),
     // Migrate runs automatically on Start unless WithDisableMigrate(true)
 )
 app.Register(ext)
@@ -103,8 +96,8 @@ app.Register(ext)
 
 | Aspect | Detail |
 |--------|--------|
-| Driver | pgx/v5 + pgxpool |
-| Migrations | Embedded SQL, transaction-wrapped |
+| Driver | grove ORM + pgdriver |
+| Migrations | grove migrator with embedded SQL |
 | Transactions | Database-level ACID |
-| Ping | `pool.Ping(ctx)` |
-| Close | Delegate to caller — call `pool.Close()` |
+| Ping | `db.Ping(ctx)` |
+| Close | Caller-owned -- call `db.Close()` |

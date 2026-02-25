@@ -11,7 +11,7 @@ Chronicle is a production-grade audit trail library that records every event int
 - **GDPR crypto-erasure** — Per-subject AES-256-GCM encryption. Delete the key, the data becomes irrecoverable, but the hash chain stays intact.
 - **Multi-tenant scoping** — Events are automatically scoped to app + tenant from context. Cross-tenant queries are impossible.
 - **Compliance reports** — Generate SOC2 Type II, HIPAA, EU AI Act, and custom reports. Export to JSON, CSV, Markdown, or HTML.
-- **Pluggable stores** — Postgres (pgx), Bun ORM, SQLite, Redis (cache layer), and in-memory (testing).
+- **Pluggable stores** — Postgres (pgx), Grove ORM, SQLite, Redis (cache layer), and in-memory (testing).
 - **Pluggable sinks** — Fire-and-forget event outputs (stdout, file, S3, custom). Sinks never block the pipeline.
 - **Plugin system** — BeforeRecord enrichment, AfterRecord notification, SinkProvider, AlertHandler, and more.
 - **Retention policies** — Automatic archival and purge with configurable schedules.
@@ -124,7 +124,7 @@ EventBuilder  -->  Chronicle.Record()
 | Backend | Package | Use Case |
 |---------|---------|----------|
 | **PostgreSQL** (pgx) | `store/postgres` | Production — direct pgx driver |
-| **Bun ORM** | `store/bun` | Production — Bun-based access |
+| **Grove ORM** | `store/grovestore` | Production — Grove ORM |
 | **SQLite** | `store/sqlite` | Single-node / embedded |
 | **Redis** | `store/redis` | Cache layer (read-through) |
 | **Memory** | `store/memory` | Testing and examples |

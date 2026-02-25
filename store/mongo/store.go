@@ -1,16 +1,16 @@
-// Package sqlite implements the Chronicle store interface using grove ORM
-// with the SQLite driver.
-package sqlite
+// Package mongo implements the Chronicle store interface using grove ORM
+// with the MongoDB driver.
+package mongo
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
+
+	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/xraph/grove"
-	"github.com/xraph/grove/drivers/sqlitedriver"
-	"github.com/xraph/grove/migrate"
+	"github.com/xraph/grove/drivers/mongodriver"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
@@ -22,10 +22,20 @@ import (
 	"github.com/xraph/chronicle/verify"
 )
 
-// Store implements the Chronicle store interface using grove ORM with SQLite.
+// Collection name constants.
+const (
+	colEvents   = "chronicle_events"
+	colStreams  = "chronicle_streams"
+	colErasures = "chronicle_erasures"
+	colPolicies = "chronicle_retention_policies"
+	colArchives = "chronicle_archives"
+	colReports  = "chronicle_reports"
+)
+
+// Store implements the Chronicle store interface using grove ORM with MongoDB.
 type Store struct {
 	db  *grove.DB
-	sdb *sqlitedriver.SqliteDB
+	mdb *mongodriver.MongoDB
 }
 
 // Compile-time interface checks.
@@ -43,19 +53,22 @@ var (
 func New(db *grove.DB) *Store {
 	return &Store{
 		db:  db,
-		sdb: sqlitedriver.Unwrap(db),
+		mdb: mongodriver.Unwrap(db),
 	}
 }
 
-// Migrate runs grove migrations for the Chronicle schema.
+// Migrate creates indexes for all chronicle collections.
 func (s *Store) Migrate(ctx context.Context) error {
-	executor, err := migrate.NewExecutorFor(s.sdb)
-	if err != nil {
-		return fmt.Errorf("%w: create migration executor: %w", chronicle.ErrMigrationFailed, err)
-	}
-	orch := migrate.NewOrchestrator(executor, Migrations)
-	if _, err := orch.Migrate(ctx); err != nil {
-		return fmt.Errorf("%w: %w", chronicle.ErrMigrationFailed, err)
+	indexes := migrationIndexes()
+
+	for col, models := range indexes {
+		if len(models) == 0 {
+			continue
+		}
+		_, err := s.mdb.Collection(col).Indexes().CreateMany(ctx, models)
+		if err != nil {
+			return fmt.Errorf("%w: %s indexes: %w", chronicle.ErrMigrationFailed, col, err)
+		}
 	}
 	return nil
 }
@@ -76,17 +89,7 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// groveError checks if an error indicates no rows were found and returns
-// the appropriate Chronicle error.
-func groveError(err, notFoundErr error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, grove.ErrNoRows) || err.Error() == "no rows in result set" {
-		return notFoundErr
-	}
-	return err
+// isNoDocuments checks if an error wraps mongo.ErrNoDocuments.
+func isNoDocuments(err error) bool {
+	return errors.Is(err, mongo.ErrNoDocuments)
 }
-
-// now returns the current UTC time.
-func now() time.Time { return time.Now().UTC() }

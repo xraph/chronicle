@@ -1,8 +1,11 @@
-package bunstore
+package mongo
 
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/erasure"
@@ -12,19 +15,22 @@ import (
 // RecordErasure persists an erasure event.
 func (s *Store) RecordErasure(ctx context.Context, e *erasure.Erasure) error {
 	m := fromErasure(e)
-	_, err := s.db.NewInsert().Model(m).Exec(ctx)
+	_, err := s.mdb.NewInsert(m).Exec(ctx)
 	return err
 }
 
 // GetErasure returns an erasure record by ID.
 func (s *Store) GetErasure(ctx context.Context, erasureID id.ID) (*erasure.Erasure, error) {
-	m := new(ErasureModel)
-	err := s.db.NewSelect().Model(m).Where("id = ?", erasureID.String()).Scan(ctx)
+	var m ErasureModel
+	err := s.mdb.NewFind(&m).Filter(bson.M{"_id": erasureID.String()}).Scan(ctx)
 	if err != nil {
-		return nil, bunError(err, chronicle.ErrErasureNotFound)
+		if isNoDocuments(err) {
+			return nil, chronicle.ErrErasureNotFound
+		}
+		return nil, fmt.Errorf("failed to get erasure: %w", err)
 	}
 
-	e, err := toErasure(m)
+	e, err := toErasure(&m)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert erasure model: %w", err)
 	}
@@ -35,13 +41,19 @@ func (s *Store) GetErasure(ctx context.Context, erasureID id.ID) (*erasure.Erasu
 // ListErasures returns erasure records with pagination.
 func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*erasure.Erasure, error) {
 	var models []ErasureModel
-	err := s.db.NewSelect().Model(&models).
-		OrderExpr("er.created_at DESC").
-		Limit(opts.Limit).
-		Offset(opts.Offset).
-		Scan(ctx)
-	if err != nil {
-		return nil, err
+	findQ := s.mdb.NewFind(&models).
+		Filter(bson.M{}).
+		Sort(bson.D{{Key: "created_at", Value: -1}})
+
+	if opts.Limit > 0 {
+		findQ = findQ.Limit(int64(opts.Limit))
+	}
+	if opts.Offset > 0 {
+		findQ = findQ.Skip(int64(opts.Offset))
+	}
+
+	if err := findQ.Scan(ctx); err != nil {
+		return nil, fmt.Errorf("failed to list erasures: %w", err)
 	}
 
 	erasures := make([]*erasure.Erasure, 0, len(models))
@@ -58,32 +70,24 @@ func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*era
 
 // CountBySubject returns the number of events for a subject.
 func (s *Store) CountBySubject(ctx context.Context, subjectID string) (int64, error) {
-	var count int64
-	err := s.db.NewSelect().
-		TableExpr("chronicle_events").
-		ColumnExpr("COUNT(*)").
-		Where("subject_id = ?", subjectID).
-		Scan(ctx, &count)
+	count, err := s.mdb.Collection(colEvents).CountDocuments(ctx, bson.M{"subject_id": subjectID})
 	return count, err
 }
 
 // MarkErased updates events to show [ERASED] for a given subject.
 func (s *Store) MarkErased(ctx context.Context, subjectID string, erasureID id.ID) (int64, error) {
-	result, err := s.db.NewUpdate().
-		TableExpr("chronicle_events").
-		Set("erased = true").
-		Set("erased_at = NOW()").
-		Set("erasure_id = ?", erasureID.String()).
-		Where("subject_id = ?", subjectID).
-		Exec(ctx)
+	now := time.Now().UTC()
+	result, err := s.mdb.Collection(colEvents).UpdateMany(ctx,
+		bson.M{"subject_id": subjectID},
+		bson.M{"$set": bson.M{
+			"erased":     true,
+			"erased_at":  now,
+			"erasure_id": erasureID.String(),
+		}},
+	)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to mark events erased: %w", err)
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-
-	return rows, nil
+	return result.ModifiedCount, nil
 }

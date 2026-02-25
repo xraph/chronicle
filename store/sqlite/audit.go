@@ -3,11 +3,12 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/xraph/grove/drivers/sqlitedriver"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
@@ -16,36 +17,8 @@ import (
 
 // Append persists a single audit event.
 func (s *Store) Append(ctx context.Context, event *audit.Event) error {
-	metadata, err := json.Marshal(event.Metadata)
-	if err != nil {
-		return fmt.Errorf("failed to marshal metadata: %w", err)
-	}
-
-	query := `
-		INSERT INTO chronicle_events (
-			id, stream_id, sequence, hash, prev_hash,
-			app_id, tenant_id, user_id, ip,
-			action, resource, category, resource_id, metadata,
-			outcome, severity, reason,
-			subject_id, encryption_key_id,
-			timestamp, created_at
-		) VALUES (
-			?, ?, ?, ?, ?,
-			?, ?, ?, ?,
-			?, ?, ?, ?, ?,
-			?, ?, ?,
-			?, ?,
-			?, datetime('now')
-		)`
-
-	_, err = s.db.ExecContext(ctx, query,
-		event.ID.String(), event.StreamID.String(), event.Sequence, event.Hash, event.PrevHash,
-		event.AppID, event.TenantID, event.UserID, event.IP,
-		event.Action, event.Resource, event.Category, event.ResourceID, string(metadata),
-		event.Outcome, event.Severity, event.Reason,
-		event.SubjectID, event.EncryptionKeyID,
-		formatTime(event.Timestamp),
-	)
+	m := fromEvent(event)
+	_, err := s.sdb.NewInsert(m).Exec(ctx)
 	return err
 }
 
@@ -55,44 +28,19 @@ func (s *Store) AppendBatch(ctx context.Context, events []*audit.Event) error {
 		return nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.sdb.BeginTxQuery(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }() //nolint:errcheck // rollback after commit is a no-op
-
-	query := `
-		INSERT INTO chronicle_events (
-			id, stream_id, sequence, hash, prev_hash,
-			app_id, tenant_id, user_id, ip,
-			action, resource, category, resource_id, metadata,
-			outcome, severity, reason,
-			subject_id, encryption_key_id,
-			timestamp, created_at
-		) VALUES (
-			?, ?, ?, ?, ?,
-			?, ?, ?, ?,
-			?, ?, ?, ?, ?,
-			?, ?, ?,
-			?, ?,
-			?, datetime('now')
-		)`
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			_ = rbErr // best-effort rollback
+		}
+	}()
 
 	for _, event := range events {
-		metadata, err := json.Marshal(event.Metadata)
-		if err != nil {
-			return fmt.Errorf("failed to marshal metadata: %w", err)
-		}
-
-		_, err = tx.ExecContext(ctx, query,
-			event.ID.String(), event.StreamID.String(), event.Sequence, event.Hash, event.PrevHash,
-			event.AppID, event.TenantID, event.UserID, event.IP,
-			event.Action, event.Resource, event.Category, event.ResourceID, string(metadata),
-			event.Outcome, event.Severity, event.Reason,
-			event.SubjectID, event.EncryptionKeyID,
-			formatTime(event.Timestamp),
-		)
-		if err != nil {
+		m := fromEvent(event)
+		if _, err := tx.NewInsert(m).Exec(ctx); err != nil {
 			return fmt.Errorf("failed to insert event %s: %w", event.ID, err)
 		}
 	}
@@ -102,101 +50,52 @@ func (s *Store) AppendBatch(ctx context.Context, events []*audit.Event) error {
 
 // Get returns a single event by ID.
 func (s *Store) Get(ctx context.Context, eventID id.ID) (*audit.Event, error) {
-	query := `
-		SELECT
-			id, stream_id, sequence, hash, prev_hash,
-			app_id, tenant_id, user_id, ip,
-			action, resource, category, resource_id, metadata,
-			outcome, severity, reason,
-			subject_id, encryption_key_id,
-			erased, erased_at, erasure_id,
-			timestamp
-		FROM chronicle_events
-		WHERE id = ?`
+	m := new(EventModel)
+	err := s.sdb.NewSelect(m).Where("id = ?", eventID.String()).Scan(ctx)
+	if err != nil {
+		return nil, groveError(err, chronicle.ErrEventNotFound)
+	}
 
-	return s.scanEvent(s.db.QueryRowContext(ctx, query, eventID.String()))
+	event, err := toEvent(m)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert event model: %w", err)
+	}
+
+	return event, nil
 }
 
 // Query returns events matching filters with pagination.
 func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, error) {
-	var conditions []string
-	var args []interface{}
+	// Build count query with the same conditions.
+	countQuery := applyEventFilters(
+		s.sdb.NewSelect((*EventModel)(nil)).ColumnExpr("COUNT(*)"), q)
 
-	if q.AppID != "" {
-		conditions = append(conditions, "app_id = ?")
-		args = append(args, q.AppID)
-	}
-
-	if q.TenantID != "" {
-		conditions = append(conditions, "tenant_id = ?")
-		args = append(args, q.TenantID)
-	}
-
-	if q.UserID != "" {
-		conditions = append(conditions, "user_id = ?")
-		args = append(args, q.UserID)
-	}
-
-	if !q.After.IsZero() {
-		conditions = append(conditions, "timestamp >= ?")
-		args = append(args, formatTime(q.After))
-	}
-	if !q.Before.IsZero() {
-		conditions = append(conditions, "timestamp <= ?")
-		args = append(args, formatTime(q.Before))
-	}
-
-	appendInClause(&conditions, &args, "category", q.Categories)
-	appendInClause(&conditions, &args, "action", q.Actions)
-	appendInClause(&conditions, &args, "resource", q.Resources)
-	appendInClause(&conditions, &args, "severity", q.Severity)
-	appendInClause(&conditions, &args, "outcome", q.Outcome)
-
-	whereClause := ""
-	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	// Count total matching events.
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM chronicle_events %s", whereClause)
 	var total int64
-	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, fmt.Errorf("failed to count events: %w", err)
+	if err := countQuery.Scan(ctx, &total); err != nil {
+		return nil, err
 	}
+
+	// Build select query.
+	var models []EventModel
+	selectQuery := applyEventFilters(s.sdb.NewSelect(&models), q)
 
 	// Order direction.
-	order := "DESC"
+	order := "e.timestamp DESC"
 	if q.Order == "asc" {
-		order = "ASC"
+		order = "e.timestamp ASC"
+	}
+	selectQuery = selectQuery.OrderExpr(order)
+
+	if q.Limit > 0 {
+		selectQuery = selectQuery.Limit(q.Limit)
+	}
+	selectQuery = selectQuery.Offset(q.Offset)
+
+	if err := selectQuery.Scan(ctx); err != nil {
+		return nil, err
 	}
 
-	// Query events with pagination.
-	eventsQuery := fmt.Sprintf(`
-		SELECT
-			id, stream_id, sequence, hash, prev_hash,
-			app_id, tenant_id, user_id, ip,
-			action, resource, category, resource_id, metadata,
-			outcome, severity, reason,
-			subject_id, encryption_key_id,
-			erased, erased_at, erasure_id,
-			timestamp
-		FROM chronicle_events
-		%s
-		ORDER BY timestamp %s
-		LIMIT ? OFFSET ?`,
-		whereClause, order)
-
-	queryArgs := make([]interface{}, 0, len(args)+2)
-	queryArgs = append(queryArgs, args...)
-	queryArgs = append(queryArgs, q.Limit, q.Offset)
-
-	rows, err := s.db.QueryContext(ctx, eventsQuery, queryArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query events: %w", err)
-	}
-	defer rows.Close()
-
-	events, err := s.scanEvents(rows)
+	events, err := toEventSlice(models)
 	if err != nil {
 		return nil, err
 	}
@@ -212,6 +111,11 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 
 // Aggregate returns grouped event statistics.
 func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.AggregateResult, error) {
+	if len(q.GroupBy) == 0 {
+		return nil, errors.New("aggregate query requires at least one group_by field")
+	}
+
+	// Build dynamic WHERE clause.
 	var conditions []string
 	var args []interface{}
 
@@ -227,11 +131,11 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 
 	if !q.After.IsZero() {
 		conditions = append(conditions, "timestamp >= ?")
-		args = append(args, formatTime(q.After))
+		args = append(args, q.After.UTC().Format(time.RFC3339Nano))
 	}
 	if !q.Before.IsZero() {
 		conditions = append(conditions, "timestamp <= ?")
-		args = append(args, formatTime(q.Before))
+		args = append(args, q.Before.UTC().Format(time.RFC3339Nano))
 	}
 
 	whereClause := ""
@@ -247,55 +151,47 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 		selectFields = append(selectFields, field)
 	}
 
-	if len(groupFields) == 0 {
-		return nil, errors.New("aggregate query requires at least one group_by field")
-	}
-
 	groupByClause := strings.Join(groupFields, ", ")
 	selectClause := strings.Join(selectFields, ", ")
 
-	//nolint:gosec // query built from validated column names, not user input
-	query := fmt.Sprintf(`
-		SELECT %s, COUNT(*) as count
-		FROM chronicle_events
-		%s
-		GROUP BY %s
-		ORDER BY count DESC`,
-		selectClause, whereClause, groupByClause)
+	query := fmt.Sprintf(
+		"SELECT %s, COUNT(*) as count FROM chronicle_events %s GROUP BY %s ORDER BY count DESC",
+		selectClause, whereClause, groupByClause,
+	)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.sdb.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to aggregate events: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var groups []audit.AggregateGroup
 	var total int64
 
 	for rows.Next() {
 		group := audit.AggregateGroup{}
-		scanArgs := make([]interface{}, 0, len(q.GroupBy)+1)
+		scanArgs := make([]interface{}, len(q.GroupBy)+1)
 
-		for _, field := range q.GroupBy {
+		for i, field := range q.GroupBy {
 			switch field {
 			case "category":
-				scanArgs = append(scanArgs, &group.Category)
+				scanArgs[i] = &group.Category
 			case "action":
-				scanArgs = append(scanArgs, &group.Action)
+				scanArgs[i] = &group.Action
 			case "outcome":
-				scanArgs = append(scanArgs, &group.Outcome)
+				scanArgs[i] = &group.Outcome
 			case "severity":
-				scanArgs = append(scanArgs, &group.Severity)
+				scanArgs[i] = &group.Severity
 			case "resource":
-				scanArgs = append(scanArgs, &group.Resource)
+				scanArgs[i] = &group.Resource
 			default:
 				return nil, fmt.Errorf("unsupported group_by field: %s", field)
 			}
 		}
-		scanArgs = append(scanArgs, &group.Count)
+		scanArgs[len(q.GroupBy)] = &group.Count
 
 		if err := rows.Scan(scanArgs...); err != nil {
-			return nil, fmt.Errorf("failed to scan aggregate row: %w", err)
+			return nil, err
 		}
 
 		groups = append(groups, group)
@@ -303,7 +199,7 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate aggregate rows: %w", err)
+		return nil, err
 	}
 
 	return &audit.AggregateResult{
@@ -314,26 +210,19 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 
 // ByUser returns events for a specific user within a time range.
 func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange) (*audit.QueryResult, error) {
-	query := `
-		SELECT
-			id, stream_id, sequence, hash, prev_hash,
-			app_id, tenant_id, user_id, ip,
-			action, resource, category, resource_id, metadata,
-			outcome, severity, reason,
-			subject_id, encryption_key_id,
-			erased, erased_at, erasure_id,
-			timestamp
-		FROM chronicle_events
-		WHERE user_id = ? AND timestamp >= ? AND timestamp <= ?
-		ORDER BY timestamp DESC`
+	var models []EventModel
 
-	rows, err := s.db.QueryContext(ctx, query, userID, formatTime(opts.After), formatTime(opts.Before))
+	err := s.sdb.NewSelect(&models).
+		Where("e.user_id = ?", userID).
+		Where("e.timestamp >= ?", opts.After.UTC().Format(time.RFC3339Nano)).
+		Where("e.timestamp <= ?", opts.Before.UTC().Format(time.RFC3339Nano)).
+		OrderExpr("e.timestamp DESC").
+		Scan(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query events by user: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
 
-	events, err := s.scanEvents(rows)
+	events, err := toEventSlice(models)
 	if err != nil {
 		return nil, err
 	}
@@ -347,194 +236,86 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 
 // Count returns the total number of events matching filters.
 func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
-	var conditions []string
-	var args []interface{}
+	countQuery := s.sdb.NewSelect((*EventModel)(nil)).ColumnExpr("COUNT(*)")
 
 	if q.AppID != "" {
-		conditions = append(conditions, "app_id = ?")
-		args = append(args, q.AppID)
+		countQuery = countQuery.Where("e.app_id = ?", q.AppID)
 	}
-
 	if q.TenantID != "" {
-		conditions = append(conditions, "tenant_id = ?")
-		args = append(args, q.TenantID)
+		countQuery = countQuery.Where("e.tenant_id = ?", q.TenantID)
 	}
-
 	if q.Category != "" {
-		conditions = append(conditions, "category = ?")
-		args = append(args, q.Category)
+		countQuery = countQuery.Where("e.category = ?", q.Category)
 	}
-
 	if !q.After.IsZero() {
-		conditions = append(conditions, "timestamp >= ?")
-		args = append(args, formatTime(q.After))
+		countQuery = countQuery.Where("e.timestamp >= ?", q.After.UTC().Format(time.RFC3339Nano))
 	}
 	if !q.Before.IsZero() {
-		conditions = append(conditions, "timestamp <= ?")
-		args = append(args, formatTime(q.Before))
+		countQuery = countQuery.Where("e.timestamp <= ?", q.Before.UTC().Format(time.RFC3339Nano))
 	}
-
-	whereClause := ""
-	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	query := fmt.Sprintf("SELECT COUNT(*) FROM chronicle_events %s", whereClause)
 
 	var count int64
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	err := countQuery.Scan(ctx, &count)
 	return count, err
 }
 
 // LastSequence returns the highest sequence number for a stream.
 func (s *Store) LastSequence(ctx context.Context, streamID id.ID) (uint64, error) {
-	query := `SELECT COALESCE(MAX(sequence), 0) FROM chronicle_events WHERE stream_id = ?`
-
 	var seq uint64
-	err := s.db.QueryRowContext(ctx, query, streamID.String()).Scan(&seq)
+	err := s.sdb.NewSelect((*EventModel)(nil)).
+		ColumnExpr("COALESCE(MAX(sequence), 0)").
+		Where("stream_id = ?", streamID.String()).
+		Scan(ctx, &seq)
 	return seq, err
 }
 
 // LastHash returns the hash of the most recent event in a stream.
 func (s *Store) LastHash(ctx context.Context, streamID id.ID) (string, error) {
-	query := `SELECT hash FROM chronicle_events WHERE stream_id = ? ORDER BY sequence DESC LIMIT 1`
-
 	var hash string
-	err := s.db.QueryRowContext(ctx, query, streamID.String()).Scan(&hash)
+	err := s.sdb.NewSelect((*EventModel)(nil)).
+		Column("hash").
+		Where("stream_id = ?", streamID.String()).
+		OrderExpr("sequence DESC").
+		Limit(1).
+		Scan(ctx, &hash)
 	if err != nil {
-		return "", sqliteError(err, chronicle.ErrEventNotFound)
+		return "", groveError(err, chronicle.ErrEventNotFound)
 	}
 	return hash, nil
 }
 
-// scanEvent scans a single event row.
-func (s *Store) scanEvent(row *sql.Row) (*audit.Event, error) {
-	event := &audit.Event{}
-	var (
-		idStr       string
-		streamIDStr string
-		metadata    string
-		timestamp   string
-		erasedInt   int
-		erasedAt    sql.NullString
-		erasureID   sql.NullString
-	)
-
-	err := row.Scan(
-		&idStr, &streamIDStr, &event.Sequence, &event.Hash, &event.PrevHash,
-		&event.AppID, &event.TenantID, &event.UserID, &event.IP,
-		&event.Action, &event.Resource, &event.Category, &event.ResourceID, &metadata,
-		&event.Outcome, &event.Severity, &event.Reason,
-		&event.SubjectID, &event.EncryptionKeyID,
-		&erasedInt, &erasedAt, &erasureID,
-		&timestamp,
-	)
-	if err != nil {
-		return nil, sqliteError(err, chronicle.ErrEventNotFound)
+// applyEventFilters applies common query filters to a sqlitedriver select query.
+// It returns the modified query since sqlitedriver.SelectQuery methods are chainable.
+func applyEventFilters(q *sqlitedriver.SelectQuery, f *audit.Query) *sqlitedriver.SelectQuery {
+	if f.AppID != "" {
+		q = q.Where("e.app_id = ?", f.AppID)
 	}
-
-	return s.hydrateEvent(event, idStr, streamIDStr, metadata, timestamp, erasedInt, erasedAt, erasureID)
-}
-
-// scanEvents scans multiple event rows.
-func (s *Store) scanEvents(rows *sql.Rows) ([]*audit.Event, error) {
-	var events []*audit.Event
-	for rows.Next() {
-		event := &audit.Event{}
-		var (
-			idStr       string
-			streamIDStr string
-			metadata    string
-			timestamp   string
-			erasedInt   int
-			erasedAt    sql.NullString
-			erasureID   sql.NullString
-		)
-
-		err := rows.Scan(
-			&idStr, &streamIDStr, &event.Sequence, &event.Hash, &event.PrevHash,
-			&event.AppID, &event.TenantID, &event.UserID, &event.IP,
-			&event.Action, &event.Resource, &event.Category, &event.ResourceID, &metadata,
-			&event.Outcome, &event.Severity, &event.Reason,
-			&event.SubjectID, &event.EncryptionKeyID,
-			&erasedInt, &erasedAt, &erasureID,
-			&timestamp,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan event row: %w", err)
-		}
-
-		event, err = s.hydrateEvent(event, idStr, streamIDStr, metadata, timestamp, erasedInt, erasedAt, erasureID)
-		if err != nil {
-			return nil, err
-		}
-
-		events = append(events, event)
+	if f.TenantID != "" {
+		q = q.Where("e.tenant_id = ?", f.TenantID)
 	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate event rows: %w", err)
+	if f.UserID != "" {
+		q = q.Where("e.user_id = ?", f.UserID)
 	}
-
-	return events, nil
-}
-
-// hydrateEvent populates an event's parsed fields from raw SQLite column values.
-func (s *Store) hydrateEvent(
-	event *audit.Event,
-	idStr, streamIDStr, metadata, timestamp string,
-	erasedInt int, erasedAt sql.NullString, erasureID sql.NullString,
-) (*audit.Event, error) {
-	// Parse IDs.
-	parsedID, err := id.ParseAuditID(idStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse audit ID %q: %w", idStr, err)
+	if !f.After.IsZero() {
+		q = q.Where("e.timestamp >= ?", f.After.UTC().Format(time.RFC3339Nano))
 	}
-	event.ID = parsedID
-
-	parsedStreamID, err := id.ParseStreamID(streamIDStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse stream ID %q: %w", streamIDStr, err)
+	if !f.Before.IsZero() {
+		q = q.Where("e.timestamp <= ?", f.Before.UTC().Format(time.RFC3339Nano))
 	}
-	event.StreamID = parsedStreamID
-
-	// Parse metadata JSON.
-	if err = json.Unmarshal([]byte(metadata), &event.Metadata); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	if len(f.Categories) > 0 {
+		q = q.Where("e.category IN (?)", f.Categories)
 	}
-
-	// Parse timestamp.
-	var ts time.Time
-	ts, err = parseTime(timestamp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse timestamp: %w", err)
+	if len(f.Actions) > 0 {
+		q = q.Where("e.action IN (?)", f.Actions)
 	}
-	event.Timestamp = ts
-
-	// Parse erasure fields.
-	event.Erased = erasedInt != 0
-
-	event.ErasedAt, err = parseNullableTime(erasedAt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse erased_at: %w", err)
+	if len(f.Resources) > 0 {
+		q = q.Where("e.resource IN (?)", f.Resources)
 	}
-
-	if erasureID.Valid {
-		event.ErasureID = erasureID.String
+	if len(f.Severity) > 0 {
+		q = q.Where("e.severity IN (?)", f.Severity)
 	}
-
-	return event, nil
-}
-
-// appendInClause appends an IN (?, ?, ...) condition for a string slice filter.
-func appendInClause(conditions *[]string, args *[]interface{}, column string, values []string) {
-	if len(values) == 0 {
-		return
+	if len(f.Outcome) > 0 {
+		q = q.Where("e.outcome IN (?)", f.Outcome)
 	}
-	placeholders := make([]string, len(values))
-	for i, v := range values {
-		placeholders[i] = "?"
-		*args = append(*args, v)
-	}
-	*conditions = append(*conditions, fmt.Sprintf("%s IN (%s)", column, strings.Join(placeholders, ", ")))
+	return q
 }

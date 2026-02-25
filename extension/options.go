@@ -1,79 +1,88 @@
 package extension
 
 import (
-	"log/slog"
 	"time"
 
 	"github.com/xraph/chronicle/sink"
 	"github.com/xraph/chronicle/store"
 )
 
-// options holds the configuration for the Chronicle extension.
-type options struct {
-	store               store.Store
-	batchSize           int
-	flushInterval       time.Duration
-	enableCryptoErasure bool
-	retentionInterval   time.Duration
-	archiveSink         sink.Sink
-	logger              *slog.Logger
-	disableRoutes       bool
-	disableMigrate      bool
-}
-
-func defaultOptions() options {
-	return options{
-		batchSize:         100,
-		flushInterval:     time.Second,
-		retentionInterval: 24 * time.Hour,
-	}
-}
-
-// Option configures the Chronicle extension.
-type Option func(*options)
+// Option configures the Chronicle Forge extension.
+type Option func(*Extension)
 
 // WithStore provides the composite store for the extension.
 func WithStore(s store.Store) Option {
-	return func(o *options) { o.store = s }
+	return func(e *Extension) { e.opts.store = s }
 }
 
 // WithBatchSize sets the event batch size.
 func WithBatchSize(n int) Option {
-	return func(o *options) { o.batchSize = n }
+	return func(e *Extension) { e.config.BatchSize = n }
 }
 
 // WithFlushInterval sets the batch flush interval.
 func WithFlushInterval(d time.Duration) Option {
-	return func(o *options) { o.flushInterval = d }
+	return func(e *Extension) { e.config.FlushInterval = d }
 }
 
 // WithCryptoErasure enables GDPR crypto-erasure support.
 func WithCryptoErasure(enabled bool) Option {
-	return func(o *options) { o.enableCryptoErasure = enabled }
+	return func(e *Extension) { e.config.EnableCryptoErasure = enabled }
 }
 
 // WithRetentionInterval sets how often retention policies are enforced.
 // Set to 0 to disable automatic retention.
 func WithRetentionInterval(d time.Duration) Option {
-	return func(o *options) { o.retentionInterval = d }
+	return func(e *Extension) { e.config.RetentionInterval = d }
 }
 
 // WithArchiveSink sets the archive sink for retention.
 func WithArchiveSink(s sink.Sink) Option {
-	return func(o *options) { o.archiveSink = s }
+	return func(e *Extension) { e.opts.archiveSink = s }
 }
 
-// WithLogger sets the logger.
-func WithLogger(l *slog.Logger) Option {
-	return func(o *options) { o.logger = l }
+// WithConfig sets the Forge extension configuration.
+func WithConfig(cfg Config) Option {
+	return func(e *Extension) { e.config = cfg }
 }
 
-// WithDisableRoutes disables automatic route registration in the Forge router.
-func WithDisableRoutes(disable bool) Option {
-	return func(o *options) { o.disableRoutes = disable }
+// WithDisableRoutes prevents HTTP route registration.
+func WithDisableRoutes() Option {
+	return func(e *Extension) { e.config.DisableRoutes = true }
 }
 
-// WithDisableMigrate disables automatic database migration on Start.
-func WithDisableMigrate(disable bool) Option {
-	return func(o *options) { o.disableMigrate = disable }
+// WithDisableMigrate prevents auto-migration on start.
+func WithDisableMigrate() Option {
+	return func(e *Extension) { e.config.DisableMigrate = true }
+}
+
+// WithBasePath sets the URL prefix for chronicle routes.
+func WithBasePath(path string) Option {
+	return func(e *Extension) { e.config.BasePath = path }
+}
+
+// WithRequireConfig requires config to be present in YAML files.
+// If true and no config is found, Register returns an error.
+func WithRequireConfig(require bool) Option {
+	return func(e *Extension) { e.config.RequireConfig = require }
+}
+
+// WithGroveDatabase sets the name of the grove.DB to resolve from the DI container.
+// The extension will auto-construct the appropriate store backend (postgres/sqlite/mongo)
+// based on the grove driver type. Pass an empty string to use the default (unnamed) grove.DB.
+func WithGroveDatabase(name string) Option {
+	return func(e *Extension) {
+		e.config.GroveDatabase = name
+		e.useGrove = true
+	}
+}
+
+// WithGroveKV sets the name of the grove/kv.Store to resolve from the DI container.
+// The extension will construct a Redis-backed Chronicle store from the KV store.
+// Pass an empty string to use the default (unnamed) grove/kv.Store.
+func WithGroveKV(name string) Option {
+	return func(e *Extension) {
+		e.config.GroveKV = name
+		e.useGroveKV = true
+	}
 }

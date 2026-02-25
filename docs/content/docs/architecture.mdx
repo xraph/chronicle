@@ -36,7 +36,7 @@ Chronicle is organized as a set of focused Go packages. The root `chronicle` pac
 │                      store.Store                                │
 │  (composite interface: all sub-stores + Migrate/Ping/Close)    │
 ├──────────┬───────────┬────────────┬─────────────────────────────┤
-│ Postgres │    Bun    │   SQLite   │   Memory (testing only)      │
+│ Postgres │   Grove   │   SQLite   │   Memory (testing only)      │
 │ (pgx/v5) │  (ORM)   │            │                              │
 └──────────┴───────────┴────────────┴─────────────────────────────┘
 ```
@@ -133,4 +133,4 @@ All backends implement this single interface. Pass the same backend value to `co
 | `extension` | `.../extension` | Forge framework extension |
 | `store/memory` | `.../store/memory` | In-memory backend (testing) |
 | `store/postgres` | `.../store/postgres` | PostgreSQL backend (pgx/v5) |
-| `store/bun` | `.../store/bun` | Bun ORM backend |
+| `store/grovestore` | `.../store/grovestore` | Grove ORM backend |

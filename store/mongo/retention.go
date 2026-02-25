@@ -1,11 +1,11 @@
-package bunstore
+package mongo
 
 import (
 	"context"
 	"fmt"
 	"time"
 
-	"github.com/uptrace/bun"
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
@@ -13,28 +13,43 @@ import (
 	"github.com/xraph/chronicle/retention"
 )
 
-// SavePolicy persists a retention policy (INSERT or UPDATE on conflict).
+// SavePolicy persists a retention policy (upsert by category).
 func (s *Store) SavePolicy(ctx context.Context, p *retention.Policy) error {
 	m := fromPolicy(p)
-	_, err := s.db.NewInsert().Model(m).
-		On("CONFLICT (category) DO UPDATE").
-		Set("duration = EXCLUDED.duration").
-		Set("archive = EXCLUDED.archive").
-		Set("app_id = EXCLUDED.app_id").
-		Set("updated_at = EXCLUDED.updated_at").
-		Exec(ctx)
-	return err
+
+	// Try to find existing by category and update, or insert new.
+	filter := bson.M{"category": m.Category}
+	update := bson.M{"$set": bson.M{
+		"_id":        m.ID,
+		"category":   m.Category,
+		"duration":   m.Duration,
+		"archive":    m.Archive,
+		"app_id":     m.AppID,
+		"created_at": m.CreatedAt,
+		"updated_at": m.UpdatedAt,
+	}}
+
+	_, err := s.mdb.Collection(colPolicies).UpdateOne(ctx, filter, update, nil)
+	if err != nil {
+		// If no match, insert.
+		_, err = s.mdb.NewInsert(m).Exec(ctx)
+		return err
+	}
+	return nil
 }
 
 // GetPolicy returns a retention policy by ID.
 func (s *Store) GetPolicy(ctx context.Context, policyID id.ID) (*retention.Policy, error) {
-	m := new(RetentionPolicyModel)
-	err := s.db.NewSelect().Model(m).Where("id = ?", policyID.String()).Scan(ctx)
+	var m RetentionPolicyModel
+	err := s.mdb.NewFind(&m).Filter(bson.M{"_id": policyID.String()}).Scan(ctx)
 	if err != nil {
-		return nil, bunError(err, chronicle.ErrPolicyNotFound)
+		if isNoDocuments(err) {
+			return nil, chronicle.ErrPolicyNotFound
+		}
+		return nil, fmt.Errorf("failed to get policy: %w", err)
 	}
 
-	p, err := toPolicy(m)
+	p, err := toPolicy(&m)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert policy model: %w", err)
 	}
@@ -45,11 +60,12 @@ func (s *Store) GetPolicy(ctx context.Context, policyID id.ID) (*retention.Polic
 // ListPolicies returns all retention policies.
 func (s *Store) ListPolicies(ctx context.Context) ([]*retention.Policy, error) {
 	var models []RetentionPolicyModel
-	err := s.db.NewSelect().Model(&models).
-		OrderExpr("rp.created_at DESC").
+	err := s.mdb.NewFind(&models).
+		Filter(bson.M{}).
+		Sort(bson.D{{Key: "created_at", Value: -1}}).
 		Scan(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list policies: %w", err)
 	}
 
 	policies := make([]*retention.Policy, 0, len(models))
@@ -66,20 +82,14 @@ func (s *Store) ListPolicies(ctx context.Context) ([]*retention.Policy, error) {
 
 // DeletePolicy removes a retention policy.
 func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
-	result, err := s.db.NewDelete().
-		TableExpr("chronicle_retention_policies").
-		Where("id = ?", policyID.String()).
+	res, err := s.mdb.NewDelete((*RetentionPolicyModel)(nil)).
+		Filter(bson.M{"_id": policyID.String()}).
 		Exec(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to delete policy: %w", err)
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-
-	if rows == 0 {
+	if res.DeletedCount() == 0 {
 		return fmt.Errorf("%w: policy %s", chronicle.ErrPolicyNotFound, policyID)
 	}
 
@@ -89,13 +99,15 @@ func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
 // EventsOlderThan returns events older than a given time for a category.
 func (s *Store) EventsOlderThan(ctx context.Context, category string, before time.Time) ([]*audit.Event, error) {
 	var models []EventModel
-	err := s.db.NewSelect().Model(&models).
-		Where("e.category = ?", category).
-		Where("e.timestamp < ?", before).
-		OrderExpr("e.timestamp ASC").
+	err := s.mdb.NewFind(&models).
+		Filter(bson.M{
+			"category":  category,
+			"timestamp": bson.M{"$lt": before},
+		}).
+		Sort(bson.D{{Key: "timestamp", Value: 1}}).
 		Scan(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query old events: %w", err)
 	}
 
 	return toEventSlice(models)
@@ -107,45 +119,42 @@ func (s *Store) PurgeEvents(ctx context.Context, eventIDs []id.ID) (int64, error
 		return 0, nil
 	}
 
-	// Convert TypeIDs to strings for the query.
 	ids := make([]string, 0, len(eventIDs))
 	for _, eid := range eventIDs {
 		ids = append(ids, eid.String())
 	}
 
-	result, err := s.db.NewDelete().
-		TableExpr("chronicle_events").
-		Where("id IN (?)", bun.In(ids)).
-		Exec(ctx)
+	result, err := s.mdb.Collection(colEvents).DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}})
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to purge events: %w", err)
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-
-	return rows, nil
+	return result.DeletedCount, nil
 }
 
 // RecordArchive records that a batch of events was archived.
 func (s *Store) RecordArchive(ctx context.Context, a *retention.Archive) error {
 	m := fromArchive(a)
-	_, err := s.db.NewInsert().Model(m).Exec(ctx)
+	_, err := s.mdb.NewInsert(m).Exec(ctx)
 	return err
 }
 
 // ListArchives returns archive records with pagination.
 func (s *Store) ListArchives(ctx context.Context, opts retention.ListOpts) ([]*retention.Archive, error) {
 	var models []ArchiveModel
-	err := s.db.NewSelect().Model(&models).
-		OrderExpr("a.created_at DESC").
-		Limit(opts.Limit).
-		Offset(opts.Offset).
-		Scan(ctx)
-	if err != nil {
-		return nil, err
+	findQ := s.mdb.NewFind(&models).
+		Filter(bson.M{}).
+		Sort(bson.D{{Key: "created_at", Value: -1}})
+
+	if opts.Limit > 0 {
+		findQ = findQ.Limit(int64(opts.Limit))
+	}
+	if opts.Offset > 0 {
+		findQ = findQ.Skip(int64(opts.Offset))
+	}
+
+	if err := findQ.Scan(ctx); err != nil {
+		return nil, fmt.Errorf("failed to list archives: %w", err)
 	}
 
 	archives := make([]*retention.Archive, 0, len(models))

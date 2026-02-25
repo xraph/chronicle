@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/xraph/chronicle"
@@ -12,81 +11,26 @@ import (
 
 // SaveReport persists a generated compliance report.
 func (s *Store) SaveReport(ctx context.Context, r *compliance.Report) error {
-	// Marshal sections to JSON for TEXT storage.
-	data, err := json.Marshal(r.Sections)
+	m, err := fromReport(r)
 	if err != nil {
-		return fmt.Errorf("failed to marshal report sections: %w", err)
+		return err
 	}
 
-	query := `
-		INSERT INTO chronicle_reports (
-			id, title, type, period_from, period_to,
-			app_id, tenant_id, format, data, generated_by, created_at
-		) VALUES (
-			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-		)`
-
-	_, err = s.db.ExecContext(ctx, query,
-		r.ID.String(), r.Title, r.Type,
-		formatTime(r.Period.From), formatTime(r.Period.To),
-		r.AppID, r.TenantID, string(r.Format), string(data),
-		r.GeneratedBy, formatTime(r.CreatedAt),
-	)
+	_, err = s.sdb.NewInsert(m).Exec(ctx)
 	return err
 }
 
 // GetReport returns a report by ID.
 func (s *Store) GetReport(ctx context.Context, reportID id.ID) (*compliance.Report, error) {
-	query := `
-		SELECT
-			id, title, type, period_from, period_to,
-			app_id, tenant_id, format, data, generated_by, created_at
-		FROM chronicle_reports
-		WHERE id = ?`
-
-	r := &compliance.Report{}
-	var (
-		idStr      string
-		periodFrom string
-		periodTo   string
-		format     string
-		data       string
-		createdAt  string
-	)
-
-	err := s.db.QueryRowContext(ctx, query, reportID.String()).Scan(
-		&idStr, &r.Title, &r.Type, &periodFrom, &periodTo,
-		&r.AppID, &r.TenantID, &format, &data, &r.GeneratedBy, &createdAt,
-	)
+	m := new(ReportModel)
+	err := s.sdb.NewSelect(m).Where("id = ?", reportID.String()).Scan(ctx)
 	if err != nil {
-		return nil, sqliteError(err, chronicle.ErrReportNotFound)
+		return nil, groveError(err, chronicle.ErrReportNotFound)
 	}
 
-	parsedID, err := id.ParseReportID(idStr)
+	r, err := toReport(m)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse report ID %q: %w", idStr, err)
-	}
-	r.ID = parsedID
-	r.Format = compliance.Format(format)
-
-	r.Period.From, err = parseTime(periodFrom)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse period_from: %w", err)
-	}
-
-	r.Period.To, err = parseTime(periodTo)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse period_to: %w", err)
-	}
-
-	r.CreatedAt, err = parseTime(createdAt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse created_at: %w", err)
-	}
-
-	// Unmarshal sections from JSON.
-	if err := json.Unmarshal([]byte(data), &r.Sections); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal report sections: %w", err)
+		return nil, fmt.Errorf("failed to convert report model: %w", err)
 	}
 
 	return r, nil
@@ -94,72 +38,23 @@ func (s *Store) GetReport(ctx context.Context, reportID id.ID) (*compliance.Repo
 
 // ListReports returns reports with pagination.
 func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*compliance.Report, error) {
-	query := `
-		SELECT
-			id, title, type, period_from, period_to,
-			app_id, tenant_id, format, data, generated_by, created_at
-		FROM chronicle_reports
-		ORDER BY created_at DESC
-		LIMIT ? OFFSET ?`
-
-	rows, err := s.db.QueryContext(ctx, query, opts.Limit, opts.Offset)
+	var models []ReportModel
+	err := s.sdb.NewSelect(&models).
+		OrderExpr("r.created_at DESC").
+		Limit(opts.Limit).
+		Offset(opts.Offset).
+		Scan(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list reports: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
 
-	var reports []*compliance.Report
-	for rows.Next() {
-		r := &compliance.Report{}
-		var (
-			idStr      string
-			periodFrom string
-			periodTo   string
-			format     string
-			data       string
-			createdAt  string
-		)
-
-		err := rows.Scan(
-			&idStr, &r.Title, &r.Type, &periodFrom, &periodTo,
-			&r.AppID, &r.TenantID, &format, &data, &r.GeneratedBy, &createdAt,
-		)
+	reports := make([]*compliance.Report, 0, len(models))
+	for i := range models {
+		r, err := toReport(&models[i])
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan report row: %w", err)
+			return nil, err
 		}
-
-		parsedID, err := id.ParseReportID(idStr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse report ID %q: %w", idStr, err)
-		}
-		r.ID = parsedID
-		r.Format = compliance.Format(format)
-
-		r.Period.From, err = parseTime(periodFrom)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse period_from: %w", err)
-		}
-
-		r.Period.To, err = parseTime(periodTo)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse period_to: %w", err)
-		}
-
-		r.CreatedAt, err = parseTime(createdAt)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse created_at: %w", err)
-		}
-
-		// Unmarshal sections from JSON.
-		if err := json.Unmarshal([]byte(data), &r.Sections); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal report sections: %w", err)
-		}
-
 		reports = append(reports, r)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate report rows: %w", err)
 	}
 
 	return reports, nil
@@ -167,19 +62,19 @@ func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*c
 
 // DeleteReport removes a report by ID.
 func (s *Store) DeleteReport(ctx context.Context, reportID id.ID) error {
-	query := `DELETE FROM chronicle_reports WHERE id = ?`
-
-	result, err := s.db.ExecContext(ctx, query, reportID.String())
+	result, err := s.sdb.NewDelete((*ReportModel)(nil)).
+		Where("id = ?", reportID.String()).
+		Exec(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to delete report: %w", err)
+		return err
 	}
 
-	n, err := result.RowsAffected()
+	rows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
+		return err
 	}
 
-	if n == 0 {
+	if rows == 0 {
 		return fmt.Errorf("%w: report %s", chronicle.ErrReportNotFound, reportID)
 	}
 

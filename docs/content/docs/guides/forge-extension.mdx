@@ -119,6 +119,104 @@ if err := pgStore.Migrate(ctx); err != nil {
 app.Register(ext)
 ```
 
+## Grove database integration
+
+When your Forge app uses the [Grove extension](https://github.com/xraph/grove) to manage database connections, Chronicle can automatically resolve a `grove.DB` from the DI container and construct the correct store backend based on the driver type.
+
+### Using the default grove database
+
+If the Grove extension registers a single database (or a default in multi-DB mode), use `WithGroveDatabase` with an empty name:
+
+```go
+ext := extension.New(
+    extension.WithGroveDatabase(""),
+)
+```
+
+### Using a named grove database
+
+In multi-database setups, reference a specific database by name:
+
+```go
+ext := extension.New(
+    extension.WithGroveDatabase("audit"),
+)
+```
+
+This resolves the grove.DB named `"audit"` from the DI container and auto-constructs the matching store. The driver type is detected automatically -- you do not need to import individual store packages.
+
+### Using the default grove KV store
+
+If the Grove extension registers a KV store, use `WithGroveKV` with an empty name:
+
+```go
+ext := extension.New(
+    extension.WithGroveKV(""),
+)
+```
+
+### Using a named grove KV store
+
+In multi-KV setups, reference a specific KV store by name:
+
+```go
+ext := extension.New(
+    extension.WithGroveKV("chronicle-kv"),
+)
+```
+
+### Store resolution order
+
+The extension resolves its store in this order:
+
+1. **Explicit store** -- if `WithStore(s)` was called, it is used directly and grove is ignored.
+2. **Grove database** -- if `WithGroveDatabase(name)` was called (or `grove_database` is set in YAML), the named or default `grove.DB` is resolved from DI.
+3. **Grove KV** -- if `WithGroveKV(name)` was called (or `grove_kv` is set in YAML), the named or default grove KV store is resolved from DI.
+4. **In-memory fallback** -- if none of the above is configured, an in-memory store is used.
+
+## YAML configuration
+
+The Chronicle extension automatically loads configuration from your Forge app's YAML config files. It looks for the key `extensions.chronicle` first, then falls back to `chronicle`:
+
+```yaml
+# forge.yaml (or app.yaml, config.yaml, etc.)
+extensions:
+  chronicle:
+    grove_database: audit
+    grove_kv: chronicle-kv
+    batch_size: 100
+    flush_interval: 1s
+    crypto_erasure: true
+    retention_interval: 24h
+    disable_routes: false
+    disable_migrate: false
+```
+
+Or at the top level:
+
+```yaml
+chronicle:
+  grove_database: ""
+  grove_kv: ""
+  batch_size: 100
+  flush_interval: 1s
+  crypto_erasure: false
+  retention_interval: 24h
+```
+
+### Configuration reference
+
+| Field | YAML key | Type | Default | Description |
+|-------|----------|------|---------|-------------|
+| `GroveDatabase` | `grove_database` | `string` | `""` | Name of the grove.DB to resolve from DI; empty uses the default DB |
+| `GroveKV` | `grove_kv` | `string` | `""` | Name of the grove KV store to resolve from DI; empty uses the default KV |
+| `BatchSize` | `batch_size` | `int` | `100` | Event batch size |
+| `FlushInterval` | `flush_interval` | `duration` | `1s` | Batch flush interval |
+| `CryptoErasure` | `crypto_erasure` | `bool` | `false` | Enable GDPR crypto-erasure |
+| `RetentionInterval` | `retention_interval` | `duration` | `24h` | Retention enforcement interval (0 = off) |
+| `DisableRoutes` | `disable_routes` | `bool` | `false` | Skip auto route registration |
+| `DisableMigrate` | `disable_migrate` | `bool` | `false` | Skip `Migrate` on `Start` |
+
 ## Full option reference
 
 | Option | Default | Description |
@@ -132,3 +230,5 @@ app.Register(ext)
 | `WithLogger(l)` | `slog.Default()` | Logger. |
 | `WithDisableRoutes(b)` | false | Skip auto route registration. |
 | `WithDisableMigrate(b)` | false | Skip `Migrate` on `Start`. |
+| `WithGroveDatabase(name)` | `""` | Resolve a grove.DB from DI by name; empty uses the default DB. |
+| `WithGroveKV(name)` | `""` | Resolve a grove KV store from DI by name; empty uses the default KV. |

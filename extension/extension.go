@@ -2,6 +2,9 @@
 // It implements the forge.Extension interface so Chronicle can be mounted
 // into any Forge app with automatic route registration, DI injection,
 // metrics, and tracing.
+//
+// Configuration can be provided programmatically via Option functions
+// or via YAML configuration files under "extensions.chronicle" or "chronicle" keys.
 package extension
 
 import (
@@ -13,13 +16,20 @@ import (
 	"time"
 
 	"github.com/xraph/forge"
+	"github.com/xraph/grove"
+	"github.com/xraph/grove/kv"
 	"github.com/xraph/vessel"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/handler"
 	"github.com/xraph/chronicle/retention"
+	"github.com/xraph/chronicle/sink"
 	"github.com/xraph/chronicle/store"
+	mongostore "github.com/xraph/chronicle/store/mongo"
+	pgstore "github.com/xraph/chronicle/store/postgres"
+	redisstore "github.com/xraph/chronicle/store/redis"
+	sqlitestore "github.com/xraph/chronicle/store/sqlite"
 )
 
 // Extension metadata.
@@ -32,46 +42,74 @@ const (
 // Ensure Extension implements forge.Extension at compile time.
 var _ forge.Extension = (*Extension)(nil)
 
+// internalOpts holds non-config options that are set programmatically only.
+type internalOpts struct {
+	store       store.Store
+	archiveSink sink.Sink
+}
+
 // Extension adapts Chronicle as a Forge extension. It implements the
 // forge.Extension interface so Chronicle can be mounted into any Forge app.
 type Extension struct {
-	config    Config
-	chronicle *chronicle.Chronicle
-	engine    *compliance.Engine
-	enforcer  *retention.Enforcer
-	api       *handler.API
-	store     store.Store
-	logger    *slog.Logger
-	opts      options
+	*forge.BaseExtension
+
+	config     Config
+	opts       internalOpts
+	chronicle  *chronicle.Chronicle
+	engine     *compliance.Engine
+	enforcer   *retention.Enforcer
+	api        *handler.API
+	store      store.Store
+	useGrove   bool
+	useGroveKV bool
 
 	cancel context.CancelFunc
 }
 
 // New creates a new Chronicle Forge extension with the given options.
 func New(opts ...Option) *Extension {
-	o := defaultOptions()
-	for _, opt := range opts {
-		opt(&o)
+	e := &Extension{
+		BaseExtension: forge.NewBaseExtension(ExtensionName, ExtensionVersion, ExtensionDescription),
 	}
-	return &Extension{opts: o}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
-
-// Name returns the extension name.
-func (e *Extension) Name() string { return ExtensionName }
-
-// Description returns the extension description.
-func (e *Extension) Description() string { return ExtensionDescription }
-
-// Version returns the extension version.
-func (e *Extension) Version() string { return ExtensionVersion }
-
-// Dependencies returns the list of extension names this extension depends on.
-func (e *Extension) Dependencies() []string { return []string{} }
 
 // Register implements [forge.Extension]. It initializes the store, creates
 // the Chronicle instance, wires up all components, and optionally registers
 // HTTP routes into the Forge router.
 func (e *Extension) Register(fapp forge.App) error {
+	if err := e.BaseExtension.Register(fapp); err != nil {
+		return err
+	}
+
+	if err := e.loadConfiguration(); err != nil {
+		return err
+	}
+
+	// Resolve store from grove DI if configured.
+	// DB takes precedence over KV when both are configured.
+	if e.opts.store == nil && e.useGrove {
+		groveDB, err := e.resolveGroveDB(fapp)
+		if err != nil {
+			return fmt.Errorf("chronicle: %w", err)
+		}
+		s, err := e.buildStoreFromGroveDB(groveDB)
+		if err != nil {
+			return err
+		}
+		e.opts.store = s
+	}
+	if e.opts.store == nil && e.useGroveKV {
+		kvStore, err := e.resolveGroveKV(fapp)
+		if err != nil {
+			return fmt.Errorf("chronicle: %w", err)
+		}
+		e.opts.store = redisstore.New(kvStore)
+	}
+
 	if err := e.init(fapp); err != nil {
 		return err
 	}
@@ -88,12 +126,6 @@ func (e *Extension) Register(fapp forge.App) error {
 
 // init builds the Chronicle instance and all sub-components.
 func (e *Extension) init(fapp forge.App) error {
-	logger := e.opts.logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-	e.logger = logger
-
 	// Resolve store.
 	s := e.opts.store
 	if s == nil {
@@ -108,13 +140,13 @@ func (e *Extension) init(fapp forge.App) error {
 	chronicleOpts := []chronicle.Option{
 		chronicle.WithStore(adapter),
 	}
-	if e.opts.batchSize > 0 {
-		chronicleOpts = append(chronicleOpts, chronicle.WithBatchSize(e.opts.batchSize))
+	if e.config.BatchSize > 0 {
+		chronicleOpts = append(chronicleOpts, chronicle.WithBatchSize(e.config.BatchSize))
 	}
-	if e.opts.flushInterval > 0 {
-		chronicleOpts = append(chronicleOpts, chronicle.WithFlushInterval(e.opts.flushInterval))
+	if e.config.FlushInterval > 0 {
+		chronicleOpts = append(chronicleOpts, chronicle.WithFlushInterval(e.config.FlushInterval))
 	}
-	if e.opts.enableCryptoErasure {
+	if e.config.EnableCryptoErasure {
 		chronicleOpts = append(chronicleOpts, chronicle.WithCryptoErasure(true))
 	}
 
@@ -125,17 +157,14 @@ func (e *Extension) init(fapp forge.App) error {
 	}
 	e.chronicle = c
 
+	// Sub-components require *slog.Logger; use the standard default.
+	slogger := slog.Default()
+
 	// Create compliance engine.
-	e.engine = compliance.NewEngine(s, s, s, logger)
+	e.engine = compliance.NewEngine(s, s, s, slogger)
 
 	// Create retention enforcer.
-	e.enforcer = retention.NewEnforcer(s, e.opts.archiveSink, logger)
-
-	// Configure extension settings.
-	e.config = Config{
-		DisableRoutes:  e.opts.disableRoutes,
-		DisableMigrate: e.opts.disableMigrate,
-	}
+	e.enforcer = retention.NewEnforcer(s, e.opts.archiveSink, slogger)
 
 	// Create the API handler with Forge router.
 	e.api = handler.New(handler.Dependencies{
@@ -146,13 +175,18 @@ func (e *Extension) init(fapp forge.App) error {
 		ReportStore:    s,
 		Compliance:     e.engine,
 		Retention:      e.enforcer,
-		Logger:         logger,
+		Logger:         slogger,
 	}, fapp.Router())
 
 	// Register HTTP routes unless disabled.
 	if !e.config.DisableRoutes {
 		e.api.RegisterRoutes(fapp.Router())
 	}
+
+	e.Logger().Info("chronicle extension registered",
+		forge.F("disable_routes", e.config.DisableRoutes),
+		forge.F("disable_migrate", e.config.DisableMigrate),
+	)
 
 	return nil
 }
@@ -175,10 +209,11 @@ func (e *Extension) Start(ctx context.Context) error {
 	e.cancel = cancel
 
 	// Start retention scheduler if configured.
-	if e.opts.retentionInterval > 0 {
+	if e.config.RetentionInterval > 0 {
 		go e.runRetentionScheduler(ctx)
 	}
 
+	e.MarkStarted()
 	return nil
 }
 
@@ -187,6 +222,7 @@ func (e *Extension) Stop(_ context.Context) error {
 	if e.cancel != nil {
 		e.cancel()
 	}
+	e.MarkStopped()
 	return nil
 }
 
@@ -241,7 +277,7 @@ func (e *Extension) API() *handler.API {
 }
 
 func (e *Extension) runRetentionScheduler(ctx context.Context) {
-	ticker := time.NewTicker(e.opts.retentionInterval)
+	ticker := time.NewTicker(e.config.RetentionInterval)
 	defer ticker.Stop()
 
 	for {
@@ -251,15 +287,199 @@ func (e *Extension) runRetentionScheduler(ctx context.Context) {
 		case <-ticker.C:
 			result, err := e.enforcer.Enforce(ctx)
 			if err != nil {
-				e.logger.ErrorContext(ctx, "retention enforcement failed", "error", err)
+				e.Logger().Error("retention enforcement failed",
+					forge.F("error", err.Error()),
+				)
 				continue
 			}
 			if result.Archived > 0 || result.Purged > 0 {
-				e.logger.InfoContext(ctx, "retention enforcement complete",
-					"archived", result.Archived,
-					"purged", result.Purged,
+				e.Logger().Info("retention enforcement complete",
+					forge.F("archived", result.Archived),
+					forge.F("purged", result.Purged),
 				)
 			}
 		}
+	}
+}
+
+// --- Config Loading (mirrors grove/shield extension pattern) ---
+
+// loadConfiguration loads config from YAML files or programmatic sources.
+func (e *Extension) loadConfiguration() error {
+	programmaticConfig := e.config
+
+	// Try loading from config file.
+	fileConfig, configLoaded := e.tryLoadFromConfigFile()
+
+	if !configLoaded {
+		if programmaticConfig.RequireConfig {
+			return errors.New("chronicle: configuration is required but not found in config files; " +
+				"ensure 'extensions.chronicle' or 'chronicle' key exists in your config")
+		}
+
+		// Use programmatic config merged with defaults.
+		e.config = e.mergeWithDefaults(programmaticConfig)
+	} else {
+		// Config loaded from YAML -- merge with programmatic options.
+		e.config = e.mergeConfigurations(fileConfig, programmaticConfig)
+	}
+
+	// Enable grove resolution if YAML config specifies a grove database or KV.
+	if e.config.GroveDatabase != "" {
+		e.useGrove = true
+	}
+	if e.config.GroveKV != "" {
+		e.useGroveKV = true
+	}
+
+	e.Logger().Debug("chronicle: configuration loaded",
+		forge.F("disable_routes", e.config.DisableRoutes),
+		forge.F("disable_migrate", e.config.DisableMigrate),
+		forge.F("base_path", e.config.BasePath),
+		forge.F("grove_database", e.config.GroveDatabase),
+		forge.F("grove_kv", e.config.GroveKV),
+		forge.F("batch_size", e.config.BatchSize),
+		forge.F("retention_interval", e.config.RetentionInterval),
+	)
+
+	return nil
+}
+
+// tryLoadFromConfigFile attempts to load config from YAML files.
+func (e *Extension) tryLoadFromConfigFile() (Config, bool) {
+	cm := e.App().Config()
+	var cfg Config
+
+	// Try "extensions.chronicle" first (namespaced pattern).
+	if cm.IsSet("extensions.chronicle") {
+		if err := cm.Bind("extensions.chronicle", &cfg); err == nil {
+			e.Logger().Debug("chronicle: loaded config from file",
+				forge.F("key", "extensions.chronicle"),
+			)
+			return cfg, true
+		}
+		e.Logger().Warn("chronicle: failed to bind extensions.chronicle config",
+			forge.F("error", "bind failed"),
+		)
+	}
+
+	// Try legacy "chronicle" key.
+	if cm.IsSet("chronicle") {
+		if err := cm.Bind("chronicle", &cfg); err == nil {
+			e.Logger().Debug("chronicle: loaded config from file",
+				forge.F("key", "chronicle"),
+			)
+			return cfg, true
+		}
+		e.Logger().Warn("chronicle: failed to bind chronicle config",
+			forge.F("error", "bind failed"),
+		)
+	}
+
+	return Config{}, false
+}
+
+// mergeWithDefaults fills zero-valued fields with defaults.
+func (e *Extension) mergeWithDefaults(cfg Config) Config {
+	defaults := DefaultConfig()
+	if cfg.BatchSize == 0 {
+		cfg.BatchSize = defaults.BatchSize
+	}
+	if cfg.FlushInterval == 0 {
+		cfg.FlushInterval = defaults.FlushInterval
+	}
+	if cfg.RetentionInterval == 0 {
+		cfg.RetentionInterval = defaults.RetentionInterval
+	}
+	return cfg
+}
+
+// mergeConfigurations merges YAML config with programmatic options.
+// YAML config takes precedence for most fields; programmatic bool flags fill gaps.
+func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) Config {
+	// Programmatic bool flags override when true.
+	if programmaticConfig.DisableRoutes {
+		yamlConfig.DisableRoutes = true
+	}
+	if programmaticConfig.DisableMigrate {
+		yamlConfig.DisableMigrate = true
+	}
+	if programmaticConfig.EnableCryptoErasure {
+		yamlConfig.EnableCryptoErasure = true
+	}
+
+	// String fields: YAML takes precedence.
+	if yamlConfig.BasePath == "" && programmaticConfig.BasePath != "" {
+		yamlConfig.BasePath = programmaticConfig.BasePath
+	}
+	if yamlConfig.GroveDatabase == "" && programmaticConfig.GroveDatabase != "" {
+		yamlConfig.GroveDatabase = programmaticConfig.GroveDatabase
+	}
+	if yamlConfig.GroveKV == "" && programmaticConfig.GroveKV != "" {
+		yamlConfig.GroveKV = programmaticConfig.GroveKV
+	}
+
+	// Duration/int fields: YAML takes precedence, programmatic fills gaps.
+	if yamlConfig.BatchSize == 0 && programmaticConfig.BatchSize != 0 {
+		yamlConfig.BatchSize = programmaticConfig.BatchSize
+	}
+	if yamlConfig.FlushInterval == 0 && programmaticConfig.FlushInterval != 0 {
+		yamlConfig.FlushInterval = programmaticConfig.FlushInterval
+	}
+	if yamlConfig.RetentionInterval == 0 && programmaticConfig.RetentionInterval != 0 {
+		yamlConfig.RetentionInterval = programmaticConfig.RetentionInterval
+	}
+
+	// Fill remaining zeros with defaults.
+	return e.mergeWithDefaults(yamlConfig)
+}
+
+// resolveGroveDB resolves a *grove.DB from the DI container.
+// If GroveDatabase is set, it looks up the named DB; otherwise it uses the default.
+func (e *Extension) resolveGroveDB(fapp forge.App) (*grove.DB, error) {
+	if e.config.GroveDatabase != "" {
+		db, err := vessel.InjectNamed[*grove.DB](fapp.Container(), e.config.GroveDatabase)
+		if err != nil {
+			return nil, fmt.Errorf("grove database %q not found in container: %w", e.config.GroveDatabase, err)
+		}
+		return db, nil
+	}
+	db, err := vessel.Inject[*grove.DB](fapp.Container())
+	if err != nil {
+		return nil, fmt.Errorf("default grove database not found in container: %w", err)
+	}
+	return db, nil
+}
+
+// resolveGroveKV resolves a *kv.Store from the DI container.
+// If GroveKV is set, it looks up the named KV store; otherwise it uses the default.
+func (e *Extension) resolveGroveKV(fapp forge.App) (*kv.Store, error) {
+	if e.config.GroveKV != "" {
+		kvStore, err := vessel.InjectNamed[*kv.Store](fapp.Container(), e.config.GroveKV)
+		if err != nil {
+			return nil, fmt.Errorf("grove KV store %q not found in container: %w", e.config.GroveKV, err)
+		}
+		return kvStore, nil
+	}
+	kvStore, err := vessel.Inject[*kv.Store](fapp.Container())
+	if err != nil {
+		return nil, fmt.Errorf("default grove KV store not found in container: %w", err)
+	}
+	return kvStore, nil
+}
+
+// buildStoreFromGroveDB constructs the appropriate store backend
+// based on the grove driver type (pg, sqlite, mongo).
+func (e *Extension) buildStoreFromGroveDB(db *grove.DB) (store.Store, error) {
+	driverName := db.Driver().Name()
+	switch driverName {
+	case "pg":
+		return pgstore.New(db), nil
+	case "sqlite":
+		return sqlitestore.New(db), nil
+	case "mongo":
+		return mongostore.New(db), nil
+	default:
+		return nil, fmt.Errorf("chronicle: unsupported grove driver %q", driverName)
 	}
 }

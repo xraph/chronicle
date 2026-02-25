@@ -1,8 +1,10 @@
-package bunstore
+package mongo
 
 import (
 	"context"
 	"fmt"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/compliance"
@@ -16,19 +18,22 @@ func (s *Store) SaveReport(ctx context.Context, r *compliance.Report) error {
 		return err
 	}
 
-	_, err = s.db.NewInsert().Model(m).Exec(ctx)
+	_, err = s.mdb.NewInsert(m).Exec(ctx)
 	return err
 }
 
 // GetReport returns a report by ID.
 func (s *Store) GetReport(ctx context.Context, reportID id.ID) (*compliance.Report, error) {
-	m := new(ReportModel)
-	err := s.db.NewSelect().Model(m).Where("id = ?", reportID.String()).Scan(ctx)
+	var m ReportModel
+	err := s.mdb.NewFind(&m).Filter(bson.M{"_id": reportID.String()}).Scan(ctx)
 	if err != nil {
-		return nil, bunError(err, chronicle.ErrReportNotFound)
+		if isNoDocuments(err) {
+			return nil, chronicle.ErrReportNotFound
+		}
+		return nil, fmt.Errorf("failed to get report: %w", err)
 	}
 
-	r, err := toReport(m)
+	r, err := toReport(&m)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert report model: %w", err)
 	}
@@ -39,13 +44,19 @@ func (s *Store) GetReport(ctx context.Context, reportID id.ID) (*compliance.Repo
 // ListReports returns reports with pagination.
 func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*compliance.Report, error) {
 	var models []ReportModel
-	err := s.db.NewSelect().Model(&models).
-		OrderExpr("r.created_at DESC").
-		Limit(opts.Limit).
-		Offset(opts.Offset).
-		Scan(ctx)
-	if err != nil {
-		return nil, err
+	findQ := s.mdb.NewFind(&models).
+		Filter(bson.M{}).
+		Sort(bson.D{{Key: "created_at", Value: -1}})
+
+	if opts.Limit > 0 {
+		findQ = findQ.Limit(int64(opts.Limit))
+	}
+	if opts.Offset > 0 {
+		findQ = findQ.Skip(int64(opts.Offset))
+	}
+
+	if err := findQ.Scan(ctx); err != nil {
+		return nil, fmt.Errorf("failed to list reports: %w", err)
 	}
 
 	reports := make([]*compliance.Report, 0, len(models))
@@ -62,20 +73,14 @@ func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*c
 
 // DeleteReport removes a report by ID.
 func (s *Store) DeleteReport(ctx context.Context, reportID id.ID) error {
-	result, err := s.db.NewDelete().
-		TableExpr("chronicle_reports").
-		Where("id = ?", reportID.String()).
+	res, err := s.mdb.NewDelete((*ReportModel)(nil)).
+		Filter(bson.M{"_id": reportID.String()}).
 		Exec(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to delete report: %w", err)
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-
-	if rows == 0 {
+	if res.DeletedCount() == 0 {
 		return fmt.Errorf("%w: report %s", chronicle.ErrReportNotFound, reportID)
 	}
 

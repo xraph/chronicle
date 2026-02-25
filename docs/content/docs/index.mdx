@@ -13,7 +13,7 @@ Chronicle is a **library** — not a service. You bring your own database, HTTP 
 - **GDPR crypto-erasure** — Per-subject AES-256-GCM encryption. Delete the key, the data becomes irrecoverable, but the hash chain stays intact.
 - **Multi-tenant scoping** — Events are automatically scoped to app + tenant from context. Cross-tenant queries are impossible by design.
 - **Compliance reports** — Generate SOC2 Type II, HIPAA, EU AI Act, and custom reports. Export to JSON, CSV, Markdown, or HTML.
-- **Pluggable stores** — Postgres (pgx), Bun ORM, SQLite, and in-memory (testing). All implement the same composite `store.Store` interface.
+- **Pluggable stores** — Postgres (pgx), Grove ORM, SQLite, and in-memory (testing). All implement the same composite `store.Store` interface.
 - **Fire-and-forget sinks** — Stdout, file, S3, or custom. Sinks never block the record pipeline.
 - **Plugin system** — `BeforeRecord` enrichment, `AfterRecord` notification, `AlertHandler`, `SinkProvider`, and more.
 - **Retention policies** — Automatic archival and purge with configurable schedules.

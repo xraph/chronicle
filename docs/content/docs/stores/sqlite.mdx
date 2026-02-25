@@ -3,43 +3,22 @@ title: SQLite Store
 description: Lightweight SQLite store for development, testing, and single-node deployments.
 ---
 
-The `store/sqlite` package implements Chronicle's `store.Store` interface using SQLite via the `modernc.org/sqlite` pure-Go driver. It requires no CGO and no external database process, making it ideal for development, integration tests, and single-node deployments that don't need horizontal scaling.
+The `store/sqlite` package implements Chronicle's `store.Store` interface using the grove ORM with the SQLite driver. It requires no external database process, making it ideal for development, integration tests, and single-node deployments.
 
 ## Import
 
 ```go
 import (
-    "database/sql"
-
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/sqlitedriver"
     "github.com/xraph/chronicle/store/sqlite"
 )
 ```
 
-## Constructors
-
-### `sqlite.Open` — recommended
-
-Opens a SQLite file by path, enables WAL mode, and enforces foreign keys automatically:
+## Constructor
 
 ```go
-s, err := sqlite.Open("./chronicle.db")
-if err != nil {
-    log.Fatal(err)
-}
-```
-
-Pass `":memory:"` for a fully in-process, zero-persistence store (useful in tests):
-
-```go
-s, err := sqlite.Open(":memory:")
-```
-
-### `sqlite.New` — bring your own `*sql.DB`
-
-If you already manage the `*sql.DB` connection (e.g. for connection sharing), pass it directly:
-
-```go
-db, err := sql.Open("sqlite", "./chronicle.db")
+db, err := grove.Open(sqlitedriver.Open("chronicle.db"))
 if err != nil {
     log.Fatal(err)
 }
@@ -47,24 +26,21 @@ if err != nil {
 s := sqlite.New(db)
 ```
 
-Note: when using `sqlite.New`, WAL mode and foreign key enforcement are **not** applied automatically. Set them yourself before passing the connection:
+Pass `":memory:"` for a fully in-process, zero-persistence store useful in tests:
 
 ```go
-db.ExecContext(ctx, "PRAGMA journal_mode=WAL")
-db.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+db, err := grove.Open(sqlitedriver.Open(":memory:"))
 ```
 
 ## Migrations
 
-Run schema migrations before first use. Migrations are embedded SQL files executed inside a single transaction:
+Run schema migrations before first use. Migrations are idempotent -- safe to run on every startup:
 
 ```go
 if err := s.Migrate(ctx); err != nil {
     log.Fatal(err)
 }
 ```
-
-Migrations are idempotent — safe to run on every startup.
 
 ## Full setup with `chronicle.New`
 
@@ -73,6 +49,8 @@ import (
     "context"
     "log"
 
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/sqlitedriver"
     "github.com/xraph/chronicle"
     "github.com/xraph/chronicle/store"
     "github.com/xraph/chronicle/store/sqlite"
@@ -80,11 +58,12 @@ import (
 
 ctx := context.Background()
 
-s, err := sqlite.Open("./chronicle.db")
+db, err := grove.Open(sqlitedriver.Open("chronicle.db"))
 if err != nil {
     log.Fatal(err)
 }
 
+s := sqlite.New(db)
 if err := s.Migrate(ctx); err != nil {
     log.Fatal(err)
 }
@@ -92,20 +71,12 @@ if err := s.Migrate(ctx); err != nil {
 adapter := store.NewAdapter(s)
 
 c, err := chronicle.New(chronicle.WithStore(adapter))
-if err != nil {
-    log.Fatal(err)
-}
 ```
 
 ## With the Forge extension
 
 ```go
 import "github.com/xraph/chronicle/extension"
-
-s, err := sqlite.Open("./chronicle.db")
-if err != nil {
-    log.Fatal(err)
-}
 
 ext := extension.New(
     extension.WithStore(s),
@@ -130,11 +101,9 @@ app.Register(ext)
 
 | Aspect | Detail |
 |--------|--------|
-| Driver | `modernc.org/sqlite` (pure Go, no CGO) |
-| Migrations | Embedded SQL, transaction-wrapped |
-| WAL mode | Enabled automatically by `Open` for concurrent reads |
-| Foreign keys | Enforced automatically by `Open` |
-| Concurrency | Multiple readers, single writer |
-| Persistence | File-based (`Open`) or in-process (`":memory:"`) |
+| Driver | grove ORM + sqlitedriver |
+| Migrations | grove orchestrator with programmatic migrations |
+| Concurrency | Multiple readers, single writer (WAL mode) |
+| Persistence | File-based or in-process (`":memory:"`) |
 | Recommended for | Development, integration tests, single-node deployments |
 | Not recommended for | High-throughput multi-writer production workloads |

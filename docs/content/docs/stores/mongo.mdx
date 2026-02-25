@@ -1,0 +1,105 @@
+---
+title: MongoDB Store
+description: MongoDB store for document-oriented Chronicle deployments.
+---
+
+The `store/mongo` package implements Chronicle's `store.Store` interface using the grove ORM with the MongoDB driver. Events, streams, and compliance records are stored as documents, making it a natural fit for deployments that already run MongoDB.
+
+## Import
+
+```go
+import (
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/mongodriver"
+    "github.com/xraph/chronicle/store/mongo"
+)
+```
+
+## Constructor
+
+```go
+db, err := grove.Open(mongodriver.Open("mongodb://localhost:27017", "chronicle"))
+if err != nil {
+    log.Fatal(err)
+}
+
+s := mongo.New(db)
+```
+
+## Migrations
+
+```go
+if err := s.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+Migrations create indexes on all Chronicle collections. They are idempotent -- safe to run on every startup.
+
+## Full setup with `chronicle.New`
+
+```go
+import (
+    "context"
+    "log"
+
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/mongodriver"
+    "github.com/xraph/chronicle"
+    "github.com/xraph/chronicle/store"
+    "github.com/xraph/chronicle/store/mongo"
+)
+
+ctx := context.Background()
+
+db, err := grove.Open(mongodriver.Open("mongodb://localhost:27017", "chronicle"))
+if err != nil {
+    log.Fatal(err)
+}
+
+s := mongo.New(db)
+if err := s.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+
+adapter := store.NewAdapter(s)
+
+c, err := chronicle.New(chronicle.WithStore(adapter))
+```
+
+## With the Forge extension
+
+```go
+import "github.com/xraph/chronicle/extension"
+
+ext := extension.New(extension.WithStore(s))
+app.Register(ext)
+```
+
+## Interfaces implemented
+
+`mongo.Store` satisfies:
+
+- `audit.Store`
+- `stream.Store`
+- `verify.Store`
+- `erasure.Store`
+- `retention.Store`
+- `compliance.ReportStore`
+- `store.Store` (composite)
+
+## Characteristics
+
+| Aspect | Detail |
+|--------|--------|
+| Driver | grove ORM + mongodriver |
+| Migrations | Index creation on collections |
+| Transactions | MongoDB sessions (replica-set required for multi-doc txns) |
+| Collections | `chronicle_events`, `chronicle_streams`, `chronicle_erasures`, `chronicle_retention_policies`, `chronicle_archives`, `chronicle_reports` |
+| Close | `db.Close()` |
+
+## When to use
+
+- Document-oriented workloads where MongoDB is the primary data store.
+- Horizontally-scaled environments requiring sharding.
+- Teams already running MongoDB in their infrastructure.

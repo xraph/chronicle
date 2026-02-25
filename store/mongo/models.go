@@ -1,12 +1,11 @@
-// Package bunstore implements the Chronicle store interface using Bun ORM.
-package bunstore
+package mongo
 
 import (
 	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/uptrace/bun"
+	"github.com/xraph/grove"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
@@ -21,34 +20,34 @@ import (
 // EventModel
 // ──────────────────────────────────────────────────
 
-// EventModel is the Bun ORM model for the chronicle_events table.
+// EventModel is the grove ORM model for the chronicle_events collection.
 type EventModel struct {
-	bun.BaseModel `bun:"table:chronicle_events,alias:e"`
+	grove.BaseModel `grove:"table:chronicle_events"`
 
-	ID              string         `bun:"id,pk"`
-	StreamID        string         `bun:"stream_id"`
-	Sequence        uint64         `bun:"sequence"`
-	Hash            string         `bun:"hash"`
-	PrevHash        string         `bun:"prev_hash"`
-	AppID           string         `bun:"app_id"`
-	TenantID        string         `bun:"tenant_id"`
-	UserID          string         `bun:"user_id"`
-	IP              string         `bun:"ip"`
-	Action          string         `bun:"action"`
-	Resource        string         `bun:"resource"`
-	Category        string         `bun:"category"`
-	ResourceID      string         `bun:"resource_id"`
-	Metadata        map[string]any `bun:"metadata,type:jsonb"`
-	Outcome         string         `bun:"outcome"`
-	Severity        string         `bun:"severity"`
-	Reason          string         `bun:"reason"`
-	SubjectID       string         `bun:"subject_id"`
-	EncryptionKeyID string         `bun:"encryption_key_id"`
-	Erased          bool           `bun:"erased"`
-	ErasedAt        *time.Time     `bun:"erased_at"`
-	ErasureID       string         `bun:"erasure_id"`
-	Timestamp       time.Time      `bun:"timestamp"`
-	CreatedAt       time.Time      `bun:"created_at"`
+	ID              string         `grove:"id,pk"              bson:"_id"`
+	StreamID        string         `grove:"stream_id"          bson:"stream_id"`
+	Sequence        uint64         `grove:"sequence"           bson:"sequence"`
+	Hash            string         `grove:"hash"               bson:"hash"`
+	PrevHash        string         `grove:"prev_hash"          bson:"prev_hash"`
+	AppID           string         `grove:"app_id"             bson:"app_id"`
+	TenantID        string         `grove:"tenant_id"          bson:"tenant_id"`
+	UserID          string         `grove:"user_id"            bson:"user_id"`
+	IP              string         `grove:"ip"                 bson:"ip"`
+	Action          string         `grove:"action"             bson:"action"`
+	Resource        string         `grove:"resource"           bson:"resource"`
+	Category        string         `grove:"category"           bson:"category"`
+	ResourceID      string         `grove:"resource_id"        bson:"resource_id"`
+	Metadata        map[string]any `grove:"metadata"           bson:"metadata,omitempty"`
+	Outcome         string         `grove:"outcome"            bson:"outcome"`
+	Severity        string         `grove:"severity"           bson:"severity"`
+	Reason          string         `grove:"reason"             bson:"reason"`
+	SubjectID       string         `grove:"subject_id"         bson:"subject_id"`
+	EncryptionKeyID string         `grove:"encryption_key_id"  bson:"encryption_key_id"`
+	Erased          bool           `grove:"erased"             bson:"erased"`
+	ErasedAt        *time.Time     `grove:"erased_at"          bson:"erased_at,omitempty"`
+	ErasureID       string         `grove:"erasure_id"         bson:"erasure_id,omitempty"`
+	Timestamp       time.Time      `grove:"timestamp"          bson:"timestamp"`
+	CreatedAt       time.Time      `grove:"created_at"         bson:"created_at"`
 }
 
 func toEvent(m *EventModel) (*audit.Event, error) {
@@ -118,21 +117,34 @@ func fromEvent(e *audit.Event) *EventModel {
 	}
 }
 
+// toEventSlice converts a slice of EventModel to a slice of audit.Event.
+func toEventSlice(models []EventModel) ([]*audit.Event, error) {
+	events := make([]*audit.Event, 0, len(models))
+	for i := range models {
+		event, err := toEvent(&models[i])
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
 // ──────────────────────────────────────────────────
 // StreamModel
 // ──────────────────────────────────────────────────
 
-// StreamModel is the Bun ORM model for the chronicle_streams table.
+// StreamModel is the grove ORM model for the chronicle_streams collection.
 type StreamModel struct {
-	bun.BaseModel `bun:"table:chronicle_streams,alias:s"`
+	grove.BaseModel `grove:"table:chronicle_streams"`
 
-	ID        string    `bun:"id,pk"`
-	AppID     string    `bun:"app_id"`
-	TenantID  string    `bun:"tenant_id"`
-	HeadHash  string    `bun:"head_hash"`
-	HeadSeq   uint64    `bun:"head_seq"`
-	CreatedAt time.Time `bun:"created_at"`
-	UpdatedAt time.Time `bun:"updated_at"`
+	ID        string    `grove:"id,pk"      bson:"_id"`
+	AppID     string    `grove:"app_id"     bson:"app_id"`
+	TenantID  string    `grove:"tenant_id"  bson:"tenant_id"`
+	HeadHash  string    `grove:"head_hash"  bson:"head_hash"`
+	HeadSeq   uint64    `grove:"head_seq"   bson:"head_seq"`
+	CreatedAt time.Time `grove:"created_at" bson:"created_at"`
+	UpdatedAt time.Time `grove:"updated_at" bson:"updated_at"`
 }
 
 func toStream(m *StreamModel) (*stream.Stream, error) {
@@ -170,19 +182,19 @@ func fromStream(st *stream.Stream) *StreamModel {
 // ErasureModel
 // ──────────────────────────────────────────────────
 
-// ErasureModel is the Bun ORM model for the chronicle_erasures table.
+// ErasureModel is the grove ORM model for the chronicle_erasures collection.
 type ErasureModel struct {
-	bun.BaseModel `bun:"table:chronicle_erasures,alias:er"`
+	grove.BaseModel `grove:"table:chronicle_erasures"`
 
-	ID             string    `bun:"id,pk"`
-	SubjectID      string    `bun:"subject_id"`
-	Reason         string    `bun:"reason"`
-	RequestedBy    string    `bun:"requested_by"`
-	EventsAffected int64     `bun:"events_affected"`
-	KeyDestroyed   bool      `bun:"key_destroyed"`
-	AppID          string    `bun:"app_id"`
-	TenantID       string    `bun:"tenant_id"`
-	CreatedAt      time.Time `bun:"created_at"`
+	ID             string    `grove:"id,pk"           bson:"_id"`
+	SubjectID      string    `grove:"subject_id"      bson:"subject_id"`
+	Reason         string    `grove:"reason"          bson:"reason"`
+	RequestedBy    string    `grove:"requested_by"    bson:"requested_by"`
+	EventsAffected int64     `grove:"events_affected" bson:"events_affected"`
+	KeyDestroyed   bool      `grove:"key_destroyed"   bson:"key_destroyed"`
+	AppID          string    `grove:"app_id"          bson:"app_id"`
+	TenantID       string    `grove:"tenant_id"       bson:"tenant_id"`
+	CreatedAt      time.Time `grove:"created_at"      bson:"created_at"`
 }
 
 func toErasure(m *ErasureModel) (*erasure.Erasure, error) {
@@ -224,17 +236,17 @@ func fromErasure(e *erasure.Erasure) *ErasureModel {
 // RetentionPolicyModel
 // ──────────────────────────────────────────────────
 
-// RetentionPolicyModel is the Bun ORM model for the chronicle_retention_policies table.
+// RetentionPolicyModel is the grove ORM model for the chronicle_retention_policies collection.
 type RetentionPolicyModel struct {
-	bun.BaseModel `bun:"table:chronicle_retention_policies,alias:rp"`
+	grove.BaseModel `grove:"table:chronicle_retention_policies"`
 
-	ID        string    `bun:"id,pk"`
-	Category  string    `bun:"category"`
-	Duration  int64     `bun:"duration"` // nanoseconds
-	Archive   bool      `bun:"archive"`
-	AppID     string    `bun:"app_id"`
-	CreatedAt time.Time `bun:"created_at"`
-	UpdatedAt time.Time `bun:"updated_at"`
+	ID        string    `grove:"id,pk"      bson:"_id"`
+	Category  string    `grove:"category"   bson:"category"`
+	Duration  int64     `grove:"duration"   bson:"duration"` // nanoseconds
+	Archive   bool      `grove:"archive"    bson:"archive"`
+	AppID     string    `grove:"app_id"     bson:"app_id"`
+	CreatedAt time.Time `grove:"created_at" bson:"created_at"`
+	UpdatedAt time.Time `grove:"updated_at" bson:"updated_at"`
 }
 
 func toPolicy(m *RetentionPolicyModel) (*retention.Policy, error) {
@@ -272,19 +284,19 @@ func fromPolicy(p *retention.Policy) *RetentionPolicyModel {
 // ArchiveModel
 // ──────────────────────────────────────────────────
 
-// ArchiveModel is the Bun ORM model for the chronicle_archives table.
+// ArchiveModel is the grove ORM model for the chronicle_archives collection.
 type ArchiveModel struct {
-	bun.BaseModel `bun:"table:chronicle_archives,alias:a"`
+	grove.BaseModel `grove:"table:chronicle_archives"`
 
-	ID            string    `bun:"id,pk"`
-	PolicyID      string    `bun:"policy_id"`
-	Category      string    `bun:"category"`
-	EventCount    int64     `bun:"event_count"`
-	FromTimestamp time.Time `bun:"from_timestamp"`
-	ToTimestamp   time.Time `bun:"to_timestamp"`
-	SinkName      string    `bun:"sink_name"`
-	SinkRef       string    `bun:"sink_ref"`
-	CreatedAt     time.Time `bun:"created_at"`
+	ID            string    `grove:"id,pk"           bson:"_id"`
+	PolicyID      string    `grove:"policy_id"       bson:"policy_id"`
+	Category      string    `grove:"category"        bson:"category"`
+	EventCount    int64     `grove:"event_count"     bson:"event_count"`
+	FromTimestamp time.Time `grove:"from_timestamp"  bson:"from_timestamp"`
+	ToTimestamp   time.Time `grove:"to_timestamp"    bson:"to_timestamp"`
+	SinkName      string    `grove:"sink_name"       bson:"sink_name"`
+	SinkRef       string    `grove:"sink_ref"        bson:"sink_ref"`
+	CreatedAt     time.Time `grove:"created_at"      bson:"created_at"`
 }
 
 func toArchive(m *ArchiveModel) (*retention.Archive, error) {
@@ -331,21 +343,21 @@ func fromArchive(a *retention.Archive) *ArchiveModel {
 // ReportModel
 // ──────────────────────────────────────────────────
 
-// ReportModel is the Bun ORM model for the chronicle_reports table.
+// ReportModel is the grove ORM model for the chronicle_reports collection.
 type ReportModel struct {
-	bun.BaseModel `bun:"table:chronicle_reports,alias:r"`
+	grove.BaseModel `grove:"table:chronicle_reports"`
 
-	ID          string    `bun:"id,pk"`
-	Title       string    `bun:"title"`
-	Type        string    `bun:"type"`
-	PeriodFrom  time.Time `bun:"period_from"`
-	PeriodTo    time.Time `bun:"period_to"`
-	AppID       string    `bun:"app_id"`
-	TenantID    string    `bun:"tenant_id"`
-	Format      string    `bun:"format"`
-	Data        []byte    `bun:"data,type:jsonb"` // Sections serialized as JSON
-	GeneratedBy string    `bun:"generated_by"`
-	CreatedAt   time.Time `bun:"created_at"`
+	ID          string    `grove:"id,pk"       bson:"_id"`
+	Title       string    `grove:"title"       bson:"title"`
+	Type        string    `grove:"type"        bson:"type"`
+	PeriodFrom  time.Time `grove:"period_from" bson:"period_from"`
+	PeriodTo    time.Time `grove:"period_to"   bson:"period_to"`
+	AppID       string    `grove:"app_id"      bson:"app_id"`
+	TenantID    string    `grove:"tenant_id"   bson:"tenant_id"`
+	Format      string    `grove:"format"      bson:"format"`
+	Data        []byte    `grove:"data"        bson:"data"` // Sections serialized as JSON
+	GeneratedBy string    `grove:"generated_by" bson:"generated_by"`
+	CreatedAt   time.Time `grove:"created_at"  bson:"created_at"`
 }
 
 func toReport(m *ReportModel) (*compliance.Report, error) {

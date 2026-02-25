@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/xraph/chronicle"
@@ -12,51 +11,26 @@ import (
 
 // SaveReport persists a generated compliance report.
 func (s *Store) SaveReport(ctx context.Context, r *compliance.Report) error {
-	// Marshal sections to JSON for JSONB storage
-	data, err := json.Marshal(r.Sections)
+	m, err := fromReport(r)
 	if err != nil {
-		return fmt.Errorf("failed to marshal report sections: %w", err)
+		return err
 	}
 
-	query := `
-		INSERT INTO chronicle_reports (
-			id, title, type, period_from, period_to,
-			app_id, tenant_id, format, data, generated_by, created_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
-		)`
-
-	_, err = s.pool.Exec(ctx, query,
-		r.ID, r.Title, r.Type, r.Period.From, r.Period.To,
-		r.AppID, r.TenantID, r.Format, data, r.GeneratedBy, r.CreatedAt,
-	)
+	_, err = s.pg.NewInsert(m).Exec(ctx)
 	return err
 }
 
 // GetReport returns a report by ID.
 func (s *Store) GetReport(ctx context.Context, reportID id.ID) (*compliance.Report, error) {
-	query := `
-		SELECT
-			id, title, type, period_from, period_to,
-			app_id, tenant_id, format, data, generated_by, created_at
-		FROM chronicle_reports
-		WHERE id = $1`
-
-	r := &compliance.Report{}
-	var data []byte
-
-	err := s.pool.QueryRow(ctx, query, reportID).Scan(
-		&r.ID, &r.Title, &r.Type, &r.Period.From, &r.Period.To,
-		&r.AppID, &r.TenantID, &r.Format, &data, &r.GeneratedBy, &r.CreatedAt,
-	)
-
+	m := new(ReportModel)
+	err := s.pg.NewSelect(m).Where("id = $1", reportID.String()).Scan(ctx)
 	if err != nil {
-		return nil, pgxError(err, chronicle.ErrReportNotFound)
+		return nil, groveError(err, chronicle.ErrReportNotFound)
 	}
 
-	// Unmarshal sections from JSONB
-	if err := json.Unmarshal(data, &r.Sections); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal report sections: %w", err)
+	r, err := toReport(m)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert report model: %w", err)
 	}
 
 	return r, nil
@@ -64,43 +38,23 @@ func (s *Store) GetReport(ctx context.Context, reportID id.ID) (*compliance.Repo
 
 // ListReports returns reports with pagination.
 func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*compliance.Report, error) {
-	query := `
-		SELECT
-			id, title, type, period_from, period_to,
-			app_id, tenant_id, format, data, generated_by, created_at
-		FROM chronicle_reports
-		ORDER BY created_at DESC
-		LIMIT $1 OFFSET $2`
-
-	rows, err := s.pool.Query(ctx, query, opts.Limit, opts.Offset)
+	var models []ReportModel
+	err := s.pg.NewSelect(&models).
+		OrderExpr("r.created_at DESC").
+		Limit(opts.Limit).
+		Offset(opts.Offset).
+		Scan(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var reports []*compliance.Report
-	for rows.Next() {
-		r := &compliance.Report{}
-		var data []byte
-
-		err := rows.Scan(
-			&r.ID, &r.Title, &r.Type, &r.Period.From, &r.Period.To,
-			&r.AppID, &r.TenantID, &r.Format, &data, &r.GeneratedBy, &r.CreatedAt,
-		)
+	reports := make([]*compliance.Report, 0, len(models))
+	for i := range models {
+		r, err := toReport(&models[i])
 		if err != nil {
 			return nil, err
 		}
-
-		// Unmarshal sections from JSONB
-		if err := json.Unmarshal(data, &r.Sections); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal report sections: %w", err)
-		}
-
 		reports = append(reports, r)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 
 	return reports, nil
@@ -108,14 +62,19 @@ func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*c
 
 // DeleteReport removes a report by ID.
 func (s *Store) DeleteReport(ctx context.Context, reportID id.ID) error {
-	query := `DELETE FROM chronicle_reports WHERE id = $1`
-
-	result, err := s.pool.Exec(ctx, query, reportID)
+	result, err := s.pg.NewDelete((*ReportModel)(nil)).
+		Where("id = $1", reportID.String()).
+		Exec(ctx)
 	if err != nil {
 		return err
 	}
 
-	if result.RowsAffected() == 0 {
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rows == 0 {
 		return fmt.Errorf("%w: report %s", chronicle.ErrReportNotFound, reportID)
 	}
 

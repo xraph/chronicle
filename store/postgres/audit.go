@@ -2,10 +2,11 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/xraph/grove/drivers/pgdriver"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
@@ -14,36 +15,8 @@ import (
 
 // Append persists a single audit event.
 func (s *Store) Append(ctx context.Context, event *audit.Event) error {
-	metadata, err := json.Marshal(event.Metadata)
-	if err != nil {
-		return fmt.Errorf("failed to marshal metadata: %w", err)
-	}
-
-	query := `
-		INSERT INTO chronicle_events (
-			id, stream_id, sequence, hash, prev_hash,
-			app_id, tenant_id, user_id, ip,
-			action, resource, category, resource_id, metadata,
-			outcome, severity, reason,
-			subject_id, encryption_key_id,
-			timestamp, created_at
-		) VALUES (
-			$1, $2, $3, $4, $5,
-			$6, $7, $8, $9,
-			$10, $11, $12, $13, $14,
-			$15, $16, $17,
-			$18, $19,
-			$20, NOW()
-		)`
-
-	_, err = s.pool.Exec(ctx, query,
-		event.ID, event.StreamID, event.Sequence, event.Hash, event.PrevHash,
-		event.AppID, event.TenantID, event.UserID, event.IP,
-		event.Action, event.Resource, event.Category, event.ResourceID, metadata,
-		event.Outcome, event.Severity, event.Reason,
-		event.SubjectID, event.EncryptionKeyID,
-		event.Timestamp,
-	)
+	m := fromEvent(event)
+	_, err := s.pg.NewInsert(m).Exec(ctx)
 	return err
 }
 
@@ -53,84 +26,33 @@ func (s *Store) AppendBatch(ctx context.Context, events []*audit.Event) error {
 		return nil
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.pg.BeginTxQuery(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	query := `
-		INSERT INTO chronicle_events (
-			id, stream_id, sequence, hash, prev_hash,
-			app_id, tenant_id, user_id, ip,
-			action, resource, category, resource_id, metadata,
-			outcome, severity, reason,
-			subject_id, encryption_key_id,
-			timestamp, created_at
-		) VALUES (
-			$1, $2, $3, $4, $5,
-			$6, $7, $8, $9,
-			$10, $11, $12, $13, $14,
-			$15, $16, $17,
-			$18, $19,
-			$20, NOW()
-		)`
+	defer func() { _ = tx.Rollback() }()
 
 	for _, event := range events {
-		metadata, err := json.Marshal(event.Metadata)
-		if err != nil {
-			return fmt.Errorf("failed to marshal metadata: %w", err)
-		}
-
-		_, err = tx.Exec(ctx, query,
-			event.ID, event.StreamID, event.Sequence, event.Hash, event.PrevHash,
-			event.AppID, event.TenantID, event.UserID, event.IP,
-			event.Action, event.Resource, event.Category, event.ResourceID, metadata,
-			event.Outcome, event.Severity, event.Reason,
-			event.SubjectID, event.EncryptionKeyID,
-			event.Timestamp,
-		)
-		if err != nil {
+		m := fromEvent(event)
+		if _, err := tx.NewInsert(m).Exec(ctx); err != nil {
 			return fmt.Errorf("failed to insert event %s: %w", event.ID, err)
 		}
 	}
 
-	return tx.Commit(ctx)
+	return tx.Commit()
 }
 
 // Get returns a single event by ID.
 func (s *Store) Get(ctx context.Context, eventID id.ID) (*audit.Event, error) {
-	query := `
-		SELECT
-			id, stream_id, sequence, hash, prev_hash,
-			app_id, tenant_id, user_id, ip,
-			action, resource, category, resource_id, metadata,
-			outcome, severity, reason,
-			subject_id, encryption_key_id,
-			erased, erased_at, erasure_id,
-			timestamp
-		FROM chronicle_events
-		WHERE id = $1`
-
-	event := &audit.Event{}
-	var metadata []byte
-
-	err := s.pool.QueryRow(ctx, query, eventID).Scan(
-		&event.ID, &event.StreamID, &event.Sequence, &event.Hash, &event.PrevHash,
-		&event.AppID, &event.TenantID, &event.UserID, &event.IP,
-		&event.Action, &event.Resource, &event.Category, &event.ResourceID, &metadata,
-		&event.Outcome, &event.Severity, &event.Reason,
-		&event.SubjectID, &event.EncryptionKeyID,
-		&event.Erased, &event.ErasedAt, &event.ErasureID,
-		&event.Timestamp,
-	)
-
+	m := new(EventModel)
+	err := s.pg.NewSelect(m).Where("id = $1", eventID.String()).Scan(ctx)
 	if err != nil {
-		return nil, pgxError(err, chronicle.ErrEventNotFound)
+		return nil, groveError(err, chronicle.ErrEventNotFound)
 	}
 
-	if err := json.Unmarshal(metadata, &event.Metadata); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	event, err := toEvent(m)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert event model: %w", err)
 	}
 
 	return event, nil
@@ -138,147 +60,38 @@ func (s *Store) Get(ctx context.Context, eventID id.ID) (*audit.Event, error) {
 
 // Query returns events matching filters with pagination.
 func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, error) {
-	// Build dynamic WHERE clause
-	var conditions []string
-	var args []interface{}
-	argPos := 1
+	// Build count query with the same conditions.
+	countQuery := s.pg.NewSelect((*EventModel)(nil)).ColumnExpr("COUNT(*)")
+	applyEventFilters(countQuery, q)
 
-	// ALWAYS filter by app_id when present
-	if q.AppID != "" {
-		conditions = append(conditions, fmt.Sprintf("app_id = $%d", argPos))
-		args = append(args, q.AppID)
-		argPos++
-	}
-
-	// Filter by tenant_id when present
-	if q.TenantID != "" {
-		conditions = append(conditions, fmt.Sprintf("tenant_id = $%d", argPos))
-		args = append(args, q.TenantID)
-		argPos++
-	}
-
-	// Filter by user_id
-	if q.UserID != "" {
-		conditions = append(conditions, fmt.Sprintf("user_id = $%d", argPos))
-		args = append(args, q.UserID)
-		argPos++
-	}
-
-	// Time range
-	if !q.After.IsZero() {
-		conditions = append(conditions, fmt.Sprintf("timestamp >= $%d", argPos))
-		args = append(args, q.After)
-		argPos++
-	}
-	if !q.Before.IsZero() {
-		conditions = append(conditions, fmt.Sprintf("timestamp <= $%d", argPos))
-		args = append(args, q.Before)
-		argPos++
-	}
-
-	// Categories (IN clause)
-	if len(q.Categories) > 0 {
-		conditions = append(conditions, fmt.Sprintf("category = ANY($%d)", argPos))
-		args = append(args, q.Categories)
-		argPos++
-	}
-
-	// Actions (IN clause)
-	if len(q.Actions) > 0 {
-		conditions = append(conditions, fmt.Sprintf("action = ANY($%d)", argPos))
-		args = append(args, q.Actions)
-		argPos++
-	}
-
-	// Resources (IN clause)
-	if len(q.Resources) > 0 {
-		conditions = append(conditions, fmt.Sprintf("resource = ANY($%d)", argPos))
-		args = append(args, q.Resources)
-		argPos++
-	}
-
-	// Severity (IN clause)
-	if len(q.Severity) > 0 {
-		conditions = append(conditions, fmt.Sprintf("severity = ANY($%d)", argPos))
-		args = append(args, q.Severity)
-		argPos++
-	}
-
-	// Outcome (IN clause)
-	if len(q.Outcome) > 0 {
-		conditions = append(conditions, fmt.Sprintf("outcome = ANY($%d)", argPos))
-		args = append(args, q.Outcome)
-		argPos++
-	}
-
-	whereClause := ""
-	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	// Count total matching events
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM chronicle_events %s", whereClause)
 	var total int64
-	if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := countQuery.Scan(ctx, &total); err != nil {
 		return nil, err
 	}
 
-	// Order direction
-	order := "DESC"
+	// Build select query.
+	var models []EventModel
+	selectQuery := s.pg.NewSelect(&models)
+	applyEventFilters(selectQuery, q)
+
+	// Order direction.
+	order := "e.timestamp DESC"
 	if q.Order == "asc" {
-		order = "ASC"
+		order = "e.timestamp ASC"
 	}
+	selectQuery = selectQuery.OrderExpr(order)
 
-	// Query events with pagination
-	query := fmt.Sprintf(`
-		SELECT
-			id, stream_id, sequence, hash, prev_hash,
-			app_id, tenant_id, user_id, ip,
-			action, resource, category, resource_id, metadata,
-			outcome, severity, reason,
-			subject_id, encryption_key_id,
-			erased, erased_at, erasure_id,
-			timestamp
-		FROM chronicle_events
-		%s
-		ORDER BY timestamp %s
-		LIMIT $%d OFFSET $%d`,
-		whereClause, order, argPos, argPos+1)
+	if q.Limit > 0 {
+		selectQuery = selectQuery.Limit(q.Limit)
+	}
+	selectQuery = selectQuery.Offset(q.Offset)
 
-	args = append(args, q.Limit, q.Offset)
-
-	rows, err := s.pool.Query(ctx, query, args...)
-	if err != nil {
+	if err := selectQuery.Scan(ctx); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var events []*audit.Event
-	for rows.Next() {
-		event := &audit.Event{}
-		var metadata []byte
-
-		err := rows.Scan(
-			&event.ID, &event.StreamID, &event.Sequence, &event.Hash, &event.PrevHash,
-			&event.AppID, &event.TenantID, &event.UserID, &event.IP,
-			&event.Action, &event.Resource, &event.Category, &event.ResourceID, &metadata,
-			&event.Outcome, &event.Severity, &event.Reason,
-			&event.SubjectID, &event.EncryptionKeyID,
-			&event.Erased, &event.ErasedAt, &event.ErasureID,
-			&event.Timestamp,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		if err := json.Unmarshal(metadata, &event.Metadata); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
-		}
-
-		events = append(events, event)
-	}
-
-	if err := rows.Err(); err != nil {
+	events, err := toEventSlice(models)
+	if err != nil {
 		return nil, err
 	}
 
@@ -293,7 +106,11 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 
 // Aggregate returns grouped event statistics.
 func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.AggregateResult, error) {
-	// Build dynamic WHERE clause
+	if len(q.GroupBy) == 0 {
+		return nil, errors.New("aggregate query requires at least one group_by field")
+	}
+
+	// Build dynamic WHERE clause using raw SQL.
 	var conditions []string
 	var args []interface{}
 	argPos := 1
@@ -325,7 +142,7 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// Build GROUP BY clause
+	// Build GROUP BY clause.
 	groupFields := make([]string, 0, len(q.GroupBy))
 	selectFields := make([]string, 0, len(q.GroupBy))
 	for _, field := range q.GroupBy {
@@ -333,26 +150,19 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 		selectFields = append(selectFields, field)
 	}
 
-	if len(groupFields) == 0 {
-		return nil, errors.New("aggregate query requires at least one group_by field")
-	}
-
 	groupByClause := strings.Join(groupFields, ", ")
 	selectClause := strings.Join(selectFields, ", ")
 
-	query := fmt.Sprintf(`
-		SELECT %s, COUNT(*) as count
-		FROM chronicle_events
-		%s
-		GROUP BY %s
-		ORDER BY count DESC`,
-		selectClause, whereClause, groupByClause)
+	query := fmt.Sprintf(
+		"SELECT %s, COUNT(*) as count FROM chronicle_events %s GROUP BY %s ORDER BY count DESC",
+		selectClause, whereClause, groupByClause,
+	)
 
-	rows, err := s.pool.Query(ctx, query, args...)
+	rows, err := s.pg.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var groups []audit.AggregateGroup
 	var total int64
@@ -361,7 +171,6 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 		group := audit.AggregateGroup{}
 		scanArgs := make([]interface{}, len(q.GroupBy)+1)
 
-		// Map group_by fields to struct fields
 		for i, field := range q.GroupBy {
 			switch field {
 			case "category":
@@ -400,51 +209,20 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 
 // ByUser returns events for a specific user within a time range.
 func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange) (*audit.QueryResult, error) {
-	query := `
-		SELECT
-			id, stream_id, sequence, hash, prev_hash,
-			app_id, tenant_id, user_id, ip,
-			action, resource, category, resource_id, metadata,
-			outcome, severity, reason,
-			subject_id, encryption_key_id,
-			erased, erased_at, erasure_id,
-			timestamp
-		FROM chronicle_events
-		WHERE user_id = $1 AND timestamp >= $2 AND timestamp <= $3
-		ORDER BY timestamp DESC`
+	var models []EventModel
 
-	rows, err := s.pool.Query(ctx, query, userID, opts.After, opts.Before)
+	err := s.pg.NewSelect(&models).
+		Where("e.user_id = $1", userID).
+		Where("e.timestamp >= $2", opts.After).
+		Where("e.timestamp <= $3", opts.Before).
+		OrderExpr("e.timestamp DESC").
+		Scan(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var events []*audit.Event
-	for rows.Next() {
-		event := &audit.Event{}
-		var metadata []byte
-
-		err := rows.Scan(
-			&event.ID, &event.StreamID, &event.Sequence, &event.Hash, &event.PrevHash,
-			&event.AppID, &event.TenantID, &event.UserID, &event.IP,
-			&event.Action, &event.Resource, &event.Category, &event.ResourceID, &metadata,
-			&event.Outcome, &event.Severity, &event.Reason,
-			&event.SubjectID, &event.EncryptionKeyID,
-			&event.Erased, &event.ErasedAt, &event.ErasureID,
-			&event.Timestamp,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		if err := json.Unmarshal(metadata, &event.Metadata); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
-		}
-
-		events = append(events, event)
-	}
-
-	if err := rows.Err(); err != nil {
+	events, err := toEventSlice(models)
+	if err != nil {
 		return nil, err
 	}
 
@@ -457,67 +235,97 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 
 // Count returns the total number of events matching filters.
 func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
-	var conditions []string
-	var args []interface{}
-	argPos := 1
+	countQuery := s.pg.NewSelect((*EventModel)(nil)).ColumnExpr("COUNT(*)")
 
 	if q.AppID != "" {
-		conditions = append(conditions, fmt.Sprintf("app_id = $%d", argPos))
-		args = append(args, q.AppID)
-		argPos++
+		countQuery = countQuery.Where("e.app_id = $1", q.AppID)
 	}
-
 	if q.TenantID != "" {
-		conditions = append(conditions, fmt.Sprintf("tenant_id = $%d", argPos))
-		args = append(args, q.TenantID)
-		argPos++
+		countQuery = countQuery.Where("e.tenant_id = $1", q.TenantID)
 	}
-
 	if q.Category != "" {
-		conditions = append(conditions, fmt.Sprintf("category = $%d", argPos))
-		args = append(args, q.Category)
-		argPos++
+		countQuery = countQuery.Where("e.category = $1", q.Category)
 	}
-
 	if !q.After.IsZero() {
-		conditions = append(conditions, fmt.Sprintf("timestamp >= $%d", argPos))
-		args = append(args, q.After)
-		argPos++
+		countQuery = countQuery.Where("e.timestamp >= $1", q.After)
 	}
 	if !q.Before.IsZero() {
-		conditions = append(conditions, fmt.Sprintf("timestamp <= $%d", argPos))
-		args = append(args, q.Before)
+		countQuery = countQuery.Where("e.timestamp <= $1", q.Before)
 	}
-
-	whereClause := ""
-	if len(conditions) > 0 {
-		whereClause = "WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	query := fmt.Sprintf("SELECT COUNT(*) FROM chronicle_events %s", whereClause)
 
 	var count int64
-	err := s.pool.QueryRow(ctx, query, args...).Scan(&count)
+	err := countQuery.Scan(ctx, &count)
 	return count, err
 }
 
 // LastSequence returns the highest sequence number for a stream.
 func (s *Store) LastSequence(ctx context.Context, streamID id.ID) (uint64, error) {
-	query := `SELECT COALESCE(MAX(sequence), 0) FROM chronicle_events WHERE stream_id = $1`
-
 	var seq uint64
-	err := s.pool.QueryRow(ctx, query, streamID).Scan(&seq)
+	err := s.pg.NewSelect((*EventModel)(nil)).
+		ColumnExpr("COALESCE(MAX(sequence), 0)").
+		Where("stream_id = $1", streamID.String()).
+		Scan(ctx, &seq)
 	return seq, err
 }
 
 // LastHash returns the hash of the most recent event in a stream.
 func (s *Store) LastHash(ctx context.Context, streamID id.ID) (string, error) {
-	query := `SELECT hash FROM chronicle_events WHERE stream_id = $1 ORDER BY sequence DESC LIMIT 1`
-
 	var hash string
-	err := s.pool.QueryRow(ctx, query, streamID).Scan(&hash)
+	err := s.pg.NewSelect((*EventModel)(nil)).
+		Column("hash").
+		Where("stream_id = $1", streamID.String()).
+		OrderExpr("sequence DESC").
+		Limit(1).
+		Scan(ctx, &hash)
 	if err != nil {
-		return "", pgxError(err, chronicle.ErrEventNotFound)
+		return "", groveError(err, chronicle.ErrEventNotFound)
 	}
 	return hash, nil
+}
+
+// applyEventFilters applies common query filters to a pgdriver select query.
+func applyEventFilters(q *pgdriver.SelectQuery, f *audit.Query) {
+	if f.AppID != "" {
+		q.Where("e.app_id = $1", f.AppID)
+	}
+	if f.TenantID != "" {
+		q.Where("e.tenant_id = $1", f.TenantID)
+	}
+	if f.UserID != "" {
+		q.Where("e.user_id = $1", f.UserID)
+	}
+	if !f.After.IsZero() {
+		q.Where("e.timestamp >= $1", f.After)
+	}
+	if !f.Before.IsZero() {
+		q.Where("e.timestamp <= $1", f.Before)
+	}
+	if len(f.Categories) > 0 {
+		q.WhereArray("e.category", "= ANY", f.Categories)
+	}
+	if len(f.Actions) > 0 {
+		q.WhereArray("e.action", "= ANY", f.Actions)
+	}
+	if len(f.Resources) > 0 {
+		q.WhereArray("e.resource", "= ANY", f.Resources)
+	}
+	if len(f.Severity) > 0 {
+		q.WhereArray("e.severity", "= ANY", f.Severity)
+	}
+	if len(f.Outcome) > 0 {
+		q.WhereArray("e.outcome", "= ANY", f.Outcome)
+	}
+}
+
+// toEventSlice converts a slice of EventModel to a slice of audit.Event.
+func toEventSlice(models []EventModel) ([]*audit.Event, error) {
+	events := make([]*audit.Event, 0, len(models))
+	for i := range models {
+		event, err := toEvent(&models[i])
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, nil
 }
