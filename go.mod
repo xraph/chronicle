@@ -3,16 +3,19 @@ module github.com/xraph/chronicle
 go 1.25.7
 
 require (
-	github.com/jackc/pgx/v5 v5.8.0
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/xraph/forge v0.9.12
 	github.com/xraph/grove v0.0.5
+	github.com/xraph/grove/drivers/mongodriver v0.0.5
 	github.com/xraph/grove/drivers/pgdriver v0.0.5
+	github.com/xraph/grove/drivers/sqlitedriver v0.0.5
+	github.com/xraph/grove/kv v0.0.5
+	github.com/xraph/grove/kv/drivers/redisdriver v0.0.5
 	github.com/xraph/vessel v0.0.5
-	go.jetify.com/typeid v1.3.0
+	go.jetify.com/typeid/v2 v2.0.0-alpha.3
+	go.mongodb.org/mongo-driver/v2 v2.5.0
 	go.opentelemetry.io/otel v1.40.0
 	go.opentelemetry.io/otel/trace v1.40.0
-	modernc.org/sqlite v1.46.1
 )
 
 require (
@@ -40,7 +43,7 @@ require (
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
-	github.com/gofrs/uuid/v5 v5.2.0 // indirect
+	github.com/gofrs/uuid/v5 v5.3.2 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/consul/api v1.33.0 // indirect
@@ -54,6 +57,7 @@ require (
 	github.com/hashicorp/serf v0.10.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.8.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -81,12 +85,7 @@ require (
 	github.com/xdg-go/stringprep v1.0.4 // indirect
 	github.com/xraph/confy v0.0.3 // indirect
 	github.com/xraph/go-utils v0.0.11 // indirect
-	github.com/xraph/grove/drivers/mongodriver v0.0.5 // indirect
-	github.com/xraph/grove/drivers/sqlitedriver v0.0.5 // indirect
-	github.com/xraph/grove/kv v0.0.5 // indirect
-	github.com/xraph/grove/kv/drivers/redisdriver v0.0.5 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
-	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/metric v1.40.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
@@ -116,6 +115,7 @@ require (
 	modernc.org/libc v1.68.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
+	modernc.org/sqlite v1.46.1 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
