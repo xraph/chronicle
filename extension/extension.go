@@ -170,7 +170,7 @@ func (e *Extension) init(fapp forge.App) error {
 	e.chronicle = c
 
 	// Sub-components require log.Logger; use the BaseExtension logger.
-	logger := e.BaseExtension.Logger()
+	logger := e.Logger()
 
 	// Create compliance engine.
 	e.engine = compliance.NewEngine(s, s, s, logger)

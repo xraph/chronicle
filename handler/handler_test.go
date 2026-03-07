@@ -166,8 +166,10 @@ func (ts *testSetup) doWithContext(ctx context.Context, t *testing.T, method, pa
 		reqBody = &bytes.Buffer{}
 	}
 
-	req := httptest.NewRequest(method, path, reqBody)
-	req = req.WithContext(ctx)
+	req, err := http.NewRequestWithContext(ctx, method, path, reqBody)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	rec := httptest.NewRecorder()
