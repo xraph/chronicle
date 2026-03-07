@@ -2,7 +2,8 @@ package sink
 
 import (
 	"context"
-	"log/slog"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/audit"
 )
@@ -11,13 +12,13 @@ import (
 // Individual sink errors are logged but do not stop other sinks.
 type MultiSink struct {
 	sinks  []Sink
-	logger *slog.Logger
+	logger log.Logger
 }
 
 // NewMultiSink creates a MultiSink that fans out to the given sinks.
-func NewMultiSink(logger *slog.Logger, sinks ...Sink) *MultiSink {
+func NewMultiSink(logger log.Logger, sinks ...Sink) *MultiSink {
 	if logger == nil {
-		logger = slog.Default()
+		logger = log.NewNoopLogger()
 	}
 	return &MultiSink{
 		sinks:  sinks,
@@ -31,8 +32,8 @@ func (m *MultiSink) Write(ctx context.Context, events []*audit.Event) error {
 	for _, s := range m.sinks {
 		if err := s.Write(ctx, events); err != nil {
 			m.logger.Error("sink write error",
-				slog.String("sink", s.Name()),
-				slog.String("error", err.Error()),
+				log.String("sink", s.Name()),
+				log.String("error", err.Error()),
 			)
 		}
 	}
@@ -43,8 +44,8 @@ func (m *MultiSink) Flush(ctx context.Context) error {
 	for _, s := range m.sinks {
 		if err := s.Flush(ctx); err != nil {
 			m.logger.Error("sink flush error",
-				slog.String("sink", s.Name()),
-				slog.String("error", err.Error()),
+				log.String("sink", s.Name()),
+				log.String("error", err.Error()),
 			)
 		}
 	}
@@ -55,8 +56,8 @@ func (m *MultiSink) Close() error {
 	for _, s := range m.sinks {
 		if err := s.Close(); err != nil {
 			m.logger.Error("sink close error",
-				slog.String("sink", s.Name()),
-				slog.String("error", err.Error()),
+				log.String("sink", s.Name()),
+				log.String("error", err.Error()),
 			)
 		}
 	}

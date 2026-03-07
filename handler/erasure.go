@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/xraph/forge"
+	log "github.com/xraph/go-utils/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -41,7 +42,7 @@ func (a *API) requestErasure(ctx forge.Context, req *RequestErasureRequest) (*er
 	// Count affected events before recording.
 	affected, err := a.deps.ErasureStore.CountBySubject(c, req.SubjectID)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to count events by subject", "subject_id", req.SubjectID, "error", err)
+		a.deps.Logger.Error("failed to count events by subject", log.String("subject_id", req.SubjectID), log.Error(err))
 		return nil, fmt.Errorf("count affected events: %w", err)
 	}
 
@@ -62,14 +63,14 @@ func (a *API) requestErasure(ctx forge.Context, req *RequestErasureRequest) (*er
 	rec.UpdatedAt = now
 
 	if recordErr := a.deps.ErasureStore.RecordErasure(c, rec); recordErr != nil {
-		a.deps.Logger.ErrorContext(c, "failed to record erasure", "error", recordErr)
+		a.deps.Logger.Error("failed to record erasure", log.Error(recordErr))
 		return nil, fmt.Errorf("record erasure: %w", recordErr)
 	}
 
 	// Mark affected events as erased.
 	marked, err := a.deps.ErasureStore.MarkErased(c, req.SubjectID, erasureID)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to mark events as erased", "error", err)
+		a.deps.Logger.Error("failed to mark events as erased", log.Error(err))
 		return nil, fmt.Errorf("mark events as erased: %w", err)
 	}
 
@@ -99,7 +100,7 @@ func (a *API) listErasures(ctx forge.Context) error {
 
 	records, err := a.deps.ErasureStore.ListErasures(c, opts)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to list erasures", "error", err)
+		a.deps.Logger.Error("failed to list erasures", log.Error(err))
 		return fmt.Errorf("list erasures: %w", err)
 	}
 

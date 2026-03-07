@@ -1,8 +1,9 @@
 package chronicle
 
 import (
-	"log/slog"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 )
 
 // Option configures a Chronicle instance.
@@ -17,7 +18,7 @@ func WithStore(s Storer) Option {
 }
 
 // WithLogger sets the logger for Chronicle.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(l log.Logger) Option {
 	return func(c *Chronicle) error {
 		c.logger = l
 		return nil

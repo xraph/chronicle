@@ -34,7 +34,7 @@ if err := s.Migrate(ctx); err != nil {
 }
 ```
 
-Migrations create indexes on all Chronicle collections. They are idempotent -- safe to run on every startup.
+Migrations create collections with JSON Schema validation (auto-generated from Grove model structs) and apply indexes on all Chronicle collections. They are idempotent -- safe to run on every startup.
 
 ## Full setup with `chronicle.New`
 
@@ -93,10 +93,21 @@ app.Register(ext)
 | Aspect | Detail |
 |--------|--------|
 | Driver | grove ORM + mongodriver |
-| Migrations | Index creation on collections |
+| Migrations | Grove migrations with JSON Schema validation + indexes |
 | Transactions | MongoDB sessions (replica-set required for multi-doc txns) |
 | Collections | `chronicle_events`, `chronicle_streams`, `chronicle_erasures`, `chronicle_retention_policies`, `chronicle_archives`, `chronicle_reports` |
 | Close | `db.Close()` |
+
+## Grove Migrations
+
+The store exports a `Migrations` group for use with Grove's migration orchestrator. This enables tracked, versioned migrations across all stores in your application:
+
+```go
+import mongostore "github.com/xraph/chronicle/store/mongo"
+
+// mongostore.Migrations is a migrate.Group for the chronicle mongo store.
+// Register it with the grove migration orchestrator for coordinated migrations.
+```
 
 ## When to use
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/xraph/forge"
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/id"
@@ -25,7 +26,7 @@ func (a *API) listPolicies(ctx forge.Context) error {
 
 	policies, err := a.deps.RetentionStore.ListPolicies(c)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to list retention policies", "error", err)
+		a.deps.Logger.Error("failed to list retention policies", log.Error(err))
 		return fmt.Errorf("list policies: %w", err)
 	}
 
@@ -75,7 +76,7 @@ func (a *API) savePolicy(ctx forge.Context, req *SavePolicyRequest) (*retention.
 	}
 
 	if err := a.deps.RetentionStore.SavePolicy(c, policy); err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to save retention policy", "error", err)
+		a.deps.Logger.Error("failed to save retention policy", log.Error(err))
 		return nil, fmt.Errorf("save policy: %w", err)
 	}
 
@@ -120,7 +121,7 @@ func (a *API) enforceRetention(ctx forge.Context) error {
 
 	result, err := a.deps.Retention.Enforce(c)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to enforce retention", "error", err)
+		a.deps.Logger.Error("failed to enforce retention", log.Error(err))
 		return fmt.Errorf("enforce retention: %w", err)
 	}
 
@@ -144,7 +145,7 @@ func (a *API) listArchives(ctx forge.Context) error {
 
 	archives, err := a.deps.RetentionStore.ListArchives(c, opts)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to list archives", "error", err)
+		a.deps.Logger.Error("failed to list archives", log.Error(err))
 		return fmt.Errorf("list archives: %w", err)
 	}
 

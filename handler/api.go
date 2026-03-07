@@ -3,10 +3,10 @@
 package handler
 
 import (
-	"log/slog"
 	"net/http"
 
 	"github.com/xraph/forge"
+	log "github.com/xraph/go-utils/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
@@ -28,7 +28,7 @@ type Dependencies struct {
 	ReportStore    compliance.ReportStore
 	Compliance     *compliance.Engine
 	Retention      *retention.Enforcer
-	Logger         *slog.Logger
+	Logger         log.Logger
 }
 
 // API wires all Forge-style HTTP handlers together for the Chronicle system.
@@ -41,7 +41,7 @@ type API struct {
 // New creates an API from handler dependencies and a Forge router.
 func New(deps Dependencies, router forge.Router) *API {
 	if deps.Logger == nil {
-		deps.Logger = slog.Default()
+		deps.Logger = log.NewNoopLogger()
 	}
 	return &API{
 		deps:   deps,

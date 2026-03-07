@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/hash"
@@ -63,7 +64,15 @@ type Chronicle struct {
 	config Config
 	store  Storer
 	hasher *hash.Chain
-	logger *slog.Logger
+	logger log.Logger
+}
+
+// Health checks the health of the Chronicle by pinging its store.
+func (c *Chronicle) Health(ctx context.Context) error {
+	if c.store != nil {
+		return c.store.Ping(ctx)
+	}
+	return nil
 }
 
 // New creates a new Chronicle instance with the given options.
@@ -71,7 +80,7 @@ func New(opts ...Option) (*Chronicle, error) {
 	c := &Chronicle{
 		config: DefaultConfig(),
 		hasher: &hash.Chain{},
-		logger: slog.Default(),
+		logger: log.NewNoopLogger(),
 	}
 
 	for _, opt := range opts {

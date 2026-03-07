@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -109,6 +108,19 @@ func (e *Extension) Register(fapp forge.App) error {
 		}
 		e.opts.store = redisstore.New(kvStore)
 	}
+	if e.opts.store == nil {
+		if db, err := vessel.Inject[*grove.DB](fapp.Container()); err == nil {
+			// Auto-discover default grove.DB from container (matches authsome/cortex pattern).
+			s, err := e.buildStoreFromGroveDB(db)
+			if err != nil {
+				return err
+			}
+			e.opts.store = s
+			e.Logger().Info("chronicle: auto-discovered grove.DB from container",
+				forge.F("driver", db.Driver().Name()),
+			)
+		}
+	}
 
 	if err := e.init(fapp); err != nil {
 		return err
@@ -157,14 +169,14 @@ func (e *Extension) init(fapp forge.App) error {
 	}
 	e.chronicle = c
 
-	// Sub-components require *slog.Logger; use the standard default.
-	slogger := slog.Default()
+	// Sub-components require log.Logger; use the BaseExtension logger.
+	logger := e.BaseExtension.Logger()
 
 	// Create compliance engine.
-	e.engine = compliance.NewEngine(s, s, s, slogger)
+	e.engine = compliance.NewEngine(s, s, s, logger)
 
 	// Create retention enforcer.
-	e.enforcer = retention.NewEnforcer(s, e.opts.archiveSink, slogger)
+	e.enforcer = retention.NewEnforcer(s, e.opts.archiveSink, logger)
 
 	// Create the API handler with Forge router.
 	e.api = handler.New(handler.Dependencies{
@@ -175,12 +187,16 @@ func (e *Extension) init(fapp forge.App) error {
 		ReportStore:    s,
 		Compliance:     e.engine,
 		Retention:      e.enforcer,
-		Logger:         slogger,
+		Logger:         logger,
 	}, fapp.Router())
 
 	// Register HTTP routes unless disabled.
 	if !e.config.DisableRoutes {
-		e.api.RegisterRoutes(fapp.Router())
+		basePath := e.config.BasePath
+		if basePath == "" {
+			basePath = "/chronicle"
+		}
+		e.api.RegisterRoutes(fapp.Router().Group(basePath))
 	}
 
 	e.Logger().Info("chronicle extension registered",

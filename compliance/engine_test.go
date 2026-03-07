@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/compliance"
@@ -172,7 +173,7 @@ func newTestEngine(t *testing.T) (*compliance.Engine, *memory.Store) {
 	store := memory.New()
 	seedEvents(t, store)
 
-	logger := slog.Default()
+	logger := log.NewNoopLogger()
 	engine := compliance.NewEngine(store, store, store, logger)
 	return engine, store
 }

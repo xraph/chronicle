@@ -10,10 +10,10 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"log/slog"
-	"os"
 	"strings"
 	"sync"
+
+	golog "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
@@ -105,7 +105,7 @@ func main() {
 	ctx = scope.WithAppID(ctx, "myapp")
 	ctx = scope.WithTenantID(ctx, "tenant-1")
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	logger := golog.NewNoopLogger()
 
 	// 1. Create the plugin registry.
 	registry := plugin.NewRegistry(logger)

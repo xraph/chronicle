@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/xraph/forge"
+	log "github.com/xraph/go-utils/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -38,7 +39,7 @@ func (a *API) listReports(ctx forge.Context) error {
 
 	reports, err := a.deps.ReportStore.ListReports(c, opts)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to list reports", "error", err)
+		a.deps.Logger.Error("failed to list reports", log.Error(err))
 		return fmt.Errorf("list reports: %w", err)
 	}
 
@@ -77,7 +78,7 @@ func (a *API) generateSOC2(ctx forge.Context, req *compliance.SOC2Input) (*compl
 
 	report, err := a.deps.Compliance.SOC2(c, req)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to generate SOC2 report", "error", err)
+		a.deps.Logger.Error("failed to generate SOC2 report", log.Error(err))
 		return nil, fmt.Errorf("generate SOC2: %w", err)
 	}
 
@@ -106,7 +107,7 @@ func (a *API) generateHIPAA(ctx forge.Context, req *compliance.HIPAAInput) (*com
 
 	report, err := a.deps.Compliance.HIPAA(c, req)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to generate HIPAA report", "error", err)
+		a.deps.Logger.Error("failed to generate HIPAA report", log.Error(err))
 		return nil, fmt.Errorf("generate HIPAA: %w", err)
 	}
 
@@ -135,7 +136,7 @@ func (a *API) generateEUAIAct(ctx forge.Context, req *compliance.EUAIActInput) (
 
 	report, err := a.deps.Compliance.EUAIAct(c, req)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to generate EU AI Act report", "error", err)
+		a.deps.Logger.Error("failed to generate EU AI Act report", log.Error(err))
 		return nil, fmt.Errorf("generate EU AI Act: %w", err)
 	}
 
@@ -164,7 +165,7 @@ func (a *API) generateCustom(ctx forge.Context, req *compliance.CustomInput) (*c
 
 	report, err := a.deps.Compliance.Custom(c, req)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to generate custom report", "error", err)
+		a.deps.Logger.Error("failed to generate custom report", log.Error(err))
 		return nil, fmt.Errorf("generate custom: %w", err)
 	}
 
@@ -244,7 +245,7 @@ func (a *API) exportReport(ctx forge.Context) error {
 
 	var buf bytes.Buffer
 	if err := a.deps.Compliance.Export(c, report, format, &buf); err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to export report", "format", format, "error", err)
+		a.deps.Logger.Error("failed to export report", log.String("format", string(format)), log.Error(err))
 		return fmt.Errorf("export report: %w", err)
 	}
 

@@ -3,7 +3,8 @@ package plugin
 import (
 	"context"
 	"errors"
-	"log/slog"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/sink"
@@ -12,7 +13,7 @@ import (
 // Registry manages plugins and dispatches hook calls.
 type Registry struct {
 	plugins    []Plugin
-	logger     *slog.Logger
+	logger     log.Logger
 	alertRules []AlertRule
 
 	// Type-cached dispatch lists (built at registration time).
@@ -26,9 +27,9 @@ type Registry struct {
 }
 
 // NewRegistry creates a new plugin Registry.
-func NewRegistry(logger *slog.Logger) *Registry {
+func NewRegistry(logger log.Logger) *Registry {
 	if logger == nil {
-		logger = slog.Default()
+		logger = log.NewNoopLogger()
 	}
 	return &Registry{logger: logger}
 }
@@ -71,7 +72,7 @@ func (r *Registry) EmitInit(ctx context.Context) error {
 	for _, h := range r.onInit {
 		if err := h.OnInit(ctx); err != nil {
 			r.logger.Error("plugin OnInit error",
-				slog.String("error", err.Error()),
+				log.String("error", err.Error()),
 			)
 		}
 	}
@@ -83,7 +84,7 @@ func (r *Registry) EmitShutdown(ctx context.Context) error {
 	for _, h := range r.onShutdown {
 		if err := h.OnShutdown(ctx); err != nil {
 			r.logger.Error("plugin OnShutdown error",
-				slog.String("error", err.Error()),
+				log.String("error", err.Error()),
 			)
 		}
 	}
@@ -100,7 +101,7 @@ func (r *Registry) EmitBeforeRecord(ctx context.Context, event *audit.Event) err
 				return ErrSkipEvent
 			}
 			r.logger.Error("plugin OnBeforeRecord error",
-				slog.String("error", err.Error()),
+				log.String("error", err.Error()),
 			)
 		}
 	}
@@ -113,7 +114,7 @@ func (r *Registry) EmitAfterRecord(ctx context.Context, event *audit.Event) {
 	for _, h := range r.afterRecord {
 		if err := h.OnAfterRecord(ctx, event); err != nil {
 			r.logger.Error("plugin OnAfterRecord error",
-				slog.String("error", err.Error()),
+				log.String("error", err.Error()),
 			)
 		}
 	}
@@ -150,7 +151,7 @@ func (r *Registry) checkAlerts(ctx context.Context, event *audit.Event) {
 		for _, h := range r.alertHandlers {
 			if err := h.OnAlert(ctx, event, rule); err != nil {
 				r.logger.Error("plugin OnAlert error",
-					slog.String("error", err.Error()),
+					log.String("error", err.Error()),
 				)
 			}
 		}

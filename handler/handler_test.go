@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/xraph/forge"
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/compliance"
@@ -38,7 +38,7 @@ func newTestSetup(t *testing.T) *testSetup {
 	t.Helper()
 
 	store := memory.New()
-	logger := slog.Default()
+	logger := log.NewNoopLogger()
 
 	// Create a compliance engine for report testing.
 	engine := compliance.NewEngine(store, store, store, logger)

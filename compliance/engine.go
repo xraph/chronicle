@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
@@ -17,13 +18,13 @@ type Engine struct {
 	auditStore  audit.Store
 	verifyStore verify.Store
 	reportStore ReportStore
-	logger      *slog.Logger
+	logger      log.Logger
 }
 
 // NewEngine creates a compliance engine.
-func NewEngine(auditStore audit.Store, verifyStore verify.Store, reportStore ReportStore, logger *slog.Logger) *Engine {
+func NewEngine(auditStore audit.Store, verifyStore verify.Store, reportStore ReportStore, logger log.Logger) *Engine {
 	if logger == nil {
-		logger = slog.Default()
+		logger = log.NewNoopLogger()
 	}
 	return &Engine{
 		auditStore:  auditStore,
@@ -35,10 +36,10 @@ func NewEngine(auditStore audit.Store, verifyStore verify.Store, reportStore Rep
 
 // SOC2 generates a SOC2 Type II compliance report.
 func (e *Engine) SOC2(ctx context.Context, input *SOC2Input) (*Report, error) {
-	e.logger.InfoContext(ctx, "generating SOC2 Type II report",
-		"app_id", input.AppID,
-		"from", input.Period.From,
-		"to", input.Period.To,
+	e.logger.Info("generating SOC2 Type II report",
+		log.String("app_id", input.AppID),
+		log.Any("from", input.Period.From),
+		log.Any("to", input.Period.To),
 	)
 
 	sections, err := e.buildSOC2(ctx, input)
@@ -66,9 +67,9 @@ func (e *Engine) SOC2(ctx context.Context, input *SOC2Input) (*Report, error) {
 		return nil, fmt.Errorf("saving report: %w", err)
 	}
 
-	e.logger.InfoContext(ctx, "SOC2 report generated",
-		"report_id", report.ID.String(),
-		"total_events", stats.TotalEvents,
+	e.logger.Info("SOC2 report generated",
+		log.String("report_id", report.ID.String()),
+		log.Int64("total_events", stats.TotalEvents),
 	)
 
 	return report, nil
@@ -76,10 +77,10 @@ func (e *Engine) SOC2(ctx context.Context, input *SOC2Input) (*Report, error) {
 
 // HIPAA generates a HIPAA audit report.
 func (e *Engine) HIPAA(ctx context.Context, input *HIPAAInput) (*Report, error) {
-	e.logger.InfoContext(ctx, "generating HIPAA report",
-		"app_id", input.AppID,
-		"from", input.Period.From,
-		"to", input.Period.To,
+	e.logger.Info("generating HIPAA report",
+		log.String("app_id", input.AppID),
+		log.Any("from", input.Period.From),
+		log.Any("to", input.Period.To),
 	)
 
 	sections, err := e.buildHIPAA(ctx, input)
@@ -107,9 +108,9 @@ func (e *Engine) HIPAA(ctx context.Context, input *HIPAAInput) (*Report, error) 
 		return nil, fmt.Errorf("saving report: %w", err)
 	}
 
-	e.logger.InfoContext(ctx, "HIPAA report generated",
-		"report_id", report.ID.String(),
-		"total_events", stats.TotalEvents,
+	e.logger.Info("HIPAA report generated",
+		log.String("report_id", report.ID.String()),
+		log.Int64("total_events", stats.TotalEvents),
 	)
 
 	return report, nil
@@ -117,10 +118,10 @@ func (e *Engine) HIPAA(ctx context.Context, input *HIPAAInput) (*Report, error) 
 
 // EUAIAct generates an EU AI Act transparency report.
 func (e *Engine) EUAIAct(ctx context.Context, input *EUAIActInput) (*Report, error) {
-	e.logger.InfoContext(ctx, "generating EU AI Act report",
-		"app_id", input.AppID,
-		"from", input.Period.From,
-		"to", input.Period.To,
+	e.logger.Info("generating EU AI Act report",
+		log.String("app_id", input.AppID),
+		log.Any("from", input.Period.From),
+		log.Any("to", input.Period.To),
 	)
 
 	sections, err := e.buildEUAIAct(ctx, input)
@@ -148,9 +149,9 @@ func (e *Engine) EUAIAct(ctx context.Context, input *EUAIActInput) (*Report, err
 		return nil, fmt.Errorf("saving report: %w", err)
 	}
 
-	e.logger.InfoContext(ctx, "EU AI Act report generated",
-		"report_id", report.ID.String(),
-		"total_events", stats.TotalEvents,
+	e.logger.Info("EU AI Act report generated",
+		log.String("report_id", report.ID.String()),
+		log.Int64("total_events", stats.TotalEvents),
 	)
 
 	return report, nil
@@ -158,11 +159,11 @@ func (e *Engine) EUAIAct(ctx context.Context, input *EUAIActInput) (*Report, err
 
 // Custom generates a custom compliance report.
 func (e *Engine) Custom(ctx context.Context, input *CustomInput) (*Report, error) {
-	e.logger.InfoContext(ctx, "generating custom report",
-		"title", input.Title,
-		"app_id", input.AppID,
-		"from", input.Period.From,
-		"to", input.Period.To,
+	e.logger.Info("generating custom report",
+		log.String("title", input.Title),
+		log.String("app_id", input.AppID),
+		log.Any("from", input.Period.From),
+		log.Any("to", input.Period.To),
 	)
 
 	sections, err := e.buildCustom(ctx, input)
@@ -190,9 +191,9 @@ func (e *Engine) Custom(ctx context.Context, input *CustomInput) (*Report, error
 		return nil, fmt.Errorf("saving report: %w", err)
 	}
 
-	e.logger.InfoContext(ctx, "custom report generated",
-		"report_id", report.ID.String(),
-		"total_events", stats.TotalEvents,
+	e.logger.Info("custom report generated",
+		log.String("report_id", report.ID.String()),
+		log.Int64("total_events", stats.TotalEvents),
 	)
 
 	return report, nil

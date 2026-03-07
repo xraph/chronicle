@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
@@ -135,7 +136,7 @@ func TestMultiSinkFanOut(t *testing.T) {
 	var buf1, buf2 bytes.Buffer
 	s1 := sink.NewStdoutSink(&buf1)
 	s2 := sink.NewStdoutSink(&buf2)
-	multi := sink.NewMultiSink(slog.Default(), s1, s2)
+	multi := sink.NewMultiSink(log.NewNoopLogger(), s1, s2)
 
 	if multi.Name() != "multi" {
 		t.Errorf("Name = %q, want %q", multi.Name(), "multi")
@@ -159,7 +160,7 @@ func TestMultiSinkSurvivesErrors(t *testing.T) {
 	var buf bytes.Buffer
 	good := sink.NewStdoutSink(&buf)
 	bad := &errSink{name: "bad"}
-	multi := sink.NewMultiSink(slog.Default(), bad, good)
+	multi := sink.NewMultiSink(log.NewNoopLogger(), bad, good)
 
 	events := []*audit.Event{testEvent()}
 	err := multi.Write(context.Background(), events)

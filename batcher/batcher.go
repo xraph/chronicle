@@ -4,9 +4,11 @@ package batcher
 
 import (
 	"context"
-	"log/slog"
 	"sync"
+
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/audit"
 )
@@ -21,16 +23,16 @@ type Batcher struct {
 	batchSize     int
 	flushInterval time.Duration
 	flushFn       FlushFunc
-	logger        *slog.Logger
+	logger        log.Logger
 
 	stopCh chan struct{}
 	doneCh chan struct{}
 }
 
 // New creates a new Batcher.
-func New(batchSize int, flushInterval time.Duration, flushFn FlushFunc, logger *slog.Logger) *Batcher {
+func New(batchSize int, flushInterval time.Duration, flushFn FlushFunc, logger log.Logger) *Batcher {
 	if logger == nil {
-		logger = slog.Default()
+		logger = log.NewNoopLogger()
 	}
 	return &Batcher{
 		buffer:        make([]*audit.Event, 0, batchSize),
@@ -99,7 +101,7 @@ func (b *Batcher) run() {
 
 			if err := b.flush(context.Background(), batch); err != nil {
 				b.logger.Error("batcher interval flush error",
-					slog.String("error", err.Error()),
+					log.String("error", err.Error()),
 				)
 			}
 		case <-b.stopCh:

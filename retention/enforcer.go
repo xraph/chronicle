@@ -3,8 +3,9 @@ package retention
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/sink"
@@ -21,14 +22,14 @@ type EnforceResult struct {
 type Enforcer struct {
 	store       Store
 	archiveSink sink.Sink
-	logger      *slog.Logger
+	logger      log.Logger
 }
 
 // NewEnforcer creates a retention enforcer.
 // archiveSink may be nil if no archiving is needed.
-func NewEnforcer(store Store, archiveSink sink.Sink, logger *slog.Logger) *Enforcer {
+func NewEnforcer(store Store, archiveSink sink.Sink, logger log.Logger) *Enforcer {
 	if logger == nil {
-		logger = slog.Default()
+		logger = log.NewNoopLogger()
 	}
 	return &Enforcer{
 		store:       store,
@@ -52,9 +53,9 @@ func (e *Enforcer) Enforce(ctx context.Context) (*EnforceResult, error) {
 		policyResult, err := e.enforcePolicy(ctx, policy)
 		if err != nil {
 			e.logger.Error("retention: enforce policy failed",
-				"policy_id", policy.ID,
-				"category", policy.Category,
-				"error", err,
+				log.String("policy_id", policy.ID.String()),
+				log.String("category", policy.Category),
+				log.String("error", err.Error()),
 			)
 			continue
 		}
@@ -132,10 +133,10 @@ func (e *Enforcer) enforcePolicy(ctx context.Context, policy *Policy) (*EnforceR
 	result.Purged = purged
 
 	e.logger.Info("retention: policy enforced",
-		"policy_id", policy.ID,
-		"category", policy.Category,
-		"archived", result.Archived,
-		"purged", result.Purged,
+		log.String("policy_id", policy.ID.String()),
+		log.String("category", policy.Category),
+		log.Int64("archived", result.Archived),
+		log.Int64("purged", result.Purged),
 	)
 
 	return result, nil

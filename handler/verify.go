@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/xraph/forge"
+	log "github.com/xraph/go-utils/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -47,7 +48,7 @@ func (a *API) verifyChain(ctx forge.Context, req *VerifyChainRequest) (*verify.R
 	verifier := verify.NewVerifier(a.deps.VerifyStore)
 	report, err := verifier.VerifyChain(c, input)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to verify chain", "stream_id", req.StreamID, "error", err)
+		a.deps.Logger.Error("failed to verify chain", log.String("stream_id", req.StreamID), log.Error(err))
 		return nil, fmt.Errorf("verify chain: %w", err)
 	}
 

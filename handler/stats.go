@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/xraph/forge"
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/scope"
@@ -31,7 +32,7 @@ func (a *API) getStats(ctx forge.Context) error {
 
 	total, err := a.deps.AuditStore.Count(c, countQ)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to count events", "error", err)
+		a.deps.Logger.Error("failed to count events", log.Error(err))
 		return forge.NewHTTPError(http.StatusInternalServerError, "failed to get stats")
 	}
 
@@ -42,7 +43,7 @@ func (a *API) getStats(ctx forge.Context) error {
 	scope.ApplyToAggregateQuery(c, catQ)
 	catResult, err := a.deps.AuditStore.Aggregate(c, catQ)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to aggregate by category", "error", err)
+		a.deps.Logger.Error("failed to aggregate by category", log.Error(err))
 		return forge.NewHTTPError(http.StatusInternalServerError, "failed to get stats")
 	}
 
@@ -53,7 +54,7 @@ func (a *API) getStats(ctx forge.Context) error {
 	scope.ApplyToAggregateQuery(c, sevQ)
 	sevResult, err := a.deps.AuditStore.Aggregate(c, sevQ)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to aggregate by severity", "error", err)
+		a.deps.Logger.Error("failed to aggregate by severity", log.Error(err))
 		return forge.NewHTTPError(http.StatusInternalServerError, "failed to get stats")
 	}
 
@@ -64,7 +65,7 @@ func (a *API) getStats(ctx forge.Context) error {
 	scope.ApplyToAggregateQuery(c, outQ)
 	outResult, err := a.deps.AuditStore.Aggregate(c, outQ)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to aggregate by outcome", "error", err)
+		a.deps.Logger.Error("failed to aggregate by outcome", log.Error(err))
 		return forge.NewHTTPError(http.StatusInternalServerError, "failed to get stats")
 	}
 
@@ -76,7 +77,7 @@ func (a *API) getStats(ctx forge.Context) error {
 	scope.ApplyToQuery(c, recentQ)
 	recentResult, err := a.deps.AuditStore.Query(c, recentQ)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to query recent events", "error", err)
+		a.deps.Logger.Error("failed to query recent events", log.Error(err))
 		return forge.NewHTTPError(http.StatusInternalServerError, "failed to get stats")
 	}
 

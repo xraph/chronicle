@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/xraph/forge"
+	log "github.com/xraph/go-utils/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -64,7 +65,7 @@ func (a *API) listEvents(ctx forge.Context, req *ListEventsRequest) (*audit.Quer
 
 	result, err := a.deps.AuditStore.Query(c, q)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to query events", "error", err)
+		a.deps.Logger.Error("failed to query events", log.Error(err))
 		return nil, fmt.Errorf("list events: %w", err)
 	}
 
@@ -133,7 +134,7 @@ func (a *API) eventsByUser(ctx forge.Context, req *EventsByUserRequest) (*audit.
 
 	result, err := a.deps.AuditStore.ByUser(c, userID, opts)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to query events by user", "user_id", userID, "error", err)
+		a.deps.Logger.Error("failed to query events by user", log.String("user_id", userID), log.Error(err))
 		return nil, fmt.Errorf("events by user: %w", err)
 	}
 
@@ -155,7 +156,7 @@ func (a *API) aggregateEvents(ctx forge.Context, req *audit.AggregateQuery) (*au
 
 	result, err := a.deps.AuditStore.Aggregate(c, req)
 	if err != nil {
-		a.deps.Logger.ErrorContext(c, "failed to aggregate events", "error", err)
+		a.deps.Logger.Error("failed to aggregate events", log.Error(err))
 		return nil, fmt.Errorf("aggregate events: %w", err)
 	}
 
