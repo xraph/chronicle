@@ -15,12 +15,15 @@ import (
 	"time"
 
 	"github.com/xraph/forge"
+	dashboard "github.com/xraph/forge/extensions/dashboard"
+	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/kv"
 	"github.com/xraph/vessel"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/compliance"
+	chronicledash "github.com/xraph/chronicle/dashboard"
 	"github.com/xraph/chronicle/handler"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/sink"
@@ -38,8 +41,11 @@ const (
 	ExtensionVersion     = "0.1.0"
 )
 
-// Ensure Extension implements forge.Extension at compile time.
-var _ forge.Extension = (*Extension)(nil)
+// Ensure Extension implements forge.Extension and dashboard.DashboardAware at compile time.
+var (
+	_ forge.Extension          = (*Extension)(nil)
+	_ dashboard.DashboardAware = (*Extension)(nil)
+)
 
 // internalOpts holds non-config options that are set programmatically only.
 type internalOpts struct {
@@ -290,6 +296,25 @@ func (e *Extension) RetentionEnforcer() *retention.Enforcer {
 // API returns the API handler.
 func (e *Extension) API() *handler.API {
 	return e.api
+}
+
+// DashboardContributor implements dashboard.DashboardAware. It returns a
+// LocalContributor that renders chronicle pages, widgets, and settings in the
+// Forge dashboard using templ + ForgeUI.
+func (e *Extension) DashboardContributor() contributor.LocalContributor {
+	return chronicledash.New(
+		chronicledash.NewManifest(),
+		e.store,
+		e.engine,
+		e.enforcer,
+		chronicledash.Config{
+			BatchSize:           e.config.BatchSize,
+			FlushInterval:       e.config.FlushInterval,
+			RetentionInterval:   e.config.RetentionInterval,
+			EnableCryptoErasure: e.config.EnableCryptoErasure,
+			BasePath:            e.config.BasePath,
+		},
+	)
 }
 
 func (e *Extension) runRetentionScheduler(ctx context.Context) {

@@ -1,0 +1,73 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/dashboard/components"
+	"github.com/xraph/forgeui/components/card"
+)
+
+// OverviewStats holds aggregate counts for the overview page.
+type OverviewStats struct {
+	TotalEvents    int64
+	CriticalEvents int64
+	FailedEvents   int64
+	ErasureCount   int
+}
+
+templ OverviewPage(stats OverviewStats, recentEvents []*audit.Event, recentCritical []*audit.Event) {
+	<div class="space-y-8">
+		<!-- Page Header -->
+		<div>
+			<h1 class="text-3xl font-bold tracking-tight">Overview</h1>
+			<p class="text-muted-foreground mt-1">Monitor your immutable audit trail at a glance.</p>
+		</div>
+
+		<!-- Stats Grid -->
+		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+			@components.StatCard("activity", "Total Events", strconv.FormatInt(stats.TotalEvents, 10), "All recorded events")
+			@components.StatCard("triangle-alert", "Critical Events", strconv.FormatInt(stats.CriticalEvents, 10), "Last 30 days")
+			@components.StatCard("x-circle", "Failed / Denied", strconv.FormatInt(stats.FailedEvents, 10), "Last 30 days")
+			@components.StatCard("eraser", "Erasures", strconv.Itoa(stats.ErasureCount), "GDPR erasure requests")
+		</div>
+
+		<!-- Recent Events -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				@card.Title() {
+					Recent Events
+				}
+				@card.Description() {
+					The last 10 audit events recorded.
+				}
+			}
+			@card.Content() {
+				if len(recentEvents) == 0 {
+					@components.EmptyState("activity", "No events yet", "Audit events will appear here once they are recorded.")
+				} else {
+					@components.EventTable(recentEvents, "./")
+				}
+			}
+		}
+
+		<!-- Recent Critical Events -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				@card.Title() {
+					Recent Critical Events
+				}
+				@card.Description() {
+					The last 10 critical severity events.
+				}
+			}
+			@card.Content() {
+				if len(recentCritical) == 0 {
+					@components.EmptyState("shield-check", "No critical events", "Critical events will appear here when they are recorded.")
+				} else {
+					@components.EventTable(recentCritical, "./")
+				}
+			}
+		}
+	</div>
+}

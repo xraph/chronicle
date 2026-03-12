@@ -1,0 +1,95 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/chronicle/compliance"
+	"github.com/xraph/chronicle/dashboard/components"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/icons"
+)
+
+// ReportsPageData holds data for the reports list page.
+type ReportsPageData struct {
+	Reports []*compliance.Report
+	Error   string
+}
+
+templ ReportsPage(data ReportsPageData) {
+	<div class="space-y-6">
+		<!-- Header -->
+		<div class="flex items-center justify-between">
+			<div>
+				<h1 class="text-3xl font-bold tracking-tight">Compliance Reports</h1>
+				<p class="text-muted-foreground mt-1">Generate and manage SOC2, HIPAA, and EU AI Act compliance reports.</p>
+			</div>
+			<div class="flex items-center gap-2">
+				@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+					{ strconv.Itoa(len(data.Reports)) } reports
+				}
+			</div>
+		</div>
+
+		<!-- Generate Report Buttons -->
+		<div class="flex gap-3 flex-wrap">
+			@button.Button(button.Props{
+				Variant: button.VariantDefault,
+				Attributes: templ.Attributes{
+					"hx-get":      "./reports?action=generate_soc2",
+					"hx-target":   "#content",
+					"hx-swap":     "innerHTML",
+					"hx-push-url": "false",
+				},
+			}) {
+				@icons.FileCheck(icons.WithSize(16))
+				Generate SOC2
+			}
+			@button.Button(button.Props{
+				Variant: button.VariantOutline,
+				Attributes: templ.Attributes{
+					"hx-get":      "./reports?action=generate_hipaa",
+					"hx-target":   "#content",
+					"hx-swap":     "innerHTML",
+					"hx-push-url": "false",
+				},
+			}) {
+				@icons.FileCheck(icons.WithSize(16))
+				Generate HIPAA
+			}
+			@button.Button(button.Props{
+				Variant: button.VariantOutline,
+				Attributes: templ.Attributes{
+					"hx-get":      "./reports?action=generate_euaiact",
+					"hx-target":   "#content",
+					"hx-swap":     "innerHTML",
+					"hx-push-url": "false",
+				},
+			}) {
+				@icons.Scale(icons.WithSize(16))
+				Generate EU AI Act
+			}
+		</div>
+
+		<!-- Error -->
+		if data.Error != "" {
+			@card.Card(card.Props{Class: "rounded-sm border-destructive"}) {
+				@card.Content(card.ContentProps{Class: "p-4"}) {
+					<p class="text-sm text-destructive">{ data.Error }</p>
+				}
+			}
+		}
+
+		<!-- Table -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Content() {
+				if len(data.Reports) == 0 {
+					@components.EmptyState("file-check", "No reports yet", "Generate your first compliance report using the buttons above.")
+				} else {
+					@components.ReportTable(data.Reports, "./")
+				}
+			}
+		}
+	</div>
+}

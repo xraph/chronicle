@@ -1,0 +1,86 @@
+package pages
+
+import (
+	"strconv"
+	"time"
+
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+// SettingsData holds the chronicle engine configuration for display.
+type SettingsData struct {
+	BatchSize           int
+	FlushInterval       time.Duration
+	RetentionInterval   time.Duration
+	EnableCryptoErasure bool
+	BasePath            string
+}
+
+templ SettingsPage(data SettingsData) {
+	<div class="space-y-6">
+		<!-- Header -->
+		<div>
+			<h1 class="text-3xl font-bold tracking-tight">Settings</h1>
+			<p class="text-muted-foreground mt-1">Chronicle audit trail engine configuration (read-only).</p>
+		</div>
+
+		<!-- Engine Configuration -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-3">
+					<div class="flex h-10 w-10 items-center justify-center rounded-sm bg-primary/10 text-primary">
+						@icons.Settings(icons.WithSize(20))
+					</div>
+					<div>
+						@card.Title() {
+							Engine Configuration
+						}
+						@card.Description() {
+							Core audit trail engine settings.
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+					@fieldRow("Batch Size", strconv.Itoa(data.BatchSize)+" events")
+					@fieldRow("Flush Interval", data.FlushInterval.String())
+					@fieldRow("Retention Interval", data.RetentionInterval.String())
+					@fieldRow("Crypto Erasure", boolToEnabled(data.EnableCryptoErasure))
+					@fieldRow("Base Path", data.BasePath)
+				</dl>
+			}
+		}
+
+		<!-- Security Features -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				@card.Title() {
+					Security Features
+				}
+				@card.Description() {
+					Built-in security and compliance capabilities.
+				}
+			}
+			@card.Content() {
+				<dl class="grid grid-cols-1 gap-4">
+					@fieldRow("Hash Algorithm", "SHA-256")
+					@fieldRow("Hash Chain", "Immutable linked hash chain per app+tenant stream")
+					@fieldRow("Encryption", "AES-256-GCM (for GDPR crypto-erasure)")
+					@fieldRow("Multi-Tenancy", "Automatic scope isolation via context")
+					@fieldRow("Compliance Reports", "SOC2 Type II, HIPAA, EU AI Act, Custom")
+				</dl>
+			}
+		}
+	</div>
+}
+
+func boolToEnabled(b bool) string {
+	if b {
+		return "Enabled"
+	}
+	return "Disabled"
+}

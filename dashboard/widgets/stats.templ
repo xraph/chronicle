@@ -1,0 +1,25 @@
+package widgets
+
+import (
+	"strconv"
+
+	"github.com/xraph/chronicle/dashboard/components"
+)
+
+// StatsData holds counts for the stats widget.
+type StatsData struct {
+	TotalEvents    int64
+	CriticalEvents int64
+	FailedEvents   int64
+	ErasureCount   int
+}
+
+// StatsWidget renders a 4-card stats overview widget.
+templ StatsWidget(data StatsData) {
+	<div class="grid grid-cols-2 gap-4">
+		@components.StatCard("activity", "Events", strconv.FormatInt(data.TotalEvents, 10), "")
+		@components.StatCard("triangle-alert", "Critical", strconv.FormatInt(data.CriticalEvents, 10), "")
+		@components.StatCard("x-circle", "Failed", strconv.FormatInt(data.FailedEvents, 10), "")
+		@components.StatCard("eraser", "Erasures", strconv.Itoa(data.ErasureCount), "")
+	</div>
+}

@@ -1,0 +1,204 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/dashboard/components"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ EventDetailPage(event *audit.Event) {
+	<div class="space-y-6">
+		<!-- Back Button & Header -->
+		<div class="flex items-center gap-4">
+			@button.Button(button.Props{
+				Variant: button.VariantGhost,
+				Size:    button.SizeSm,
+				Attributes: templ.Attributes{
+					"hx-get":      "./events",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-swap":     "innerHTML",
+				},
+			}) {
+				@icons.ArrowLeft(icons.WithSize(16))
+				Back
+			}
+			<div>
+				<h1 class="text-3xl font-bold tracking-tight">Event Detail</h1>
+				<p class="text-muted-foreground mt-1">
+					<code class="text-xs">{ event.ID.String() }</code>
+				</p>
+			</div>
+		</div>
+
+		<!-- Event Identity -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-3">
+					<div class="flex h-10 w-10 items-center justify-center rounded-sm bg-primary/10 text-primary">
+						@icons.Activity(icons.WithSize(20))
+					</div>
+					<div>
+						@card.Title() {
+							{ event.Action } on { event.Resource }
+						}
+						@card.Description() {
+							Recorded { formatTimeAgo(event.Timestamp) }
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+					@fieldRow("Action", event.Action)
+					@fieldRow("Resource", event.Resource)
+					@fieldRow("Category", event.Category)
+					if event.ResourceID != "" {
+						@fieldRow("Resource ID", event.ResourceID)
+					}
+					<div>
+						<dt class="text-sm font-medium text-muted-foreground">Severity</dt>
+						<dd class="mt-1">
+							@components.SeverityBadge(event.Severity)
+						</dd>
+					</div>
+					<div>
+						<dt class="text-sm font-medium text-muted-foreground">Outcome</dt>
+						<dd class="mt-1">
+							@components.OutcomeBadge(event.Outcome)
+						</dd>
+					</div>
+					if event.Reason != "" {
+						@fieldRow("Reason", event.Reason)
+					}
+					@fieldRow("Timestamp", event.Timestamp.Format("2006-01-02 15:04:05 UTC"))
+					@fieldRow("Sequence", strconv.FormatUint(event.Sequence, 10))
+				</dl>
+			}
+		}
+
+		<!-- Scope -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				@card.Title() {
+					Scope
+				}
+				@card.Description() {
+					Multi-tenant context for this event.
+				}
+			}
+			@card.Content() {
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+					@fieldRow("App ID", event.AppID)
+					if event.TenantID != "" {
+						@fieldRow("Tenant ID", event.TenantID)
+					}
+					if event.UserID != "" {
+						@fieldRow("User ID", event.UserID)
+					}
+					if event.IP != "" {
+						@fieldRow("IP Address", event.IP)
+					}
+				</dl>
+			}
+		}
+
+		<!-- Hash Chain -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-3">
+					<div class="flex h-10 w-10 items-center justify-center rounded-sm bg-primary/10 text-primary">
+						@icons.Link(icons.WithSize(20))
+					</div>
+					<div>
+						@card.Title() {
+							Hash Chain
+						}
+						@card.Description() {
+							Immutable hash chain linking for tamper detection.
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 gap-4 mt-4">
+					@fieldRow("Stream ID", event.StreamID.String())
+					@fieldRow("Sequence", strconv.FormatUint(event.Sequence, 10))
+					<div>
+						<dt class="text-sm font-medium text-muted-foreground">Hash</dt>
+						<dd class="mt-1">
+							@credentialField(event.Hash)
+						</dd>
+					</div>
+					<div>
+						<dt class="text-sm font-medium text-muted-foreground">Previous Hash</dt>
+						<dd class="mt-1">
+							if event.PrevHash != "" {
+								@credentialField(event.PrevHash)
+							} else {
+								<span class="text-sm text-muted-foreground">Genesis event (no previous hash)</span>
+							}
+						</dd>
+					</div>
+				</dl>
+			}
+		}
+
+		<!-- GDPR / Erasure -->
+		if event.SubjectID != "" || event.Erased {
+			@card.Card(card.Props{Class: "rounded-sm"}) {
+				@card.Header() {
+					@card.Title() {
+						GDPR Status
+					}
+				}
+				@card.Content() {
+					<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+						if event.SubjectID != "" {
+							@fieldRow("Subject ID", event.SubjectID)
+						}
+						if event.EncryptionKeyID != "" {
+							@fieldRow("Encryption Key ID", event.EncryptionKeyID)
+						}
+						<div>
+							<dt class="text-sm font-medium text-muted-foreground">Status</dt>
+							<dd class="mt-1">
+								@components.ErasedBadge(event.Erased)
+							</dd>
+						</div>
+						if event.ErasedAt != nil {
+							@fieldRow("Erased At", event.ErasedAt.Format("2006-01-02 15:04:05 UTC"))
+						}
+						if event.ErasureID != "" {
+							@fieldRow("Erasure ID", event.ErasureID)
+						}
+					</dl>
+				}
+			}
+		}
+
+		<!-- Metadata -->
+		if len(event.Metadata) > 0 {
+			@card.Card(card.Props{Class: "rounded-sm"}) {
+				@card.Header() {
+					@card.Title() {
+						Metadata
+					}
+					@card.Description() {
+						Custom fields attached to this event.
+					}
+				}
+				@card.Content() {
+					@codeBlock(formatJSON(event.Metadata))
+				}
+			}
+		}
+	</div>
+}

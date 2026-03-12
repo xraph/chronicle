@@ -1,0 +1,66 @@
+package components
+
+import (
+	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/forgeui/components/table"
+)
+
+// EventTable renders a table of audit events with clickable rows.
+templ EventTable(events []*audit.Event, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { ID }
+				@table.Head() { Timestamp }
+				@table.Head() { Action }
+				@table.Head() { Resource }
+				@table.Head() { Category }
+				@table.Head() { Severity }
+				@table.Head() { Outcome }
+			}
+		}
+		@table.Body() {
+			for _, evt := range events {
+				<tr
+					class="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+					hx-get={ basePath + "events/detail?id=" + evt.ID.String() }
+					hx-target="#content"
+					hx-push-url="true"
+					hx-swap="innerHTML"
+				>
+					@table.Cell() {
+						<code class="text-xs">{ truncateStr(evt.ID.String(), 16) }</code>
+					}
+					@table.Cell() {
+						<span class="text-muted-foreground text-sm">
+							{ evt.Timestamp.Format("Jan 02, 15:04") }
+						</span>
+					}
+					@table.Cell() {
+						<span class="font-medium text-sm">{ evt.Action }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm">{ evt.Resource }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ evt.Category }</span>
+					}
+					@table.Cell() {
+						@SeverityBadge(evt.Severity)
+					}
+					@table.Cell() {
+						@OutcomeBadge(evt.Outcome)
+					}
+				</tr>
+			}
+		}
+	}
+}
+
+// truncateStr shortens s to maxLen characters, appending "..." if truncated.
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}

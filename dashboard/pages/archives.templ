@@ -1,0 +1,43 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/chronicle/dashboard/components"
+	"github.com/xraph/chronicle/retention"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/card"
+)
+
+// ArchivesPageData holds data for the archives list page.
+type ArchivesPageData struct {
+	Archives []*retention.Archive
+}
+
+templ ArchivesPage(data ArchivesPageData) {
+	<div class="space-y-6">
+		<!-- Header -->
+		<div class="flex items-center justify-between">
+			<div>
+				<h1 class="text-3xl font-bold tracking-tight">Archives</h1>
+				<p class="text-muted-foreground mt-1">Events archived by retention policies to cold storage.</p>
+			</div>
+			<div class="flex items-center gap-2">
+				@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+					{ strconv.Itoa(len(data.Archives)) } archives
+				}
+			</div>
+		</div>
+
+		<!-- Table -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Content() {
+				if len(data.Archives) == 0 {
+					@components.EmptyState("archive", "No archives yet", "Archives are created when retention policies archive events before purging.")
+				} else {
+					@components.ArchiveTable(data.Archives)
+				}
+			}
+		}
+	</div>
+}

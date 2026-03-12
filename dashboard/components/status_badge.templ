@@ -1,0 +1,117 @@
+package components
+
+import "github.com/xraph/forgeui/components/badge"
+
+// OutcomeBadge renders a badge coloured by event outcome.
+templ OutcomeBadge(outcome string) {
+	switch outcome {
+		case "success":
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+				Success
+			}
+		case "failure":
+			@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+				Failed
+			}
+		case "denied":
+			@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+				Denied
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				{ outcome }
+			}
+	}
+}
+
+// SeverityBadge renders a badge coloured by event severity.
+templ SeverityBadge(severity string) {
+	switch severity {
+		case "critical":
+			@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+				Critical
+			}
+		case "warning":
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				Warning
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+				Info
+			}
+	}
+}
+
+// ErasedBadge renders a badge showing whether an event has been erased.
+templ ErasedBadge(erased bool) {
+	if erased {
+		@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+			Erased
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			Active
+		}
+	}
+}
+
+// VerificationBadge renders a badge showing chain verification status.
+templ VerificationBadge(valid bool) {
+	if valid {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			Valid
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+			Tampered
+		}
+	}
+}
+
+// ReportTypeBadge renders a badge for the compliance report type.
+templ ReportTypeBadge(reportType string) {
+	switch reportType {
+		case "soc2":
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+				SOC2
+			}
+		case "hipaa":
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+				HIPAA
+			}
+		case "eu_ai_act":
+			@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+				EU AI Act
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				Custom
+			}
+	}
+}
+
+// KeyDestroyedBadge renders a badge for whether an encryption key was destroyed.
+templ KeyDestroyedBadge(destroyed bool) {
+	if destroyed {
+		@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+			Key Destroyed
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+			Key Intact
+		}
+	}
+}
+
+// ArchiveBadge renders a badge for retention archive flag.
+templ ArchiveBadge(archive bool) {
+	if archive {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			Archive
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+			Purge
+		}
+	}
+}

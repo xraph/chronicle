@@ -1,0 +1,54 @@
+package components
+
+import (
+	"strconv"
+
+	"github.com/xraph/chronicle/erasure"
+	"github.com/xraph/forgeui/components/table"
+)
+
+// ErasureTable renders a table of GDPR erasure records.
+templ ErasureTable(erasures []*erasure.Erasure, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { ID }
+				@table.Head() { Subject ID }
+				@table.Head() { Reason }
+				@table.Head() { Requested By }
+				@table.Head() { Events Affected }
+				@table.Head() { Key Destroyed }
+			}
+		}
+		@table.Body() {
+			for _, e := range erasures {
+				<tr
+					class="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+					hx-get={ basePath + "erasures/detail?id=" + e.ID.String() }
+					hx-target="#content"
+					hx-push-url="true"
+					hx-swap="innerHTML"
+				>
+					@table.Cell() {
+						<code class="text-xs">{ truncateStr(e.ID.String(), 16) }</code>
+					}
+					@table.Cell() {
+						<span class="text-sm font-medium">{ e.SubjectID }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ truncateStr(e.Reason, 40) }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm">{ e.RequestedBy }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm">{ strconv.FormatInt(e.EventsAffected, 10) }</span>
+					}
+					@table.Cell() {
+						@KeyDestroyedBadge(e.KeyDestroyed)
+					}
+				</tr>
+			}
+		}
+	}
+}

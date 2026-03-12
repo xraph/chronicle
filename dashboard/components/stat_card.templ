@@ -1,0 +1,94 @@
+package components
+
+import (
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/icons"
+)
+
+// resolveIcon returns the lucide icon component for the given icon name.
+func resolveIcon(iconName string, opts ...icons.Option) templ.Component {
+	switch iconName {
+	case "scroll-text":
+		return icons.ScrollText(opts...)
+	case "activity":
+		return icons.Activity(opts...)
+	case "shield-check":
+		return icons.ShieldCheck(opts...)
+	case "file-check":
+		return icons.FileCheck(opts...)
+	case "eraser":
+		return icons.Eraser(opts...)
+	case "clock":
+		return icons.Clock(opts...)
+	case "archive":
+		return icons.Archive(opts...)
+	case "settings":
+		return icons.Settings(opts...)
+	case "layout-dashboard":
+		return icons.LayoutDashboard(opts...)
+	case "triangle-alert":
+		return icons.TriangleAlert(opts...)
+	case "check-circle":
+		return icons.CheckCircle(opts...)
+	case "x-circle":
+		return icons.XCircle(opts...)
+	case "hash":
+		return icons.Hash(opts...)
+	case "eye":
+		return icons.Eye(opts...)
+	case "user":
+		return icons.User(opts...)
+	case "user-x":
+		return icons.UserX(opts...)
+	case "download":
+		return icons.Download(opts...)
+	case "scale":
+		return icons.Scale(opts...)
+	case "lock":
+		return icons.Lock(opts...)
+	case "search":
+		return icons.Search(opts...)
+	case "database":
+		return icons.Database(opts...)
+	case "calendar":
+		return icons.Calendar(opts...)
+	case "refresh-cw":
+		return icons.RefreshCw(opts...)
+	case "loader":
+		return icons.Loader(opts...)
+	case "globe":
+		return icons.Globe(opts...)
+	case "link":
+		return icons.Link(opts...)
+	case "shield":
+		return icons.Shield(opts...)
+	case "list-tree":
+		return icons.ListTree(opts...)
+	case "trash":
+		return icons.Trash(opts...)
+	case "plus":
+		return icons.Plus(opts...)
+	case "key":
+		return icons.Key(opts...)
+	default:
+		return icons.Info(opts...)
+	}
+}
+
+// StatCard renders a dashboard statistics card with an icon, label, value, and optional subtitle.
+templ StatCard(iconName string, label string, value string, subtitle string) {
+	@card.Card(card.Props{Class: "rounded-sm"}) {
+		@card.Content(card.ContentProps{Class: "flex flex-col gap-1 p-6"}) {
+			<div class="flex items-center justify-between">
+				<span class="text-sm text-muted-foreground">{ label }</span>
+				<span class="text-muted-foreground">
+					@resolveIcon(iconName, icons.WithSize(16))
+				</span>
+			</div>
+			<div class="text-3xl font-bold">{ value }</div>
+			if subtitle != "" {
+				<span class="text-xs text-muted-foreground">{ subtitle }</span>
+			}
+		}
+	}
+}

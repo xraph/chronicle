@@ -1,0 +1,15 @@
+package widgets
+
+import (
+	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/dashboard/components"
+)
+
+// RecentEventsWidget renders a compact table of the latest audit events.
+templ RecentEventsWidget(events []*audit.Event) {
+	if len(events) == 0 {
+		@components.EmptyState("activity", "No events yet", "")
+	} else {
+		@components.EventTable(events, "./")
+	}
+}

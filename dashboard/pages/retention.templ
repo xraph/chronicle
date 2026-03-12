@@ -1,0 +1,133 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/chronicle/dashboard/components"
+	"github.com/xraph/chronicle/retention"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+// RetentionPageData holds data for the retention policies page.
+type RetentionPageData struct {
+	Policies []*retention.Policy
+	Error    string
+}
+
+templ RetentionPage(data RetentionPageData) {
+	<div class="space-y-6">
+		<!-- Header -->
+		<div class="flex items-center justify-between">
+			<div>
+				<h1 class="text-3xl font-bold tracking-tight">Retention Policies</h1>
+				<p class="text-muted-foreground mt-1">Configure automatic event archival and purge schedules.</p>
+			</div>
+			<div class="flex items-center gap-2">
+				@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+					{ strconv.Itoa(len(data.Policies)) } policies
+				}
+			</div>
+		</div>
+
+		<!-- Error -->
+		if data.Error != "" {
+			@card.Card(card.Props{Class: "rounded-sm border-destructive"}) {
+				@card.Content(card.ContentProps{Class: "p-4"}) {
+					<p class="text-sm text-destructive">{ data.Error }</p>
+				}
+			}
+		}
+
+		<!-- Create Policy Form -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-3">
+					<div class="flex h-10 w-10 items-center justify-center rounded-sm bg-primary/10 text-primary">
+						@icons.Plus(icons.WithSize(20))
+					</div>
+					<div>
+						@card.Title() {
+							Create Policy
+						}
+						@card.Description() {
+							Define a new retention policy for a category of events.
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<form class="space-y-4 mt-4">
+					<input type="hidden" name="action" value="create_policy"/>
+					<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+						<div class="space-y-2">
+							<label class="text-sm font-medium">Category</label>
+							@input.Input(input.Props{
+								Name:        "category",
+								Placeholder: "auth, data, or * for all",
+							})
+						</div>
+						<div class="space-y-2">
+							<label class="text-sm font-medium">Duration</label>
+							@input.Input(input.Props{
+								Name:        "duration",
+								Placeholder: "720h (30 days)",
+							})
+						</div>
+						<div class="flex items-end gap-4">
+							<label class="flex items-center gap-2 text-sm">
+								<input type="checkbox" name="archive" value="true" class="rounded"/>
+								Archive before purge
+							</label>
+						</div>
+					</div>
+					@button.Button(button.Props{
+						Variant: button.VariantDefault,
+						Attributes: templ.Attributes{
+							"hx-post":     "./retention",
+							"hx-target":   "#content",
+							"hx-swap":     "innerHTML",
+							"hx-include":  "closest form",
+						},
+					}) {
+						@icons.Plus(icons.WithSize(16))
+						Create Policy
+					}
+				</form>
+			}
+		}
+
+		<!-- Enforce Retention -->
+		<div class="flex gap-3">
+			@button.Button(button.Props{
+				Variant: button.VariantOutline,
+				Size:    button.SizeSm,
+				Attributes: templ.Attributes{
+					"hx-get":      "./retention?action=enforce",
+					"hx-target":   "#content",
+					"hx-swap":     "innerHTML",
+					"hx-confirm":  "Are you sure you want to enforce all retention policies now?",
+				},
+			}) {
+				@icons.RefreshCw(icons.WithSize(14))
+				Enforce Now
+			}
+		</div>
+
+		<!-- Policies Table -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Content() {
+				if len(data.Policies) == 0 {
+					@components.EmptyState("clock", "No retention policies", "Create a policy above to automate event lifecycle management.")
+				} else {
+					@components.PolicyTable(data.Policies, "./")
+				}
+			}
+		}
+	</div>
+}

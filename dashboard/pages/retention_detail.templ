@@ -1,0 +1,87 @@
+package pages
+
+import (
+	"github.com/xraph/chronicle/dashboard/components"
+	"github.com/xraph/chronicle/retention"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+templ RetentionDetailPage(policy *retention.Policy) {
+	<div class="space-y-6">
+		<!-- Back Button & Header -->
+		<div class="flex items-center gap-4">
+			@button.Button(button.Props{
+				Variant: button.VariantGhost,
+				Size:    button.SizeSm,
+				Attributes: templ.Attributes{
+					"hx-get":      "./retention",
+					"hx-target":   "#content",
+					"hx-push-url": "true",
+					"hx-swap":     "innerHTML",
+				},
+			}) {
+				@icons.ArrowLeft(icons.WithSize(16))
+				Back
+			}
+			<div>
+				<h1 class="text-3xl font-bold tracking-tight">Retention Policy</h1>
+				<p class="text-muted-foreground mt-1">
+					<code class="text-xs">{ policy.ID.String() }</code>
+				</p>
+			</div>
+		</div>
+
+		<!-- Policy Details -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-3">
+					<div class="flex h-10 w-10 items-center justify-center rounded-sm bg-primary/10 text-primary">
+						@icons.Clock(icons.WithSize(20))
+					</div>
+					<div>
+						@card.Title() {
+							Policy for "{ policy.Category }"
+						}
+						@card.Description() {
+							Retention configuration for events in this category.
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+					@fieldRow("Category", policy.Category)
+					@fieldRow("Duration", policy.Duration.String())
+					<div>
+						<dt class="text-sm font-medium text-muted-foreground">Action</dt>
+						<dd class="mt-1">
+							@components.ArchiveBadge(policy.Archive)
+						</dd>
+					</div>
+					@fieldRow("App ID", policy.AppID)
+					@fieldRow("Created", policy.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
+				</dl>
+			}
+			@card.Footer() {
+				@button.Button(button.Props{
+					Variant: button.VariantDestructive,
+					Size:    button.SizeSm,
+					Attributes: templ.Attributes{
+						"hx-get":      "./retention?action=delete&id=" + policy.ID.String(),
+						"hx-target":   "#content",
+						"hx-push-url": "./retention",
+						"hx-swap":     "innerHTML",
+						"hx-confirm":  "Are you sure you want to delete this retention policy?",
+					},
+				}) {
+					@icons.Trash(icons.WithSize(14))
+					Delete Policy
+				}
+			}
+		}
+	</div>
+}

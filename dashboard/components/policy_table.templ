@@ -1,0 +1,48 @@
+package components
+
+import (
+	"github.com/xraph/chronicle/retention"
+	"github.com/xraph/forgeui/components/table"
+)
+
+// PolicyTable renders a table of retention policies.
+templ PolicyTable(policies []*retention.Policy, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { ID }
+				@table.Head() { Category }
+				@table.Head() { Duration }
+				@table.Head() { Action }
+				@table.Head() { App ID }
+			}
+		}
+		@table.Body() {
+			for _, p := range policies {
+				<tr
+					class="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+					hx-get={ basePath + "retention/detail?id=" + p.ID.String() }
+					hx-target="#content"
+					hx-push-url="true"
+					hx-swap="innerHTML"
+				>
+					@table.Cell() {
+						<code class="text-xs">{ truncateStr(p.ID.String(), 16) }</code>
+					}
+					@table.Cell() {
+						<span class="text-sm font-medium">{ p.Category }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm">{ p.Duration.String() }</span>
+					}
+					@table.Cell() {
+						@ArchiveBadge(p.Archive)
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ truncateStr(p.AppID, 20) }</span>
+					}
+				</tr>
+			}
+		}
+	}
+}

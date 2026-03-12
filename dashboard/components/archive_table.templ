@@ -1,0 +1,56 @@
+package components
+
+import (
+	"strconv"
+
+	"github.com/xraph/chronicle/retention"
+	"github.com/xraph/forgeui/components/table"
+)
+
+// ArchiveTable renders a table of retention archive records.
+templ ArchiveTable(archives []*retention.Archive) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { ID }
+				@table.Head() { Category }
+				@table.Head() { Events }
+				@table.Head() { From }
+				@table.Head() { To }
+				@table.Head() { Sink }
+				@table.Head() { Reference }
+			}
+		}
+		@table.Body() {
+			for _, a := range archives {
+				@table.Row() {
+					@table.Cell() {
+						<code class="text-xs">{ truncateStr(a.ID.String(), 16) }</code>
+					}
+					@table.Cell() {
+						<span class="text-sm font-medium">{ a.Category }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm">{ strconv.FormatInt(a.EventCount, 10) }</span>
+					}
+					@table.Cell() {
+						<span class="text-muted-foreground text-sm">
+							{ a.FromTimestamp.Format("Jan 02, 2006") }
+						</span>
+					}
+					@table.Cell() {
+						<span class="text-muted-foreground text-sm">
+							{ a.ToTimestamp.Format("Jan 02, 2006") }
+						</span>
+					}
+					@table.Cell() {
+						<span class="text-sm">{ a.SinkName }</span>
+					}
+					@table.Cell() {
+						<code class="text-xs text-muted-foreground">{ truncateStr(a.SinkRef, 30) }</code>
+					}
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,168 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/chronicle/dashboard/components"
+	"github.com/xraph/chronicle/verify"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+// VerifyPageData holds data for the verification page.
+type VerifyPageData struct {
+	Report   *verify.Report
+	StreamID string
+	FromSeq  string
+	ToSeq    string
+	Error    string
+}
+
+templ VerifyPage(data VerifyPageData) {
+	<div class="space-y-6">
+		<!-- Header -->
+		<div>
+			<h1 class="text-3xl font-bold tracking-tight">Hash Chain Verification</h1>
+			<p class="text-muted-foreground mt-1">Verify the integrity of the immutable audit trail hash chain.</p>
+		</div>
+
+		<!-- Verification Form -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-3">
+					<div class="flex h-10 w-10 items-center justify-center rounded-sm bg-primary/10 text-primary">
+						@icons.ShieldCheck(icons.WithSize(20))
+					</div>
+					<div>
+						@card.Title() {
+							Verify Chain Integrity
+						}
+						@card.Description() {
+							Enter a stream ID and sequence range to verify hash chain integrity.
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<form class="space-y-4 mt-4">
+					<input type="hidden" name="action" value="verify"/>
+					<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+						<div class="space-y-2">
+							<label class="text-sm font-medium">Stream ID</label>
+							@input.Input(input.Props{
+								Name:        "stream_id",
+								Placeholder: "stream_01h2x...",
+								Attributes: templ.Attributes{
+									"value": data.StreamID,
+								},
+							})
+						</div>
+						<div class="space-y-2">
+							<label class="text-sm font-medium">From Sequence</label>
+							@input.Input(input.Props{
+								Type:        input.TypeNumber,
+								Name:        "from_seq",
+								Placeholder: "1",
+								Attributes: templ.Attributes{
+									"value": data.FromSeq,
+								},
+							})
+						</div>
+						<div class="space-y-2">
+							<label class="text-sm font-medium">To Sequence</label>
+							@input.Input(input.Props{
+								Type:        input.TypeNumber,
+								Name:        "to_seq",
+								Placeholder: "100",
+								Attributes: templ.Attributes{
+									"value": data.ToSeq,
+								},
+							})
+						</div>
+					</div>
+					@button.Button(button.Props{
+						Variant: button.VariantDefault,
+						Attributes: templ.Attributes{
+							"hx-post":     "./verify",
+							"hx-target":   "#content",
+							"hx-swap":     "innerHTML",
+							"hx-include":  "closest form",
+							"hx-push-url": "false",
+						},
+					}) {
+						@icons.ShieldCheck(icons.WithSize(16))
+						Verify Chain
+					}
+				</form>
+			}
+		}
+
+		<!-- Error -->
+		if data.Error != "" {
+			@card.Card(card.Props{Class: "rounded-sm border-destructive"}) {
+				@card.Content(card.ContentProps{Class: "p-4"}) {
+					<p class="text-sm text-destructive">{ data.Error }</p>
+				}
+			}
+		}
+
+		<!-- Verification Result -->
+		if data.Report != nil {
+			@card.Card(card.Props{Class: "rounded-sm"}) {
+				@card.Header() {
+					@card.Title() {
+						Verification Result
+					}
+				}
+				@card.Content() {
+					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+						@components.StatCard("shield-check", "Status", boolToStatus(data.Report.Valid), "")
+						@components.StatCard("check-circle", "Verified", strconv.FormatInt(data.Report.Verified, 10), "events checked")
+						@components.StatCard("activity", "Range", strconv.FormatUint(data.Report.FirstEvent, 10) + " - " + strconv.FormatUint(data.Report.LastEvent, 10), "sequence range")
+						@components.StatCard("triangle-alert", "Issues", strconv.Itoa(len(data.Report.Gaps) + len(data.Report.Tampered)), "gaps + tampered")
+					</div>
+
+					<div>
+						<dt class="text-sm font-medium text-muted-foreground mb-2">Chain Status</dt>
+						<dd>
+							@components.VerificationBadge(data.Report.Valid)
+						</dd>
+					</div>
+
+					if len(data.Report.Gaps) > 0 {
+						<div class="mt-4">
+							<dt class="text-sm font-medium text-muted-foreground mb-2">Sequence Gaps</dt>
+							<dd class="flex flex-wrap gap-2">
+								for _, seq := range data.Report.Gaps {
+									<code class="text-xs bg-muted/50 px-2 py-1 rounded-sm">{ strconv.FormatUint(seq, 10) }</code>
+								}
+							</dd>
+						</div>
+					}
+
+					if len(data.Report.Tampered) > 0 {
+						<div class="mt-4">
+							<dt class="text-sm font-medium text-muted-foreground mb-2">Tampered Events</dt>
+							<dd class="flex flex-wrap gap-2">
+								for _, seq := range data.Report.Tampered {
+									<code class="text-xs bg-destructive/10 text-destructive px-2 py-1 rounded-sm">{ strconv.FormatUint(seq, 10) }</code>
+								}
+							</dd>
+						</div>
+					}
+				}
+			}
+		}
+	</div>
+}
+
+func boolToStatus(valid bool) string {
+	if valid {
+		return "Valid"
+	}
+	return "Tampered"
+}
