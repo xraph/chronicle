@@ -78,7 +78,7 @@ func (a *API) registerEventRoutes(router forge.Router) {
 	must(g.GET("/events", a.listEvents,
 		forge.WithSummary("List events"),
 		forge.WithDescription("Returns audit events filtered by category, action, severity, outcome, and time range."),
-		forge.WithOperationID("listEvents"),
+		forge.WithOperationID("chronicleListEvents"),
 		forge.WithRequestSchema(ListEventsRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Event list", &audit.QueryResult{}),
 		forge.WithErrorResponses(),
@@ -87,7 +87,8 @@ func (a *API) registerEventRoutes(router forge.Router) {
 	must(g.GET("/events/:id", a.getEvent,
 		forge.WithSummary("Get event"),
 		forge.WithDescription("Returns details of a specific audit event."),
-		forge.WithOperationID("getEvent"),
+		forge.WithOperationID("chronicleGetEvent"),
+		forge.WithRequestSchema(GetEventRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Event details", &audit.Event{}),
 		forge.WithErrorResponses(),
 	))
@@ -150,6 +151,7 @@ func (a *API) registerErasureRoutes(router forge.Router) {
 		forge.WithSummary("Get erasure"),
 		forge.WithDescription("Returns details of a specific erasure record."),
 		forge.WithOperationID("getErasure"),
+		forge.WithRequestSchema(GetErasureRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Erasure details", &erasure.Erasure{}),
 		forge.WithErrorResponses(),
 	))
@@ -162,7 +164,7 @@ func (a *API) registerRetentionRoutes(router forge.Router) {
 	must(g.GET("/retention", a.listPolicies,
 		forge.WithSummary("List retention policies"),
 		forge.WithDescription("Returns retention policies for the current app scope."),
-		forge.WithOperationID("listPolicies"),
+		forge.WithOperationID("chronicleListPolicies"),
 		forge.WithResponseSchema(http.StatusOK, "Retention policies", []*retention.Policy{}),
 		forge.WithErrorResponses(),
 	))
@@ -179,7 +181,8 @@ func (a *API) registerRetentionRoutes(router forge.Router) {
 	must(g.DELETE("/retention/:id", a.deletePolicy,
 		forge.WithSummary("Delete retention policy"),
 		forge.WithDescription("Removes a retention policy."),
-		forge.WithOperationID("deletePolicy"),
+		forge.WithOperationID("chronicleDeletePolicy"),
+		forge.WithRequestSchema(DeletePolicyRequest{}),
 		forge.WithNoContentResponse(),
 		forge.WithErrorResponses(),
 	))
@@ -252,7 +255,8 @@ func (a *API) registerReportRoutes(router forge.Router) {
 	must(g.GET("/reports/:id", a.getReport,
 		forge.WithSummary("Get report"),
 		forge.WithDescription("Returns details of a specific compliance report."),
-		forge.WithOperationID("getReport"),
+		forge.WithOperationID("chronicleGetReport"),
+		forge.WithRequestSchema(GetReportRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Report details", &compliance.Report{}),
 		forge.WithErrorResponses(),
 	))
@@ -260,7 +264,8 @@ func (a *API) registerReportRoutes(router forge.Router) {
 	must(g.GET("/reports/:id/export/:format", a.exportReport,
 		forge.WithSummary("Export report"),
 		forge.WithDescription("Exports a compliance report in the specified format (json, csv, markdown, html)."),
-		forge.WithOperationID("exportReport"),
+		forge.WithOperationID("chronicleExportReport"),
+		forge.WithRequestSchema(ExportReportRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Exported report content", ""),
 		forge.WithErrorResponses(),
 	))
