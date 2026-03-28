@@ -79,7 +79,7 @@ func (s *Store) ListStreams(ctx context.Context, opts stream.ListOpts) ([]*strea
 func (s *Store) UpdateStreamHead(ctx context.Context, streamID id.ID, hash string, seq uint64) error {
 	result, err := s.pg.NewUpdate((*StreamModel)(nil)).
 		Set("head_hash = ?", hash).
-		Set("head_seq = ?", int64(seq)).
+		Set("head_seq = ?", safeInt64(seq)).
 		Set("updated_at = NOW()").
 		Where("id = ?", streamID.String()).
 		Exec(ctx)

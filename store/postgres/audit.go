@@ -265,7 +265,7 @@ func (s *Store) LastSequence(ctx context.Context, streamID id.ID) (uint64, error
 		ColumnExpr("COALESCE(MAX(sequence), 0)").
 		Where("stream_id = ?", streamID.String()).
 		Scan(ctx, &seq)
-	return uint64(seq), err
+	return safeUint64(seq), err
 }
 
 // LastHash returns the hash of the most recent event in a stream.

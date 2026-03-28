@@ -4,6 +4,7 @@ package postgres
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/xraph/grove"
@@ -16,6 +17,22 @@ import (
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/stream"
 )
+
+// safeInt64 converts a uint64 to int64, clamping at math.MaxInt64.
+func safeInt64(v uint64) int64 {
+	if v > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(v)
+}
+
+// safeUint64 converts an int64 to uint64, clamping negative values to 0.
+func safeUint64(v int64) uint64 {
+	if v < 0 {
+		return 0
+	}
+	return uint64(v)
+}
 
 // ──────────────────────────────────────────────────
 // EventModel
@@ -65,7 +82,7 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 	return &audit.Event{
 		ID:              eventID,
 		StreamID:        streamID,
-		Sequence:        uint64(m.Sequence),
+		Sequence:        safeUint64(m.Sequence),
 		Hash:            m.Hash,
 		PrevHash:        m.PrevHash,
 		AppID:           m.AppID,
@@ -93,7 +110,7 @@ func fromEvent(e *audit.Event) *EventModel {
 	return &EventModel{
 		ID:              e.ID.String(),
 		StreamID:        e.StreamID.String(),
-		Sequence:        int64(e.Sequence),
+		Sequence:        safeInt64(e.Sequence),
 		Hash:            e.Hash,
 		PrevHash:        e.PrevHash,
 		AppID:           e.AppID,
@@ -150,7 +167,7 @@ func toStream(m *StreamModel) (*stream.Stream, error) {
 		AppID:    m.AppID,
 		TenantID: m.TenantID,
 		HeadHash: m.HeadHash,
-		HeadSeq:  uint64(m.HeadSeq),
+		HeadSeq:  safeUint64(m.HeadSeq),
 	}, nil
 }
 
@@ -160,7 +177,7 @@ func fromStream(st *stream.Stream) *StreamModel {
 		AppID:     st.AppID,
 		TenantID:  st.TenantID,
 		HeadHash:  st.HeadHash,
-		HeadSeq:   int64(st.HeadSeq),
+		HeadSeq:   safeInt64(st.HeadSeq),
 		CreatedAt: st.CreatedAt,
 		UpdatedAt: st.UpdatedAt,
 	}
