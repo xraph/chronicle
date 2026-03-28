@@ -23,7 +23,7 @@ func (s *Store) SaveReport(ctx context.Context, r *compliance.Report) error {
 // GetReport returns a report by ID.
 func (s *Store) GetReport(ctx context.Context, reportID id.ID) (*compliance.Report, error) {
 	m := new(ReportModel)
-	err := s.pg.NewSelect(m).Where("id = $1", reportID.String()).Scan(ctx)
+	err := s.pg.NewSelect(m).Where("id = ?", reportID.String()).Scan(ctx)
 	if err != nil {
 		return nil, groveError(err, chronicle.ErrReportNotFound)
 	}
@@ -63,7 +63,7 @@ func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*c
 // DeleteReport removes a report by ID.
 func (s *Store) DeleteReport(ctx context.Context, reportID id.ID) error {
 	result, err := s.pg.NewDelete((*ReportModel)(nil)).
-		Where("id = $1", reportID.String()).
+		Where("id = ?", reportID.String()).
 		Exec(ctx)
 	if err != nil {
 		return err

@@ -45,7 +45,7 @@ func (s *Store) AppendBatch(ctx context.Context, events []*audit.Event) error {
 // Get returns a single event by ID.
 func (s *Store) Get(ctx context.Context, eventID id.ID) (*audit.Event, error) {
 	m := new(EventModel)
-	err := s.pg.NewSelect(m).Where("id = $1", eventID.String()).Scan(ctx)
+	err := s.pg.NewSelect(m).Where("id = ?", eventID.String()).Scan(ctx)
 	if err != nil {
 		return nil, groveError(err, chronicle.ErrEventNotFound)
 	}
@@ -212,9 +212,9 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 	var models []EventModel
 
 	err := s.pg.NewSelect(&models).
-		Where("e.user_id = $1", userID).
-		Where("e.timestamp >= $2", opts.After).
-		Where("e.timestamp <= $3", opts.Before).
+		Where("e.user_id = ?", userID).
+		Where("e.timestamp >= ?", opts.After).
+		Where("e.timestamp <= ?", opts.Before).
 		OrderExpr("e.timestamp DESC").
 		Scan(ctx)
 	if err != nil {
@@ -238,19 +238,19 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 	countQuery := s.pg.NewSelect((*EventModel)(nil)).ColumnExpr("COUNT(*)")
 
 	if q.AppID != "" {
-		countQuery = countQuery.Where("e.app_id = $1", q.AppID)
+		countQuery = countQuery.Where("e.app_id = ?", q.AppID)
 	}
 	if q.TenantID != "" {
-		countQuery = countQuery.Where("e.tenant_id = $1", q.TenantID)
+		countQuery = countQuery.Where("e.tenant_id = ?", q.TenantID)
 	}
 	if q.Category != "" {
-		countQuery = countQuery.Where("e.category = $1", q.Category)
+		countQuery = countQuery.Where("e.category = ?", q.Category)
 	}
 	if !q.After.IsZero() {
-		countQuery = countQuery.Where("e.timestamp >= $1", q.After)
+		countQuery = countQuery.Where("e.timestamp >= ?", q.After)
 	}
 	if !q.Before.IsZero() {
-		countQuery = countQuery.Where("e.timestamp <= $1", q.Before)
+		countQuery = countQuery.Where("e.timestamp <= ?", q.Before)
 	}
 
 	var count int64
@@ -260,12 +260,12 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 
 // LastSequence returns the highest sequence number for a stream.
 func (s *Store) LastSequence(ctx context.Context, streamID id.ID) (uint64, error) {
-	var seq uint64
+	var seq int64
 	err := s.pg.NewSelect((*EventModel)(nil)).
 		ColumnExpr("COALESCE(MAX(sequence), 0)").
-		Where("stream_id = $1", streamID.String()).
+		Where("stream_id = ?", streamID.String()).
 		Scan(ctx, &seq)
-	return seq, err
+	return uint64(seq), err
 }
 
 // LastHash returns the hash of the most recent event in a stream.
@@ -273,7 +273,7 @@ func (s *Store) LastHash(ctx context.Context, streamID id.ID) (string, error) {
 	var hash string
 	err := s.pg.NewSelect((*EventModel)(nil)).
 		Column("hash").
-		Where("stream_id = $1", streamID.String()).
+		Where("stream_id = ?", streamID.String()).
 		OrderExpr("sequence DESC").
 		Limit(1).
 		Scan(ctx, &hash)
@@ -286,19 +286,19 @@ func (s *Store) LastHash(ctx context.Context, streamID id.ID) (string, error) {
 // applyEventFilters applies common query filters to a pgdriver select query.
 func applyEventFilters(q *pgdriver.SelectQuery, f *audit.Query) {
 	if f.AppID != "" {
-		q.Where("e.app_id = $1", f.AppID)
+		q.Where("e.app_id = ?", f.AppID)
 	}
 	if f.TenantID != "" {
-		q.Where("e.tenant_id = $1", f.TenantID)
+		q.Where("e.tenant_id = ?", f.TenantID)
 	}
 	if f.UserID != "" {
-		q.Where("e.user_id = $1", f.UserID)
+		q.Where("e.user_id = ?", f.UserID)
 	}
 	if !f.After.IsZero() {
-		q.Where("e.timestamp >= $1", f.After)
+		q.Where("e.timestamp >= ?", f.After)
 	}
 	if !f.Before.IsZero() {
-		q.Where("e.timestamp <= $1", f.Before)
+		q.Where("e.timestamp <= ?", f.Before)
 	}
 	if len(f.Categories) > 0 {
 		q.WhereArray("e.category", "= ANY", f.Categories)

@@ -11,9 +11,9 @@ import (
 func (s *Store) EventRange(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64) ([]*audit.Event, error) {
 	var models []EventModel
 	err := s.pg.NewSelect(&models).
-		Where("e.stream_id = $1", streamID.String()).
-		Where("e.sequence >= $2", fromSeq).
-		Where("e.sequence <= $3", toSeq).
+		Where("e.stream_id = ?", streamID.String()).
+		Where("e.sequence >= ?", fromSeq).
+		Where("e.sequence <= ?", toSeq).
 		OrderExpr("e.sequence ASC").
 		Scan(ctx)
 	if err != nil {

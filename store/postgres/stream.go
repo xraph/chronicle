@@ -19,7 +19,7 @@ func (s *Store) CreateStream(ctx context.Context, st *stream.Stream) error {
 // GetStream returns a stream by ID.
 func (s *Store) GetStream(ctx context.Context, streamID id.ID) (*stream.Stream, error) {
 	m := new(StreamModel)
-	err := s.pg.NewSelect(m).Where("id = $1", streamID.String()).Scan(ctx)
+	err := s.pg.NewSelect(m).Where("id = ?", streamID.String()).Scan(ctx)
 	if err != nil {
 		return nil, groveError(err, chronicle.ErrStreamNotFound)
 	}
@@ -36,8 +36,8 @@ func (s *Store) GetStream(ctx context.Context, streamID id.ID) (*stream.Stream, 
 func (s *Store) GetStreamByScope(ctx context.Context, appID, tenantID string) (*stream.Stream, error) {
 	m := new(StreamModel)
 	err := s.pg.NewSelect(m).
-		Where("app_id = $1", appID).
-		Where("tenant_id = $2", tenantID).
+		Where("app_id = ?", appID).
+		Where("tenant_id = ?", tenantID).
 		Scan(ctx)
 	if err != nil {
 		return nil, groveError(err, chronicle.ErrStreamNotFound)
@@ -78,10 +78,10 @@ func (s *Store) ListStreams(ctx context.Context, opts stream.ListOpts) ([]*strea
 // UpdateStreamHead updates the stream's head hash and sequence after append.
 func (s *Store) UpdateStreamHead(ctx context.Context, streamID id.ID, hash string, seq uint64) error {
 	result, err := s.pg.NewUpdate((*StreamModel)(nil)).
-		Set("head_hash = $1", hash).
-		Set("head_seq = $1", seq).
+		Set("head_hash = ?", hash).
+		Set("head_seq = ?", int64(seq)).
 		Set("updated_at = NOW()").
-		Where("id = $1", streamID.String()).
+		Where("id = ?", streamID.String()).
 		Exec(ctx)
 	if err != nil {
 		return err

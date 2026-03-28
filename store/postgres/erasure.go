@@ -19,7 +19,7 @@ func (s *Store) RecordErasure(ctx context.Context, e *erasure.Erasure) error {
 // GetErasure returns an erasure record by ID.
 func (s *Store) GetErasure(ctx context.Context, erasureID id.ID) (*erasure.Erasure, error) {
 	m := new(ErasureModel)
-	err := s.pg.NewSelect(m).Where("id = $1", erasureID.String()).Scan(ctx)
+	err := s.pg.NewSelect(m).Where("id = ?", erasureID.String()).Scan(ctx)
 	if err != nil {
 		return nil, groveError(err, chronicle.ErrErasureNotFound)
 	}
@@ -59,7 +59,7 @@ func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*era
 // CountBySubject returns the number of events for a subject.
 func (s *Store) CountBySubject(ctx context.Context, subjectID string) (int64, error) {
 	count, err := s.pg.NewSelect((*EventModel)(nil)).
-		Where("subject_id = $1", subjectID).
+		Where("subject_id = ?", subjectID).
 		Count(ctx)
 	return count, err
 }
@@ -69,8 +69,8 @@ func (s *Store) MarkErased(ctx context.Context, subjectID string, erasureID id.I
 	result, err := s.pg.NewUpdate((*EventModel)(nil)).
 		Set("erased = true").
 		Set("erased_at = NOW()").
-		Set("erasure_id = $1", erasureID.String()).
-		Where("subject_id = $1", subjectID).
+		Set("erasure_id = ?", erasureID.String()).
+		Where("subject_id = ?", subjectID).
 		Exec(ctx)
 	if err != nil {
 		return 0, err

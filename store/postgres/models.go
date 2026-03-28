@@ -27,7 +27,7 @@ type EventModel struct {
 
 	ID              string         `grove:"id,pk"`
 	StreamID        string         `grove:"stream_id"`
-	Sequence        uint64         `grove:"sequence"`
+	Sequence        int64          `grove:"sequence"`
 	Hash            string         `grove:"hash"`
 	PrevHash        string         `grove:"prev_hash"`
 	AppID           string         `grove:"app_id"`
@@ -65,7 +65,7 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 	return &audit.Event{
 		ID:              eventID,
 		StreamID:        streamID,
-		Sequence:        m.Sequence,
+		Sequence:        uint64(m.Sequence),
 		Hash:            m.Hash,
 		PrevHash:        m.PrevHash,
 		AppID:           m.AppID,
@@ -93,7 +93,7 @@ func fromEvent(e *audit.Event) *EventModel {
 	return &EventModel{
 		ID:              e.ID.String(),
 		StreamID:        e.StreamID.String(),
-		Sequence:        e.Sequence,
+		Sequence:        int64(e.Sequence),
 		Hash:            e.Hash,
 		PrevHash:        e.PrevHash,
 		AppID:           e.AppID,
@@ -130,7 +130,7 @@ type StreamModel struct {
 	AppID     string    `grove:"app_id"`
 	TenantID  string    `grove:"tenant_id"`
 	HeadHash  string    `grove:"head_hash"`
-	HeadSeq   uint64    `grove:"head_seq"`
+	HeadSeq   int64     `grove:"head_seq"`
 	CreatedAt time.Time `grove:"created_at"`
 	UpdatedAt time.Time `grove:"updated_at"`
 }
@@ -150,7 +150,7 @@ func toStream(m *StreamModel) (*stream.Stream, error) {
 		AppID:    m.AppID,
 		TenantID: m.TenantID,
 		HeadHash: m.HeadHash,
-		HeadSeq:  m.HeadSeq,
+		HeadSeq:  uint64(m.HeadSeq),
 	}, nil
 }
 
@@ -160,7 +160,7 @@ func fromStream(st *stream.Stream) *StreamModel {
 		AppID:     st.AppID,
 		TenantID:  st.TenantID,
 		HeadHash:  st.HeadHash,
-		HeadSeq:   st.HeadSeq,
+		HeadSeq:   int64(st.HeadSeq),
 		CreatedAt: st.CreatedAt,
 		UpdatedAt: st.UpdatedAt,
 	}

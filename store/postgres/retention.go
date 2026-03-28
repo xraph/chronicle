@@ -27,7 +27,7 @@ func (s *Store) SavePolicy(ctx context.Context, p *retention.Policy) error {
 // GetPolicy returns a retention policy by ID.
 func (s *Store) GetPolicy(ctx context.Context, policyID id.ID) (*retention.Policy, error) {
 	m := new(RetentionPolicyModel)
-	err := s.pg.NewSelect(m).Where("id = $1", policyID.String()).Scan(ctx)
+	err := s.pg.NewSelect(m).Where("id = ?", policyID.String()).Scan(ctx)
 	if err != nil {
 		return nil, groveError(err, chronicle.ErrPolicyNotFound)
 	}
@@ -65,7 +65,7 @@ func (s *Store) ListPolicies(ctx context.Context) ([]*retention.Policy, error) {
 // DeletePolicy removes a retention policy.
 func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
 	result, err := s.pg.NewDelete((*RetentionPolicyModel)(nil)).
-		Where("id = $1", policyID.String()).
+		Where("id = ?", policyID.String()).
 		Exec(ctx)
 	if err != nil {
 		return err
@@ -87,8 +87,8 @@ func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
 func (s *Store) EventsOlderThan(ctx context.Context, category string, before time.Time) ([]*audit.Event, error) {
 	var models []EventModel
 	err := s.pg.NewSelect(&models).
-		Where("e.category = $1", category).
-		Where("e.timestamp < $2", before).
+		Where("e.category = ?", category).
+		Where("e.timestamp < ?", before).
 		OrderExpr("e.timestamp ASC").
 		Scan(ctx)
 	if err != nil {
