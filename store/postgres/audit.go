@@ -116,12 +116,15 @@ func (s *Store) Get(ctx context.Context, eventID id.ID) (*audit.Event, error) {
 
 // Query returns events matching filters with pagination.
 func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, error) {
-	// Build count query with the same conditions.
-	countQuery := s.pg.NewSelect((*EventModel)(nil)).ColumnExpr("COUNT(*)")
+	// Build count query with the same conditions. Use grove's Count (a proper
+	// scalar scan) rather than ColumnExpr("COUNT(*)").Scan(&total): the model
+	// scanner rejects a scalar dest and, worse, leaks the pooled connection on
+	// that error (it acquires a row via QueryRow but never scans it).
+	countQuery := s.pg.NewSelect((*EventModel)(nil))
 	applyEventFilters(countQuery, q)
 
-	var total int64
-	if err := countQuery.Scan(ctx, &total); err != nil {
+	total, err := countQuery.Count(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -291,7 +294,9 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 
 // Count returns the total number of events matching filters.
 func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
-	countQuery := s.pg.NewSelect((*EventModel)(nil)).ColumnExpr("COUNT(*)")
+	// Use grove's Count rather than ColumnExpr("COUNT(*)").Scan(&count): the
+	// model scanner can't scan into a scalar and leaks the connection on error.
+	countQuery := s.pg.NewSelect((*EventModel)(nil))
 
 	if q.AppID != "" {
 		countQuery = countQuery.Where("e.app_id = ?", q.AppID)
@@ -309,30 +314,29 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 		countQuery = countQuery.Where("e.timestamp <= ?", q.Before)
 	}
 
-	var count int64
-	err := countQuery.Scan(ctx, &count)
-	return count, err
+	return countQuery.Count(ctx)
 }
 
 // LastSequence returns the highest sequence number for a stream.
 func (s *Store) LastSequence(ctx context.Context, streamID id.ID) (uint64, error) {
+	// Raw scalar query: grove's model SelectQuery.Scan rejects a scalar dest
+	// and leaks the pooled connection on the error. NewRaw.Scan scans scalars
+	// directly via QueryRow.
 	var seq int64
-	err := s.pg.NewSelect((*EventModel)(nil)).
-		ColumnExpr("COALESCE(MAX(sequence), 0)").
-		Where("stream_id = ?", streamID.String()).
-		Scan(ctx, &seq)
+	err := s.pg.NewRaw(
+		"SELECT COALESCE(MAX(sequence), 0) FROM chronicle_events WHERE stream_id = $1",
+		streamID.String(),
+	).Scan(ctx, &seq)
 	return safeUint64(seq), err
 }
 
 // LastHash returns the hash of the most recent event in a stream.
 func (s *Store) LastHash(ctx context.Context, streamID id.ID) (string, error) {
 	var hash string
-	err := s.pg.NewSelect((*EventModel)(nil)).
-		Column("hash").
-		Where("stream_id = ?", streamID.String()).
-		OrderExpr("sequence DESC").
-		Limit(1).
-		Scan(ctx, &hash)
+	err := s.pg.NewRaw(
+		"SELECT hash FROM chronicle_events WHERE stream_id = $1 ORDER BY sequence DESC LIMIT 1",
+		streamID.String(),
+	).Scan(ctx, &hash)
 	if err != nil {
 		return "", groveError(err, chronicle.ErrEventNotFound)
 	}
