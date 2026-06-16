@@ -145,8 +145,8 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 	}
 	selectQuery = selectQuery.Offset(q.Offset)
 
-	if err := selectQuery.Scan(ctx); err != nil {
-		return nil, err
+	if err2 := selectQuery.Scan(ctx); err2 != nil {
+		return nil, err2
 	}
 
 	events, err := toEventSlice(models)
