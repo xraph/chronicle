@@ -13,11 +13,67 @@ import (
 	"github.com/xraph/chronicle/id"
 )
 
-// Append persists a single audit event.
+// Append persists a single audit event, allocating its sequence number
+// authoritatively inside a transaction.
+//
+// The sequence is a positional counter and is NOT part of the hash chain (see
+// hash.Chain.Compute), so the store owns its allocation. Chronicle.Record
+// precomputes event.Sequence from the stream's tracked head, but that head can
+// fall behind the events table — e.g. a crash between Append and
+// UpdateStreamHead, or a bulk import — after which every subsequent append
+// recomputes the same value and collides on UNIQUE(stream_id, sequence),
+// permanently wedging the stream. To be both self-healing and safe under
+// concurrent appends, derive the next sequence from the greater of the stored
+// head and the actual MAX(sequence) while holding a row lock on the stream, and
+// advance the head in the same transaction so it can never lag again.
 func (s *Store) Append(ctx context.Context, event *audit.Event) error {
+	tx, err := s.pg.BeginTxQuery(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	streamID := event.StreamID.String()
+
+	// Lock the stream row so concurrent appends to the same stream serialize.
+	var headSeq int64
+	if err := tx.NewRaw(
+		"SELECT head_seq FROM chronicle_streams WHERE id = $1 FOR UPDATE", streamID,
+	).Scan(ctx, &headSeq); err != nil {
+		return fmt.Errorf("lock stream %s: %w", streamID, err)
+	}
+
+	// Reconcile against the authoritative max in case the head desynced.
+	var maxSeq int64
+	if err := tx.NewRaw(
+		"SELECT COALESCE(MAX(sequence), 0) FROM chronicle_events WHERE stream_id = $1", streamID,
+	).Scan(ctx, &maxSeq); err != nil {
+		return fmt.Errorf("max sequence for stream %s: %w", streamID, err)
+	}
+
+	next := headSeq
+	if maxSeq > next {
+		next = maxSeq
+	}
+	next++
+
+	event.Sequence = safeUint64(next)
 	m := fromEvent(event)
-	_, err := s.pg.NewInsert(m).Exec(ctx)
-	return err
+	if _, err := tx.NewInsert(m).Exec(ctx); err != nil {
+		return fmt.Errorf("insert event %s: %w", event.ID, err)
+	}
+
+	// Advance the stream head in the same transaction so head_seq never lags
+	// the events it points at again. Record also calls UpdateStreamHead after
+	// Append; that becomes an idempotent no-op on the same value.
+	if _, err := tx.NewRaw(
+		"UPDATE chronicle_streams SET head_seq = $1, head_hash = $2, updated_at = NOW() WHERE id = $3",
+		next, event.Hash, streamID,
+	).Exec(ctx); err != nil {
+		return fmt.Errorf("update stream head %s: %w", streamID, err)
+	}
+
+	return tx.Commit()
 }
 
 // AppendBatch persists multiple events atomically in a transaction.
