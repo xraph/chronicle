@@ -69,11 +69,49 @@ func (s *Store) Close() error {
 // audit.Store
 // ──────────────────────────────────────────────────
 
+// cloneEvent returns an independent copy of an event.
+//
+// Reads must not hand out pointers into the store's own state: a caller adjusting
+// a field would rewrite the persisted event, and since the hash chain covers the
+// stored bytes, a read would become tampering. The metadata map is copied too,
+// because sharing it leaks mutation through a level of indirection.
+func cloneEvent(e *audit.Event) *audit.Event {
+	if e == nil {
+		return nil
+	}
+
+	clone := *e
+
+	if e.Metadata != nil {
+		clone.Metadata = make(map[string]any, len(e.Metadata))
+		for k, v := range e.Metadata {
+			clone.Metadata[k] = v
+		}
+	}
+	if e.ErasedAt != nil {
+		at := *e.ErasedAt
+		clone.ErasedAt = &at
+	}
+
+	return &clone
+}
+
+// cloneEvents copies a slice of events.
+func cloneEvents(events []*audit.Event) []*audit.Event {
+	out := make([]*audit.Event, 0, len(events))
+	for _, e := range events {
+		out = append(out, cloneEvent(e))
+	}
+	return out
+}
+
 // Append persists a single event.
 func (s *Store) Append(_ context.Context, event *audit.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.events = append(s.events, event)
+	// Store a copy so a caller mutating its event afterwards cannot rewrite what
+	// was persisted.
+	s.events = append(s.events, cloneEvent(event))
 	return nil
 }
 
@@ -81,7 +119,7 @@ func (s *Store) Append(_ context.Context, event *audit.Event) error {
 func (s *Store) AppendBatch(_ context.Context, events []*audit.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.events = append(s.events, events...)
+	s.events = append(s.events, cloneEvents(events)...)
 	return nil
 }
 
@@ -93,7 +131,7 @@ func (s *Store) Get(_ context.Context, eventID id.ID) (*audit.Event, error) {
 	idStr := eventID.String()
 	for _, e := range s.events {
 		if e.ID.String() == idStr {
-			return e, nil
+			return cloneEvent(e), nil
 		}
 	}
 	return nil, chronicle.ErrEventNotFound
@@ -142,7 +180,7 @@ func (s *Store) Query(_ context.Context, q *audit.Query) (*audit.QueryResult, er
 	}
 
 	return &audit.QueryResult{
-		Events:  matched,
+		Events:  cloneEvents(matched),
 		Total:   total,
 		HasMore: hasMore,
 	}, nil
@@ -150,6 +188,13 @@ func (s *Store) Query(_ context.Context, q *audit.Query) (*audit.QueryResult, er
 
 // Aggregate returns grouped counts/stats.
 func (s *Store) Aggregate(_ context.Context, q *audit.AggregateQuery) (*audit.AggregateResult, error) {
+	// Validate up front so this backend rejects the same inputs the others do.
+	// Silently ignoring an unknown field would lump every event into one group
+	// and make the in-memory store disagree with production.
+	if _, err := audit.ResolveGroupBy(q.GroupBy); err != nil {
+		return nil, err
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -167,17 +212,8 @@ func (s *Store) Aggregate(_ context.Context, q *audit.AggregateQuery) (*audit.Ag
 		if !ok {
 			g = &audit.AggregateGroup{}
 			for _, gb := range q.GroupBy {
-				switch gb {
-				case "category":
-					g.Category = e.Category
-				case "action":
-					g.Action = e.Action
-				case "outcome":
-					g.Outcome = e.Outcome
-				case "severity":
-					g.Severity = e.Severity
-				case "resource":
-					g.Resource = e.Resource
+				if err := audit.AssignGroupValue(g, gb, aggregateFieldValue(e, gb)); err != nil {
+					return nil, err
 				}
 			}
 			groups[key] = g
@@ -212,6 +248,12 @@ func (s *Store) ByUser(_ context.Context, userID string, opts audit.TimeRange) (
 		if !opts.Before.IsZero() && e.Timestamp.After(opts.Before) {
 			continue
 		}
+		if opts.AppID != "" && e.AppID != opts.AppID {
+			continue
+		}
+		if opts.TenantID != "" && e.TenantID != opts.TenantID {
+			continue
+		}
 		matched = append(matched, e)
 	}
 
@@ -219,10 +261,16 @@ func (s *Store) ByUser(_ context.Context, userID string, opts audit.TimeRange) (
 		return matched[i].Timestamp.After(matched[j].Timestamp)
 	})
 
+	hasMore := false
+	if limit := opts.EffectiveLimit(); limit > 0 && len(matched) > limit {
+		matched = matched[:limit]
+		hasMore = true
+	}
+
 	return &audit.QueryResult{
-		Events:  matched,
+		Events:  cloneEvents(matched),
 		Total:   int64(len(matched)),
-		HasMore: false,
+		HasMore: hasMore,
 	}, nil
 }
 
@@ -430,39 +478,66 @@ func (s *Store) GetErasure(_ context.Context, erasureID id.ID) (*erasure.Erasure
 	return nil, chronicle.ErrErasureNotFound
 }
 
-// ListErasures returns erasure records.
+// ListErasures returns erasure records matching opts.
 func (s *Store) ListErasures(_ context.Context, opts erasure.ListOpts) ([]*erasure.Erasure, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]*erasure.Erasure, len(s.erasures))
-	copy(result, s.erasures)
+	result := make([]*erasure.Erasure, 0, len(s.erasures))
+	for _, e := range s.erasures {
+		if opts.AppID != "" && e.AppID != opts.AppID {
+			continue
+		}
+		if opts.TenantID != "" && e.TenantID != opts.TenantID {
+			continue
+		}
+		result = append(result, e)
+	}
 
-	if opts.Offset > 0 && opts.Offset < len(result) {
-		result = result[opts.Offset:]
-	}
-	if opts.Limit > 0 && opts.Limit < len(result) {
-		result = result[:opts.Limit]
-	}
-	return result, nil
+	return applyListWindow(result, opts.Offset, opts.Limit), nil
 }
 
-// CountBySubject returns number of events for a subject.
-func (s *Store) CountBySubject(_ context.Context, subjectID string) (int64, error) {
+// CountErasures returns the number of erasure records in the given scope.
+func (s *Store) CountErasures(_ context.Context, sc erasure.Scope) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var count int64
+	for _, e := range s.erasures {
+		if sc.AppID != "" && e.AppID != sc.AppID {
+			continue
+		}
+		if sc.TenantID != "" && e.TenantID != sc.TenantID {
+			continue
+		}
+		count++
+	}
+	return count, nil
+}
+
+// CountBySubject returns the number of events for a subject within the query's
+// scope.
+func (s *Store) CountBySubject(_ context.Context, sq erasure.SubjectQuery) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var count int64
 	for _, e := range s.events {
-		if e.SubjectID == subjectID {
-			count++
+		if e.SubjectID != sq.SubjectID {
+			continue
 		}
+		if !eventInErasureScope(e, sq.Scope) {
+			continue
+		}
+		count++
 	}
 	return count, nil
 }
 
-// MarkErased updates events to show [ERASED] for a given subject.
-func (s *Store) MarkErased(_ context.Context, subjectID string, erasureID id.ID) (int64, error) {
+// MarkErased flags a subject's events as erased within the query's scope.
+func (s *Store) MarkErased(
+	_ context.Context, sq erasure.SubjectQuery, erasureID id.ID,
+) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -470,21 +545,38 @@ func (s *Store) MarkErased(_ context.Context, subjectID string, erasureID id.ID)
 	eidStr := erasureID.String()
 	var count int64
 	for _, e := range s.events {
-		if e.SubjectID == subjectID && !e.Erased {
-			e.Erased = true
-			e.ErasedAt = &now
-			e.ErasureID = eidStr
-			count++
+		if e.SubjectID != sq.SubjectID || e.Erased {
+			continue
 		}
+		if !eventInErasureScope(e, sq.Scope) {
+			continue
+		}
+		e.Erased = true
+		e.ErasedAt = &now
+		e.ErasureID = eidStr
+		count++
 	}
 	return count, nil
+}
+
+// eventInErasureScope reports whether an event belongs to the given scope. An
+// empty field in the scope means "any".
+func eventInErasureScope(e *audit.Event, sc erasure.Scope) bool {
+	if sc.AppID != "" && e.AppID != sc.AppID {
+		return false
+	}
+	if sc.TenantID != "" && e.TenantID != sc.TenantID {
+		return false
+	}
+	return true
 }
 
 // ──────────────────────────────────────────────────
 // retention.Store
 // ──────────────────────────────────────────────────
 
-// SavePolicy persists a retention policy.
+// SavePolicy persists a retention policy, replacing any existing policy with
+// the same ID or the same (app, tenant, category) scope.
 func (s *Store) SavePolicy(_ context.Context, p *retention.Policy) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -497,6 +589,17 @@ func (s *Store) SavePolicy(_ context.Context, p *retention.Policy) error {
 			return nil
 		}
 	}
+
+	// A scope owns at most one policy per category. Matching on the full scope
+	// rather than the category alone is what keeps one app from taking over
+	// another app's policy.
+	for i, existing := range s.policies {
+		if existing.AppID == p.AppID && existing.TenantID == p.TenantID && existing.Category == p.Category {
+			s.policies[i] = p
+			return nil
+		}
+	}
+
 	s.policies = append(s.policies, p)
 	return nil
 }
@@ -515,14 +618,23 @@ func (s *Store) GetPolicy(_ context.Context, policyID id.ID) (*retention.Policy,
 	return nil, chronicle.ErrPolicyNotFound
 }
 
-// ListPolicies returns all retention policies.
-func (s *Store) ListPolicies(_ context.Context) ([]*retention.Policy, error) {
+// ListPolicies returns retention policies matching opts.
+func (s *Store) ListPolicies(_ context.Context, opts retention.ListPoliciesOpts) ([]*retention.Policy, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]*retention.Policy, len(s.policies))
-	copy(result, s.policies)
-	return result, nil
+	result := make([]*retention.Policy, 0, len(s.policies))
+	for _, p := range s.policies {
+		if opts.AppID != "" && p.AppID != opts.AppID {
+			continue
+		}
+		if opts.TenantID != "" && p.TenantID != opts.TenantID {
+			continue
+		}
+		result = append(result, p)
+	}
+
+	return applyListWindow(result, opts.Offset, opts.Limit), nil
 }
 
 // DeletePolicy removes a retention policy.
@@ -540,17 +652,32 @@ func (s *Store) DeletePolicy(_ context.Context, policyID id.ID) error {
 	return chronicle.ErrPolicyNotFound
 }
 
-// EventsOlderThan returns events older than a given time for a category.
-func (s *Store) EventsOlderThan(_ context.Context, category string, before time.Time) ([]*audit.Event, error) {
+// EventsOlderThan returns the events the purge query selects, restricted to the
+// query's scope.
+func (s *Store) EventsOlderThan(_ context.Context, q retention.PurgeQuery) ([]*audit.Event, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	limit := q.EffectiveLimit()
+
 	var result []*audit.Event
 	for _, e := range s.events {
-		if e.Timestamp.Before(before) {
-			if category == "*" || e.Category == category {
-				result = append(result, e)
-			}
+		if !e.Timestamp.Before(q.Before) {
+			continue
+		}
+		if q.Category != "*" && e.Category != q.Category {
+			continue
+		}
+		// Security-critical: a policy may only purge its own scope's events.
+		if q.AppID != "" && e.AppID != q.AppID {
+			continue
+		}
+		if q.TenantID != "" && e.TenantID != q.TenantID {
+			continue
+		}
+		result = append(result, e)
+		if limit > 0 && len(result) == limit {
+			break
 		}
 	}
 	return result, nil
@@ -587,21 +714,39 @@ func (s *Store) RecordArchive(_ context.Context, a *retention.Archive) error {
 	return nil
 }
 
-// ListArchives returns archive records.
+// ListArchives returns archive records matching opts.
 func (s *Store) ListArchives(_ context.Context, opts retention.ListOpts) ([]*retention.Archive, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]*retention.Archive, len(s.archives))
-	copy(result, s.archives)
+	result := make([]*retention.Archive, 0, len(s.archives))
+	for _, a := range s.archives {
+		if opts.AppID != "" && a.AppID != opts.AppID {
+			continue
+		}
+		if opts.TenantID != "" && a.TenantID != opts.TenantID {
+			continue
+		}
+		result = append(result, a)
+	}
 
-	if opts.Offset > 0 && opts.Offset < len(result) {
-		result = result[opts.Offset:]
+	return applyListWindow(result, opts.Offset, opts.Limit), nil
+}
+
+// applyListWindow applies offset then limit to an already-filtered slice. A
+// negative limit means "no bound"; scope filtering must happen before this so
+// pagination never hides a caller's own rows behind another tenant's.
+func applyListWindow[T any](items []T, offset, limit int) []T {
+	if offset > 0 {
+		if offset >= len(items) {
+			return items[:0]
+		}
+		items = items[offset:]
 	}
-	if opts.Limit > 0 && opts.Limit < len(result) {
-		result = result[:opts.Limit]
+	if limit > 0 && limit < len(items) {
+		items = items[:limit]
 	}
-	return result, nil
+	return items
 }
 
 // ──────────────────────────────────────────────────
@@ -630,21 +775,23 @@ func (s *Store) GetReport(_ context.Context, reportID id.ID) (*compliance.Report
 	return nil, chronicle.ErrReportNotFound
 }
 
-// ListReports returns reports.
+// ListReports returns reports matching opts, scoped before pagination.
 func (s *Store) ListReports(_ context.Context, opts compliance.ListOpts) ([]*compliance.Report, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	result := make([]*compliance.Report, len(s.reports))
-	copy(result, s.reports)
+	result := make([]*compliance.Report, 0, len(s.reports))
+	for _, r := range s.reports {
+		if opts.AppID != "" && r.AppID != opts.AppID {
+			continue
+		}
+		if opts.TenantID != "" && r.TenantID != opts.TenantID {
+			continue
+		}
+		result = append(result, r)
+	}
 
-	if opts.Offset > 0 && opts.Offset < len(result) {
-		result = result[opts.Offset:]
-	}
-	if opts.Limit > 0 && opts.Limit < len(result) {
-		result = result[:opts.Limit]
-	}
-	return result, nil
+	return applyListWindow(result, opts.Offset, opts.Limit), nil
 }
 
 // DeleteReport removes a report.
@@ -717,22 +864,30 @@ func matchesAggregateScope(e *audit.Event, q *audit.AggregateQuery) bool {
 }
 
 func aggregateKey(e *audit.Event, groupBy []string) string {
-	var parts []string
+	parts := make([]string, 0, len(groupBy))
 	for _, gb := range groupBy {
-		switch gb {
-		case "category":
-			parts = append(parts, e.Category)
-		case "action":
-			parts = append(parts, e.Action)
-		case "outcome":
-			parts = append(parts, e.Outcome)
-		case "severity":
-			parts = append(parts, e.Severity)
-		case "resource":
-			parts = append(parts, e.Resource)
-		}
+		parts = append(parts, aggregateFieldValue(e, gb))
 	}
 	return strings.Join(parts, "|")
+}
+
+// aggregateFieldValue reads the event field named by a validated group_by name.
+// Callers must have passed the name through audit.ResolveGroupBy first.
+func aggregateFieldValue(e *audit.Event, field string) string {
+	switch field {
+	case "category":
+		return e.Category
+	case "action":
+		return e.Action
+	case "outcome":
+		return e.Outcome
+	case "severity":
+		return e.Severity
+	case "resource":
+		return e.Resource
+	default:
+		return ""
+	}
 }
 
 func contains(slice []string, s string) bool {

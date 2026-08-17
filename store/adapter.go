@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/xraph/chronicle"
+	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/stream"
 )
@@ -51,4 +52,17 @@ func (a *Adapter) CreateStreamInfo(ctx context.Context, info *chronicle.StreamIn
 // UpdateStreamHead delegates to the underlying store.
 func (a *Adapter) UpdateStreamHead(ctx context.Context, streamID id.ID, hash string, seq uint64) error {
 	return a.Store.UpdateStreamHead(ctx, streamID, hash, seq)
+}
+
+// GetStored returns an event in its stored form, for hash verification.
+//
+// The wrapped store may decrypt on read, and a decrypted event no longer matches
+// the digest computed over the stored bytes. This forwards the capability so
+// verification still sees what was persisted; stores that never transform events
+// simply fall back to Get.
+func (a *Adapter) GetStored(ctx context.Context, eventID id.ID) (*audit.Event, error) {
+	if sr, ok := a.Store.(chronicle.StoredReader); ok {
+		return sr.GetStored(ctx, eventID)
+	}
+	return a.Store.Get(ctx, eventID)
 }

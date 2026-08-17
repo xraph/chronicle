@@ -3,6 +3,7 @@ package scope_test
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/xraph/chronicle/audit"
@@ -156,22 +157,25 @@ func TestFromRequest(t *testing.T) {
 		wantIP   string
 	}{
 		{
-			name:     "X-Forwarded-For single",
+			// Proxy headers are client-controlled, so FromRequest ignores
+			// them and records the peer. See FromRequestWithProxies for the
+			// behind-a-proxy case.
+			name:     "X-Forwarded-For single is not trusted",
 			headers:  map[string]string{"X-Forwarded-For": "1.2.3.4"},
 			remoteIP: "9.9.9.9:1234",
-			wantIP:   "1.2.3.4",
+			wantIP:   "9.9.9.9",
 		},
 		{
-			name:     "X-Forwarded-For multiple",
+			name:     "X-Forwarded-For multiple is not trusted",
 			headers:  map[string]string{"X-Forwarded-For": "1.2.3.4, 5.6.7.8"},
 			remoteIP: "9.9.9.9:1234",
-			wantIP:   "1.2.3.4",
+			wantIP:   "9.9.9.9",
 		},
 		{
-			name:     "X-Real-IP",
+			name:     "X-Real-IP is not trusted",
 			headers:  map[string]string{"X-Real-IP": "10.0.0.1"},
 			remoteIP: "9.9.9.9:1234",
-			wantIP:   "10.0.0.1",
+			wantIP:   "9.9.9.9",
 		},
 		{
 			name:     "RemoteAddr with port",
@@ -214,5 +218,149 @@ func TestFromRequestPreservesContextScope(t *testing.T) {
 	}
 	if info.IP != "5.5.5.5" {
 		t.Errorf("IP = %q, want %q", info.IP, "5.5.5.5")
+	}
+}
+
+// ──────────────────────────────────────────────────
+// Client IP trust
+// ──────────────────────────────────────────────────
+
+// TestFromRequestIgnoresForwardedHeadersByDefault pins that an audit record's IP
+// cannot be set by the client.
+//
+// X-Forwarded-For used to be trusted unconditionally, so any caller could choose
+// the address written into the audit trail. "Who did it and from where" is the
+// part of an audit record most worth falsifying, so proxy headers are only
+// honoured when the peer is a configured trusted proxy.
+func TestFromRequestIgnoresForwardedHeadersByDefault(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "198.51.100.7:34512"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4")
+	r.Header.Set("X-Real-IP", "5.6.7.8")
+
+	got := scope.FromRequest(r).IP
+	if got != "198.51.100.7" {
+		t.Fatalf("IP = %q, want the peer address 198.51.100.7; a client must not be able to choose it", got)
+	}
+}
+
+func TestFromRequestStripsPortFromRemoteAddr(t *testing.T) {
+	tests := map[string]string{
+		"198.51.100.7:34512":  "198.51.100.7",
+		"[2001:db8::1]:34512": "2001:db8::1",
+		"198.51.100.7":        "198.51.100.7",
+	}
+
+	for remote, want := range tests {
+		t.Run(remote, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.RemoteAddr = remote
+
+			if got := scope.FromRequest(r).IP; got != want {
+				t.Fatalf("IP = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestFromRequestBehindTrustedProxyUsesForwardedFor covers the deployment where
+// the proxy header is the real source of truth.
+func TestFromRequestBehindTrustedProxyUsesForwardedFor(t *testing.T) {
+	trusted, err := scope.ParseTrustedProxies([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "10.1.2.3:34512"
+	r.Header.Set("X-Forwarded-For", "203.0.113.9, 10.1.2.3")
+
+	got := scope.FromRequestWithProxies(r, trusted).IP
+	if got != "203.0.113.9" {
+		t.Fatalf("IP = %q, want the client-most forwarded address 203.0.113.9", got)
+	}
+}
+
+// TestFromRequestUntrustedPeerIgnoresForwardedFor is the same call from an
+// address outside the trusted set.
+func TestFromRequestUntrustedPeerIgnoresForwardedFor(t *testing.T) {
+	trusted, err := scope.ParseTrustedProxies([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "203.0.113.200:34512"
+	r.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	got := scope.FromRequestWithProxies(r, trusted).IP
+	if got != "203.0.113.200" {
+		t.Fatalf("IP = %q, want the untrusted peer's own address", got)
+	}
+}
+
+// TestFromRequestTrimsForwardedWhitespace pins that a padded header value does
+// not produce a malformed IP.
+func TestFromRequestTrimsForwardedWhitespace(t *testing.T) {
+	trusted, err := scope.ParseTrustedProxies([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "10.1.2.3:34512"
+	r.Header.Set("X-Forwarded-For", "   203.0.113.9   ,  10.1.2.3 ")
+
+	if got := scope.FromRequestWithProxies(r, trusted).IP; got != "203.0.113.9" {
+		t.Fatalf("IP = %q, want 203.0.113.9 with surrounding whitespace removed", got)
+	}
+}
+
+// TestFromRequestRejectsGarbageForwardedValue falls back rather than recording a
+// non-address.
+func TestFromRequestRejectsGarbageForwardedValue(t *testing.T) {
+	trusted, err := scope.ParseTrustedProxies([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "10.1.2.3:34512"
+	r.Header.Set("X-Forwarded-For", "not-an-ip")
+
+	if got := scope.FromRequestWithProxies(r, trusted).IP; got != "10.1.2.3" {
+		t.Fatalf("IP = %q, want the peer address when the header is not an IP", got)
+	}
+}
+
+// TestFromRequestPrefersExistingContextIP keeps the existing precedence.
+func TestFromRequestPrefersExistingContextIP(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "198.51.100.7:34512"
+	r = r.WithContext(scope.WithIP(r.Context(), "192.0.2.1"))
+
+	if got := scope.FromRequest(r).IP; got != "192.0.2.1" {
+		t.Fatalf("IP = %q, want the context value 192.0.2.1", got)
+	}
+}
+
+func TestParseTrustedProxiesRejectsInvalidCIDR(t *testing.T) {
+	if _, err := scope.ParseTrustedProxies([]string{"nonsense"}); err == nil {
+		t.Fatal("expected an error for an invalid CIDR")
+	}
+}
+
+func TestParseTrustedProxiesAcceptsBareAddress(t *testing.T) {
+	trusted, err := scope.ParseTrustedProxies([]string{"10.1.2.3"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "10.1.2.3:34512"
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+
+	if got := scope.FromRequestWithProxies(r, trusted).IP; got != "203.0.113.9" {
+		t.Fatalf("IP = %q, want 203.0.113.9", got)
 	}
 }

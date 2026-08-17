@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -37,9 +36,10 @@ func (s *Store) Append(ctx context.Context, event *audit.Event) error {
 
 	// Lock the stream row so concurrent appends to the same stream serialize.
 	var headSeq int64
+	var headHash string
 	if err := tx.NewRaw(
-		"SELECT head_seq FROM chronicle_streams WHERE id = $1 FOR UPDATE", streamID,
-	).Scan(ctx, &headSeq); err != nil {
+		"SELECT head_seq, head_hash FROM chronicle_streams WHERE id = $1 FOR UPDATE", streamID,
+	).Scan(ctx, &headSeq, &headHash); err != nil {
 		return fmt.Errorf("lock stream %s: %w", streamID, err)
 	}
 
@@ -58,6 +58,21 @@ func (s *Store) Append(ctx context.Context, event *audit.Event) error {
 	next++
 
 	event.Sequence = safeUint64(next)
+
+	// Re-link the chain under the row lock.
+	//
+	// Chronicle.Record derives PrevHash and Hash from the head it read before
+	// calling Append. With several replicas writing to one database, two of them
+	// can read the same head and produce two events claiming the same
+	// predecessor. Deriving both here, while the lock is held, is what keeps the
+	// chain linked across processes.
+	//
+	// This is also required for correctness rather than just concurrency: the
+	// sequence is part of the hashed content, and it is allocated above, so the
+	// hash has to be computed after it is known.
+	event.PrevHash = headHash
+	event.Hash = hasher.Compute(event.PrevHash, event)
+
 	m := fromEvent(event)
 	if _, err := tx.NewInsert(m).Exec(ctx); err != nil {
 		return fmt.Errorf("insert event %s: %w", event.ID, err)
@@ -165,8 +180,13 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 
 // Aggregate returns grouped event statistics.
 func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.AggregateResult, error) {
-	if len(q.GroupBy) == 0 {
-		return nil, errors.New("aggregate query requires at least one group_by field")
+	// Resolve the grouping columns BEFORE building any SQL. An identifier
+	// cannot be a bound placeholder, so the SELECT and GROUP BY clauses below
+	// are interpolated — they must only ever be interpolated with the constant
+	// column names this returns, never with q.GroupBy itself.
+	columns, err := audit.ResolveGroupBy(q.GroupBy)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build dynamic WHERE clause using raw SQL.
@@ -201,20 +221,12 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// Build GROUP BY clause.
-	groupFields := make([]string, 0, len(q.GroupBy))
-	selectFields := make([]string, 0, len(q.GroupBy))
-	for _, field := range q.GroupBy {
-		groupFields = append(groupFields, field)
-		selectFields = append(selectFields, field)
-	}
-
-	groupByClause := strings.Join(groupFields, ", ")
-	selectClause := strings.Join(selectFields, ", ")
+	// Safe: every element of columns is a constant from audit's whitelist.
+	columnList := strings.Join(columns, ", ")
 
 	query := fmt.Sprintf(
 		"SELECT %s, COUNT(*) as count FROM chronicle_events %s GROUP BY %s ORDER BY count DESC",
-		selectClause, whereClause, groupByClause,
+		columnList, whereClause, columnList,
 	)
 
 	rows, err := s.pg.Query(ctx, query, args...)
@@ -228,25 +240,16 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 
 	for rows.Next() {
 		group := audit.AggregateGroup{}
-		scanArgs := make([]interface{}, len(q.GroupBy)+1)
+		scanArgs := make([]interface{}, 0, len(q.GroupBy)+1)
 
-		for i, field := range q.GroupBy {
-			switch field {
-			case "category":
-				scanArgs[i] = &group.Category
-			case "action":
-				scanArgs[i] = &group.Action
-			case "outcome":
-				scanArgs[i] = &group.Outcome
-			case "severity":
-				scanArgs[i] = &group.Severity
-			case "resource":
-				scanArgs[i] = &group.Resource
-			default:
-				return nil, fmt.Errorf("unsupported group_by field: %s", field)
+		for _, field := range q.GroupBy {
+			target, ptrErr := audit.GroupFieldPointer(&group, field)
+			if ptrErr != nil {
+				return nil, ptrErr
 			}
+			scanArgs = append(scanArgs, target)
 		}
-		scanArgs[len(q.GroupBy)] = &group.Count
+		scanArgs = append(scanArgs, &group.Count)
 
 		if err := rows.Scan(scanArgs...); err != nil {
 			return nil, err
@@ -270,13 +273,30 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange) (*audit.QueryResult, error) {
 	var models []EventModel
 
-	err := s.pg.NewSelect(&models).
-		Where("e.user_id = ?", userID).
-		Where("e.timestamp >= ?", opts.After).
-		Where("e.timestamp <= ?", opts.Before).
-		OrderExpr("e.timestamp DESC").
-		Scan(ctx)
-	if err != nil {
+	q := s.pg.NewSelect(&models)
+	q.Where("e.user_id = ?", userID)
+
+	// A zero After/Before means "unbounded". Applying them unconditionally
+	// compares every row against year 1 and matches nothing.
+	if !opts.After.IsZero() {
+		q.Where("e.timestamp >= ?", opts.After)
+	}
+	if !opts.Before.IsZero() {
+		q.Where("e.timestamp <= ?", opts.Before)
+	}
+	if opts.AppID != "" {
+		q.Where("e.app_id = ?", opts.AppID)
+	}
+	if opts.TenantID != "" {
+		q.Where("e.tenant_id = ?", opts.TenantID)
+	}
+
+	q = q.OrderExpr("e.timestamp DESC")
+	if limit := opts.EffectiveLimit(); limit > 0 {
+		q = q.Limit(limit)
+	}
+
+	if err := q.Scan(ctx); err != nil {
 		return nil, err
 	}
 
@@ -288,7 +308,7 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 	return &audit.QueryResult{
 		Events:  events,
 		Total:   int64(len(events)),
-		HasMore: false,
+		HasMore: opts.EffectiveLimit() > 0 && len(events) == opts.EffectiveLimit(),
 	}, nil
 }
 

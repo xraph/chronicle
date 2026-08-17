@@ -60,9 +60,10 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 			expectedPrevHash = events[i-1].Hash
 		}
 
-		// Recompute the hash.
-		computed := v.chain.Compute(expectedPrevHash, event)
-		if computed != event.Hash {
+		// Recompute the hash. Verify accepts the legacy scheme too, so events
+		// written before the hash coverage was extended are not all reported as
+		// tampered after an upgrade.
+		if !v.chain.Verify(expectedPrevHash, event) {
 			report.Valid = false
 			report.Tampered = append(report.Tampered, event.Sequence)
 		}

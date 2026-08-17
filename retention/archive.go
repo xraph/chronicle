@@ -18,10 +18,26 @@ type Archive struct {
 	ToTimestamp   time.Time `json:"to_timestamp"`
 	SinkName      string    `json:"sink_name"`
 	SinkRef       string    `json:"sink_ref"` // e.g. S3 key
+	AppID         string    `json:"app_id"`
+	TenantID      string    `json:"tenant_id,omitempty"`
 }
 
-// ListOpts defines pagination options for listing archives.
+// ListOpts defines pagination and scope options for listing archives.
+//
+// Scope is applied by the store, not by the caller after the fact: filtering
+// after LIMIT/OFFSET would silently drop a tenant's rows whenever another
+// tenant's archives fill the first page.
 type ListOpts struct {
+	Scope
+
+	Limit  int
+	Offset int
+}
+
+// ListPoliciesOpts scopes and bounds a policy listing.
+type ListPoliciesOpts struct {
+	Scope
+
 	Limit  int
 	Offset int
 }

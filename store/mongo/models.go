@@ -245,6 +245,7 @@ type RetentionPolicyModel struct {
 	Duration  int64     `grove:"duration"   bson:"duration"` // nanoseconds
 	Archive   bool      `grove:"archive"    bson:"archive"`
 	AppID     string    `grove:"app_id"     bson:"app_id"`
+	TenantID  string    `grove:"tenant_id"  bson:"tenant_id"`
 	CreatedAt time.Time `grove:"created_at" bson:"created_at"`
 	UpdatedAt time.Time `grove:"updated_at" bson:"updated_at"`
 }
@@ -265,6 +266,7 @@ func toPolicy(m *RetentionPolicyModel) (*retention.Policy, error) {
 		Duration: time.Duration(m.Duration),
 		Archive:  m.Archive,
 		AppID:    m.AppID,
+		TenantID: m.TenantID,
 	}, nil
 }
 
@@ -275,6 +277,7 @@ func fromPolicy(p *retention.Policy) *RetentionPolicyModel {
 		Duration:  int64(p.Duration),
 		Archive:   p.Archive,
 		AppID:     p.AppID,
+		TenantID:  p.TenantID,
 		CreatedAt: p.CreatedAt,
 		UpdatedAt: p.UpdatedAt,
 	}
@@ -296,6 +299,8 @@ type ArchiveModel struct {
 	ToTimestamp   time.Time `grove:"to_timestamp"    bson:"to_timestamp"`
 	SinkName      string    `grove:"sink_name"       bson:"sink_name"`
 	SinkRef       string    `grove:"sink_ref"        bson:"sink_ref"`
+	AppID         string    `grove:"app_id"          bson:"app_id"`
+	TenantID      string    `grove:"tenant_id"       bson:"tenant_id"`
 	CreatedAt     time.Time `grove:"created_at"      bson:"created_at"`
 }
 
@@ -322,6 +327,8 @@ func toArchive(m *ArchiveModel) (*retention.Archive, error) {
 		ToTimestamp:   m.ToTimestamp,
 		SinkName:      m.SinkName,
 		SinkRef:       m.SinkRef,
+		AppID:         m.AppID,
+		TenantID:      m.TenantID,
 	}, nil
 }
 
@@ -335,6 +342,8 @@ func fromArchive(a *retention.Archive) *ArchiveModel {
 		ToTimestamp:   a.ToTimestamp,
 		SinkName:      a.SinkName,
 		SinkRef:       a.SinkRef,
+		AppID:         a.AppID,
+		TenantID:      a.TenantID,
 		CreatedAt:     a.CreatedAt,
 	}
 }

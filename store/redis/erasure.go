@@ -100,9 +100,15 @@ func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*era
 			}
 			return nil, err
 		}
-		e, err := fromErasureModel(&m)
-		if err != nil {
-			return nil, err
+		if opts.AppID != "" && m.AppID != opts.AppID {
+			continue
+		}
+		if opts.TenantID != "" && m.TenantID != opts.TenantID {
+			continue
+		}
+		e, convErr := fromErasureModel(&m)
+		if convErr != nil {
+			return nil, convErr
 		}
 		result = append(result, e)
 	}
@@ -110,15 +116,92 @@ func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*era
 	return applyPagination(result, opts.Offset, opts.Limit), nil
 }
 
-// CountBySubject returns the number of events for a subject.
-func (s *Store) CountBySubject(ctx context.Context, subjectID string) (int64, error) {
-	count, err := s.rdb.ZCard(ctx, zEventSubject+subjectID).Result()
-	return count, err
+// CountErasures returns the number of erasure records in the given scope.
+//
+// Unscoped this is a single ZCARD. Scoped, the erasure index is not partitioned
+// by app/tenant, so each record is read to confirm ownership.
+func (s *Store) CountErasures(ctx context.Context, sc erasure.Scope) (int64, error) {
+	if sc.IsZero() {
+		return s.rdb.ZCard(ctx, zErasureAll).Result()
+	}
+
+	ids, err := s.rdb.ZRange(ctx, zErasureAll, 0, -1).Result()
+	if err != nil {
+		return 0, fmt.Errorf("chronicle/redis: count erasures: %w", err)
+	}
+
+	var count int64
+	for _, entryID := range ids {
+		var m erasureModel
+		if getErr := s.getEntity(ctx, entityKey(prefixErasure, entryID), &m); getErr != nil {
+			if isNotFound(getErr) {
+				continue
+			}
+			return 0, getErr
+		}
+		if !scopeMatches(sc, m.AppID, m.TenantID) {
+			continue
+		}
+		count++
+	}
+	return count, nil
 }
 
-// MarkErased updates events to show [ERASED] for a given subject.
-func (s *Store) MarkErased(ctx context.Context, subjectID string, erasureID id.ID) (int64, error) {
-	ids, err := s.rdb.ZRange(ctx, zEventSubject+subjectID, 0, -1).Result()
+// CountBySubject returns the number of events for a subject within the query's
+// scope.
+//
+// Security-critical: without the scope filter this reveals how many events other
+// tenants hold on the subject.
+//
+// The per-subject index is not partitioned by scope, so when a scope is given
+// each event is read to confirm ownership. ZCard is only correct unscoped.
+func (s *Store) CountBySubject(ctx context.Context, sq erasure.SubjectQuery) (int64, error) {
+	if sq.Scope.IsZero() {
+		return s.rdb.ZCard(ctx, zEventSubject+sq.SubjectID).Result()
+	}
+
+	ids, err := s.rdb.ZRange(ctx, zEventSubject+sq.SubjectID, 0, -1).Result()
+	if err != nil {
+		return 0, fmt.Errorf("chronicle/redis: count by subject: %w", err)
+	}
+
+	var count int64
+	for _, eid := range ids {
+		var m eventModel
+		if getErr := s.getEntity(ctx, entityKey(prefixEvent, eid), &m); getErr != nil {
+			if isNotFound(getErr) {
+				continue
+			}
+			return 0, getErr
+		}
+		if !scopeMatches(sq.Scope, m.AppID, m.TenantID) {
+			continue
+		}
+		count++
+	}
+	return count, nil
+}
+
+// scopeMatches reports whether an event belongs to the given scope. An empty
+// field in the scope means "any".
+func scopeMatches(s erasure.Scope, appID, tenantID string) bool {
+	if s.AppID != "" && appID != s.AppID {
+		return false
+	}
+	if s.TenantID != "" && tenantID != s.TenantID {
+		return false
+	}
+	return true
+}
+
+// MarkErased flags a subject's events as erased within the query's scope.
+//
+// Security-critical: without the scope filter any caller could flag every
+// tenant's events for a guessed subject ID.
+func (s *Store) MarkErased(
+	ctx context.Context, sq erasure.SubjectQuery, erasureID id.ID,
+) (int64, error) {
+	ids, err := s.rdb.ZRange(ctx, zEventSubject+sq.SubjectID, 0, -1).Result()
 	if err != nil {
 		return 0, fmt.Errorf("chronicle/redis: mark erased: %w", err)
 	}
@@ -128,17 +211,20 @@ func (s *Store) MarkErased(ctx context.Context, subjectID string, erasureID id.I
 	for _, eid := range ids {
 		key := entityKey(prefixEvent, eid)
 		var m eventModel
-		if err := s.getEntity(ctx, key, &m); err != nil {
-			if isNotFound(err) {
+		if getErr := s.getEntity(ctx, key, &m); getErr != nil {
+			if isNotFound(getErr) {
 				continue
 			}
-			return count, err
+			return count, getErr
+		}
+		if !scopeMatches(sq.Scope, m.AppID, m.TenantID) {
+			continue
 		}
 		m.Erased = true
 		m.ErasedAt = &nowTime
 		m.ErasureID = erasureID.String()
-		if err := s.setEntity(ctx, key, &m); err != nil {
-			return count, err
+		if setErr := s.setEntity(ctx, key, &m); setErr != nil {
+			return count, setErr
 		}
 		count++
 	}

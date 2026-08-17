@@ -2,7 +2,6 @@ package mongo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -103,8 +102,11 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 
 // Aggregate returns grouped event statistics.
 func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.AggregateResult, error) {
-	if len(q.GroupBy) == 0 {
-		return nil, errors.New("aggregate query requires at least one group_by field")
+	// Validate the grouping fields BEFORE building the pipeline, so no
+	// caller-supplied name reaches a $group key (where a dotted path would
+	// traverse into nested documents).
+	if _, err := audit.ResolveGroupBy(q.GroupBy); err != nil {
+		return nil, err
 	}
 
 	// Build match stage.
@@ -165,19 +167,8 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 			if v, ok := raw.ID[field].(string); ok {
 				val = v
 			}
-			switch field {
-			case "category":
-				group.Category = val
-			case "action":
-				group.Action = val
-			case "outcome":
-				group.Outcome = val
-			case "severity":
-				group.Severity = val
-			case "resource":
-				group.Resource = val
-			default:
-				return nil, fmt.Errorf("unsupported group_by field: %s", field)
+			if err := audit.AssignGroupValue(&group, field, val); err != nil {
+				return nil, err
 			}
 		}
 
@@ -197,20 +188,39 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 
 // ByUser returns events for a specific user within a time range.
 func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange) (*audit.QueryResult, error) {
-	filter := bson.M{
-		"user_id": userID,
-		"timestamp": bson.M{
-			"$gte": opts.After,
-			"$lte": opts.Before,
-		},
+	filter := bson.M{"user_id": userID}
+
+	// A zero After/Before means "unbounded". Applying them unconditionally
+	// compares every document against year 1 and matches nothing.
+	ts := bson.M{}
+	if !opts.After.IsZero() {
+		ts["$gte"] = opts.After
+	}
+	if !opts.Before.IsZero() {
+		ts["$lte"] = opts.Before
+	}
+	if len(ts) > 0 {
+		filter["timestamp"] = ts
+	}
+
+	if opts.AppID != "" {
+		filter["app_id"] = opts.AppID
+	}
+	if opts.TenantID != "" {
+		filter["tenant_id"] = opts.TenantID
 	}
 
 	var models []EventModel
-	err := s.mdb.NewFind(&models).
+	find := s.mdb.NewFind(&models).
 		Filter(filter).
-		Sort(bson.D{{Key: "timestamp", Value: -1}}).
-		Scan(ctx)
-	if err != nil {
+		Sort(bson.D{{Key: "timestamp", Value: -1}})
+
+	limit := opts.EffectiveLimit()
+	if limit > 0 {
+		find = find.Limit(int64(limit))
+	}
+
+	if err := find.Scan(ctx); err != nil {
 		return nil, fmt.Errorf("failed to query events by user: %w", err)
 	}
 
@@ -222,7 +232,7 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 	return &audit.QueryResult{
 		Events:  events,
 		Total:   int64(len(events)),
-		HasMore: false,
+		HasMore: limit > 0 && len(events) == limit,
 	}, nil
 }
 

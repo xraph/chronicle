@@ -3,13 +3,18 @@ package chronicle_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/crypto"
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store"
 	"github.com/xraph/chronicle/store/memory"
+	"github.com/xraph/chronicle/store/sealedstore"
 	"github.com/xraph/chronicle/verify"
 )
 
@@ -479,5 +484,440 @@ func TestQueryAppliesScope(t *testing.T) {
 
 	if result.Total != 1 {
 		t.Errorf("Total = %d, want 1 (tenant isolation)", result.Total)
+	}
+}
+
+// TestConcurrentRecordProducesValidChain pins the hash-chain race.
+//
+// Record used to read the stream head, compute the hash, and append without
+// holding anything, so two concurrent calls both linked to the same prev_hash.
+// The store then serialised the sequence numbers, leaving two events at
+// different positions claiming the same predecessor — a chain that verifies as
+// tampered on a perfectly healthy log.
+func TestConcurrentRecordProducesValidChain(t *testing.T) {
+	c := newTestChronicle(t)
+	ctx := scope.WithAppID(context.Background(), "app-1")
+
+	const writers = 8
+	const perWriter = 5
+
+	var wg sync.WaitGroup
+	errs := make(chan error, writers*perWriter)
+
+	for w := range writers {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := range perWriter {
+				err := c.Record(ctx, &audit.Event{
+					Action:   fmt.Sprintf("w%d.action%d", w, i),
+					Resource: "user",
+					Category: "auth",
+					UserID:   fmt.Sprintf("user-%d", w),
+					Outcome:  audit.OutcomeSuccess,
+					Severity: audit.SeverityInfo,
+				})
+				if err != nil {
+					errs <- err
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// Every event must be present with a distinct sequence.
+	result, err := c.Query(ctx, &audit.Query{Limit: writers * perWriter * 2})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(result.Events) != writers*perWriter {
+		t.Fatalf("recorded %d events, want %d", len(result.Events), writers*perWriter)
+	}
+
+	seqs := make(map[uint64]bool, len(result.Events))
+	var streamID = result.Events[0].StreamID
+	for _, e := range result.Events {
+		if seqs[e.Sequence] {
+			t.Fatalf("sequence %d was allocated twice", e.Sequence)
+		}
+		seqs[e.Sequence] = true
+	}
+
+	// And the chain must verify clean.
+	report, err := c.VerifyChain(ctx, &verify.Input{
+		StreamID: streamID,
+		FromSeq:  1,
+		ToSeq:    uint64(writers * perWriter),
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("chain reported invalid after concurrent writes: tampered=%v gaps=%v",
+			report.Tampered, report.Gaps)
+	}
+	if report.Verified != writers*perWriter {
+		t.Fatalf("verified %d events, want %d", report.Verified, writers*perWriter)
+	}
+}
+
+// TestConcurrentRecordAcrossScopesDoesNotSerialise checks that the per-stream
+// lock is keyed by scope, so unrelated tenants do not contend.
+func TestConcurrentRecordAcrossScopesDoesNotSerialise(t *testing.T) {
+	c := newTestChronicle(t)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+
+	for i := range 8 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ctx := scope.WithAppID(context.Background(), fmt.Sprintf("app-%d", i))
+			for j := range 2 {
+				err := c.Record(ctx, &audit.Event{
+					Action:   fmt.Sprintf("action%d", j),
+					Resource: "user",
+					Category: "auth",
+					Outcome:  audit.OutcomeSuccess,
+					Severity: audit.SeverityInfo,
+				})
+				if err != nil {
+					errs <- err
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// Each app has its own stream, each with sequences 1..2.
+	for i := range 8 {
+		ctx := scope.WithAppID(context.Background(), fmt.Sprintf("app-%d", i))
+		result, err := c.Query(ctx, &audit.Query{Limit: 10})
+		if err != nil {
+			t.Fatalf("Query app-%d: %v", i, err)
+		}
+		if len(result.Events) != 2 {
+			t.Fatalf("app-%d has %d events, want 2", i, len(result.Events))
+		}
+	}
+}
+
+// TestCryptoErasureOptionFailsLoudly pins that requesting crypto-erasure is an
+// error rather than a silent no-op.
+//
+// The flag used to be accepted and ignored while README promised AES-256-GCM
+// per-subject encryption, so an operator who set it believed subject data was
+// destroyable by deleting a key when it was stored as plaintext. A compliance
+// guarantee that silently does not hold is worse than one that refuses to start.
+func TestCryptoErasureOptionFailsLoudly(t *testing.T) {
+	_, err := chronicle.New(
+		chronicle.WithStore(store.NewAdapter(memory.New())),
+		chronicle.WithCryptoErasure(true),
+	)
+	if err == nil {
+		t.Fatal("WithCryptoErasure(true) must fail while nothing in the pipeline encrypts")
+	}
+	if !errors.Is(err, chronicle.ErrCryptoErasureUnavailable) {
+		t.Fatalf("error = %v, want ErrCryptoErasureUnavailable", err)
+	}
+}
+
+func TestCryptoErasureDisabledIsAccepted(t *testing.T) {
+	c, err := chronicle.New(
+		chronicle.WithStore(store.NewAdapter(memory.New())),
+		chronicle.WithCryptoErasure(false),
+	)
+	if err != nil {
+		t.Fatalf("WithCryptoErasure(false): %v", err)
+	}
+	if c == nil {
+		t.Fatal("expected a Chronicle instance")
+	}
+}
+
+// ──────────────────────────────────────────────────
+// Crypto-erasure
+// ──────────────────────────────────────────────────
+
+// newSealedChronicle builds a Chronicle with crypto-erasure on, plus the wrapped
+// store so reads decrypt, mirroring how the extension wires it.
+func newSealedChronicle(t *testing.T) (*chronicle.Chronicle, *memory.Store, crypto.KeyStore) {
+	t.Helper()
+
+	mem := memory.New()
+	keys := crypto.NewInMemoryKeyStore()
+	sealer := crypto.NewSealer(keys)
+	sealed := sealedstore.New(mem, sealer)
+
+	c, err := chronicle.New(
+		chronicle.WithStore(store.NewAdapter(sealed)),
+		chronicle.WithCryptoErasure(true),
+		chronicle.WithSealer(sealer),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return c, mem, keys
+}
+
+func TestCryptoErasureRequiresASealer(t *testing.T) {
+	_, err := chronicle.New(
+		chronicle.WithStore(store.NewAdapter(memory.New())),
+		chronicle.WithCryptoErasure(true),
+	)
+	if err == nil {
+		t.Fatal("enabling crypto-erasure without a sealer must fail")
+	}
+	if !errors.Is(err, chronicle.ErrCryptoErasureUnavailable) {
+		t.Fatalf("error = %v, want ErrCryptoErasureUnavailable", err)
+	}
+}
+
+// TestRecordSealsSubjectPayload pins that what lands in the store is ciphertext.
+func TestRecordSealsSubjectPayload(t *testing.T) {
+	c, mem, _ := newSealedChronicle(t)
+	ctx := scope.WithAppID(context.Background(), "app-1")
+
+	err := c.Record(ctx, &audit.Event{
+		Action:    "export",
+		Resource:  "user",
+		Category:  "data",
+		SubjectID: "subject-1",
+		Reason:    "subject access request",
+		IP:        "203.0.113.9",
+		Metadata:  map[string]any{"email": "alice@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// Read straight from the underlying store, bypassing decryption.
+	stored, err := mem.Query(ctx, &audit.Query{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(stored.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(stored.Events))
+	}
+
+	e := stored.Events[0]
+	if strings.Contains(e.Reason, "subject access request") {
+		t.Errorf("Reason stored as plaintext: %q", e.Reason)
+	}
+	if strings.Contains(e.IP, "203.0.113.9") {
+		t.Errorf("IP stored as plaintext: %q", e.IP)
+	}
+	if v, ok := e.Metadata["email"]; ok {
+		t.Errorf("Metadata stored as plaintext: %v", v)
+	}
+	if e.EncryptionKeyID == "" {
+		t.Error("stored event should record its encryption key")
+	}
+}
+
+// TestSealedEventsReadBackDecrypted pins that the wrapped store hides the
+// encryption from ordinary consumers.
+func TestSealedEventsReadBackDecrypted(t *testing.T) {
+	c, _, _ := newSealedChronicle(t)
+	ctx := scope.WithAppID(context.Background(), "app-1")
+
+	if err := c.Record(ctx, &audit.Event{
+		Action:    "export",
+		Resource:  "user",
+		Category:  "data",
+		SubjectID: "subject-1",
+		Reason:    "subject access request",
+		Metadata:  map[string]any{"email": "alice@example.com"},
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	result, err := c.Query(ctx, &audit.Query{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(result.Events))
+	}
+
+	e := result.Events[0]
+	if e.Reason != "subject access request" {
+		t.Errorf("Reason = %q, want the decrypted value", e.Reason)
+	}
+	if e.Metadata["email"] != "alice@example.com" {
+		t.Errorf("Metadata email = %v, want the decrypted value", e.Metadata["email"])
+	}
+}
+
+// TestErasureMakesPayloadIrrecoverableButKeepsChainValid is the guarantee the
+// README makes, end to end through the real pipeline.
+func TestErasureMakesPayloadIrrecoverableButKeepsChainValid(t *testing.T) {
+	c, _, keys := newSealedChronicle(t)
+	ctx := scope.WithAppID(context.Background(), "app-1")
+
+	// Two events for the subject, plus one unrelated, so the chain has length.
+	for i := range 2 {
+		if err := c.Record(ctx, &audit.Event{
+			Action:    fmt.Sprintf("export-%d", i),
+			Resource:  "user",
+			Category:  "data",
+			SubjectID: "subject-1",
+			Reason:    "subject access request",
+			IP:        "203.0.113.9",
+			Metadata:  map[string]any{"email": "alice@example.com"},
+		}); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	if err := c.Record(ctx, &audit.Event{
+		Action:   "login",
+		Resource: "session",
+		Category: "auth",
+	}); err != nil {
+		t.Fatalf("Record unrelated: %v", err)
+	}
+
+	before, err := c.Query(ctx, &audit.Query{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	streamID := before.Events[0].StreamID
+
+	// Erase the subject by destroying its key.
+	if err := keys.Delete("subject-1"); err != nil {
+		t.Fatalf("Delete key: %v", err)
+	}
+
+	after, err := c.Query(ctx, &audit.Query{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query after erasure: %v", err)
+	}
+	if len(after.Events) != 3 {
+		t.Fatalf("expected 3 events to remain, got %d", len(after.Events))
+	}
+
+	var erased int
+	for _, e := range after.Events {
+		if e.SubjectID != "subject-1" {
+			continue
+		}
+		erased++
+
+		if strings.Contains(e.Reason, "subject access request") {
+			t.Errorf("Reason is still recoverable after key destruction: %q", e.Reason)
+		}
+		if e.Reason != crypto.ErasedMarker {
+			t.Errorf("Reason = %q, want %q", e.Reason, crypto.ErasedMarker)
+		}
+		if e.Metadata != nil {
+			t.Errorf("Metadata should be gone, got %v", e.Metadata)
+		}
+		if !e.Erased {
+			t.Error("an erased event should report Erased")
+		}
+		// The operational record survives.
+		if e.Action == "" || e.Category != "data" {
+			t.Error("the operational record must outlive the erasure")
+		}
+	}
+	if erased != 2 {
+		t.Fatalf("expected 2 erased events, got %d", erased)
+	}
+
+	// And the chain must still verify: the digest covers the sealed bytes, which
+	// key destruction does not touch.
+	report, err := c.VerifyChain(ctx, &verify.Input{StreamID: streamID, FromSeq: 1, ToSeq: 3})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("chain reported invalid after erasure: tampered=%v gaps=%v",
+			report.Tampered, report.Gaps)
+	}
+	if report.Verified != 3 {
+		t.Fatalf("verified %d events, want 3", report.Verified)
+	}
+}
+
+// TestVerifyEventUsesStoredForm pins that single-event verification reads the
+// sealed bytes rather than the decrypted ones.
+func TestVerifyEventUsesStoredForm(t *testing.T) {
+	c, _, keys := newSealedChronicle(t)
+	ctx := scope.WithAppID(context.Background(), "app-1")
+
+	if err := c.Record(ctx, &audit.Event{
+		Action:    "export",
+		Resource:  "user",
+		Category:  "data",
+		SubjectID: "subject-1",
+		Reason:    "subject access request",
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	result, err := c.Query(ctx, &audit.Query{Limit: 1})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	eventID := result.Events[0].ID
+
+	valid, err := c.VerifyEvent(ctx, eventID)
+	if err != nil {
+		t.Fatalf("VerifyEvent: %v", err)
+	}
+	if !valid {
+		t.Fatal("a sealed event should verify against its stored digest")
+	}
+
+	// Still valid once the key is gone.
+	if err := keys.Delete("subject-1"); err != nil {
+		t.Fatalf("Delete key: %v", err)
+	}
+
+	valid, err = c.VerifyEvent(ctx, eventID)
+	if err != nil {
+		t.Fatalf("VerifyEvent after erasure: %v", err)
+	}
+	if !valid {
+		t.Fatal("verification must survive key destruction")
+	}
+}
+
+// TestEventsWithoutSubjectAreNotSealed keeps ordinary operational events readable
+// and unencrypted, since they have no subject key that could ever be destroyed.
+func TestEventsWithoutSubjectAreNotSealed(t *testing.T) {
+	c, mem, _ := newSealedChronicle(t)
+	ctx := scope.WithAppID(context.Background(), "app-1")
+
+	if err := c.Record(ctx, &audit.Event{
+		Action:   "login",
+		Resource: "session",
+		Category: "auth",
+		Reason:   "password grant",
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	stored, err := mem.Query(ctx, &audit.Query{Limit: 1})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if stored.Events[0].Reason != "password grant" {
+		t.Errorf("Reason = %q, want plaintext for a subject-less event",
+			stored.Events[0].Reason)
+	}
+	if stored.Events[0].EncryptionKeyID != "" {
+		t.Error("a subject-less event should not claim an encryption key")
 	}
 }

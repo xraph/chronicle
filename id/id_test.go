@@ -274,3 +274,53 @@ func TestBSONUnmarshalInvalidType(t *testing.T) {
 		t.Error("expected error for invalid BSON type, got nil")
 	}
 }
+
+// TestUnmarshalBSONValueRejectsShortPayload pins that a declared length longer
+// than the payload is rejected rather than panicking.
+//
+// The length prefix is attacker-influenced when documents come from an untrusted
+// or corrupted source, and slicing data[4:4+l-1] on a truncated buffer panics
+// with an index out of range, taking the process down.
+func TestUnmarshalBSONValueRejectsShortPayload(t *testing.T) {
+	cases := map[string][]byte{
+		"length exceeds payload":  {0xFF, 0xFF, 0xFF, 0x7F, 'a'},
+		"length just over":        {0x08, 0x00, 0x00, 0x00, 'a', 'b', 0x00},
+		"length overflows int32":  {0xFF, 0xFF, 0xFF, 0xFF, 'a'},
+		"no null terminator room": {0x05, 0x00, 0x00, 0x00, 'a', 'b'},
+	}
+
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			var got id.ID
+
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("UnmarshalBSONValue panicked on a malformed payload: %v", r)
+				}
+			}()
+
+			// bson.TypeString is 0x02.
+			if err := got.UnmarshalBSONValue(0x02, data); err == nil && got != id.Nil {
+				t.Fatalf("expected an error or Nil for malformed input, got %v", got)
+			}
+		})
+	}
+}
+
+// TestUnmarshalBSONValueRoundTrip keeps the happy path working.
+func TestUnmarshalBSONValueRoundTrip(t *testing.T) {
+	original := id.NewAuditID()
+
+	typ, data, err := original.MarshalBSONValue()
+	if err != nil {
+		t.Fatalf("MarshalBSONValue: %v", err)
+	}
+
+	var got id.ID
+	if err := got.UnmarshalBSONValue(typ, data); err != nil {
+		t.Fatalf("UnmarshalBSONValue: %v", err)
+	}
+	if got.String() != original.String() {
+		t.Fatalf("round trip = %q, want %q", got.String(), original.String())
+	}
+}

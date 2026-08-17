@@ -44,17 +44,17 @@ func exportCSV(r *Report, w io.Writer) error {
 	for _, s := range r.Sections {
 		for _, ev := range s.Events {
 			row := []string{
-				s.Title,
+				csvSafe(s.Title),
 				ev.Timestamp.UTC().Format("2006-01-02T15:04:05Z"),
-				ev.Action,
-				ev.Resource,
-				ev.ResourceID,
-				ev.Category,
-				ev.Outcome,
-				ev.Severity,
-				ev.UserID,
-				ev.IP,
-				ev.Reason,
+				csvSafe(ev.Action),
+				csvSafe(ev.Resource),
+				csvSafe(ev.ResourceID),
+				csvSafe(ev.Category),
+				csvSafe(ev.Outcome),
+				csvSafe(ev.Severity),
+				csvSafe(ev.UserID),
+				csvSafe(ev.IP),
+				csvSafe(ev.Reason),
 			}
 			if err := cw.Write(row); err != nil {
 				return fmt.Errorf("writing CSV row: %w", err)
@@ -64,6 +64,26 @@ func exportCSV(r *Report, w io.Writer) error {
 
 	cw.Flush()
 	return cw.Error()
+}
+
+// csvSafe neutralises spreadsheet formula injection in an exported field.
+//
+// Audit fields carry attacker-influenced text: a failed login records whichever
+// username was submitted. Excel, LibreOffice and Google Sheets evaluate a cell
+// beginning with =, +, -, @, tab or carriage return as a formula, which turns
+// reading an audit export into executing whatever the attacker logged. Prefixing
+// with an apostrophe makes the spreadsheet treat the value as literal text while
+// leaving it readable.
+func csvSafe(v string) string {
+	if v == "" {
+		return v
+	}
+	switch v[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + v
+	default:
+		return v
+	}
 }
 
 // exportMarkdown renders the report as a Markdown document.

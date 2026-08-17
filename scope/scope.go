@@ -7,7 +7,11 @@ package scope
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
+	"strings"
 
 	"github.com/xraph/chronicle/audit"
 )
@@ -91,12 +95,61 @@ func FromContext(ctx context.Context) Info {
 
 // FromRequest extracts the client IP from an HTTP request and merges it
 // with any existing scope in the request's context.
+//
+// Proxy headers are ignored: the IP comes from the connection's peer address.
+// X-Forwarded-For and X-Real-IP are set by whoever is talking to you, so
+// trusting them lets any caller choose the address written into the audit trail.
+// If your service really sits behind a proxy, use [FromRequestWithProxies] with
+// that proxy's address range.
 func FromRequest(r *http.Request) Info {
+	return FromRequestWithProxies(r, nil)
+}
+
+// FromRequestWithProxies is [FromRequest] but honours X-Forwarded-For and
+// X-Real-IP when the request's peer is one of the trusted proxies.
+//
+// With a trusted peer, the client-most entry of X-Forwarded-For is used. Build
+// trusted from your load balancer's ranges with [ParseTrustedProxies]; passing
+// nil disables header trust entirely.
+func FromRequestWithProxies(r *http.Request, trusted []netip.Prefix) Info {
 	info := FromContext(r.Context())
 	if info.IP == "" {
-		info.IP = clientIP(r)
+		info.IP = clientIP(r, trusted)
 	}
 	return info
+}
+
+// ParseTrustedProxies converts CIDR blocks or bare addresses into prefixes for
+// [FromRequestWithProxies].
+//
+//	trusted, err := scope.ParseTrustedProxies([]string{"10.0.0.0/8", "192.168.1.1"})
+func ParseTrustedProxies(entries []string) ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, 0, len(entries))
+
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		if strings.Contains(entry, "/") {
+			prefix, err := netip.ParsePrefix(entry)
+			if err != nil {
+				return nil, fmt.Errorf("scope: trusted proxy %q: %w", entry, err)
+			}
+			prefixes = append(prefixes, prefix)
+			continue
+		}
+
+		// A bare address is a single-host prefix.
+		addr, err := netip.ParseAddr(entry)
+		if err != nil {
+			return nil, fmt.Errorf("scope: trusted proxy %q: %w", entry, err)
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+
+	return prefixes, nil
 }
 
 // ApplyToEvent sets scope fields on an event from context.
@@ -159,27 +212,65 @@ func ApplyToCountQuery(ctx context.Context, q *audit.CountQuery) {
 	}
 }
 
-// clientIP extracts the client IP from an HTTP request,
-// checking X-Forwarded-For and X-Real-IP headers first.
-func clientIP(r *http.Request) string {
+// clientIP resolves the address to record for a request.
+//
+// The peer address is authoritative unless the peer is a trusted proxy, in which
+// case the forwarded headers are consulted. A forwarded value that is not a
+// valid address falls back to the peer rather than recording garbage.
+func clientIP(r *http.Request, trusted []netip.Prefix) string {
+	peer := peerIP(r.RemoteAddr)
+
+	if len(trusted) == 0 || !isTrusted(peer, trusted) {
+		return peer
+	}
+
+	// The client-most entry is the left-most, since each hop appends.
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// X-Forwarded-For can be a comma-separated list; take the first.
-		for i := range len(xff) {
-			if xff[i] == ',' {
-				return xff[:i]
-			}
+		first := xff
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			first = xff[:i]
 		}
-		return xff
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-	// Fall back to RemoteAddr, stripping port.
-	addr := r.RemoteAddr
-	for i := len(addr) - 1; i >= 0; i-- {
-		if addr[i] == ':' {
-			return addr[:i]
+		if addr, err := netip.ParseAddr(strings.TrimSpace(first)); err == nil {
+			return addr.String()
 		}
 	}
-	return addr
+
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		if addr, err := netip.ParseAddr(xri); err == nil {
+			return addr.String()
+		}
+	}
+
+	return peer
+}
+
+// peerIP strips the port from a RemoteAddr, handling bracketed IPv6.
+func peerIP(remoteAddr string) string {
+	if remoteAddr == "" {
+		return ""
+	}
+
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+
+	// No port present; may still be a bare IPv6 in brackets.
+	return strings.Trim(remoteAddr, "[]")
+}
+
+// isTrusted reports whether addr falls inside any trusted prefix.
+func isTrusted(addr string, trusted []netip.Prefix) bool {
+	parsed, err := netip.ParseAddr(addr)
+	if err != nil {
+		return false
+	}
+	// Compare on the unmapped form so a 4-in-6 peer matches an IPv4 prefix.
+	parsed = parsed.Unmap()
+
+	for _, prefix := range trusted {
+		if prefix.Contains(parsed) {
+			return true
+		}
+	}
+	return false
 }

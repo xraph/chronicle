@@ -642,3 +642,182 @@ func TestReportIsSaved(t *testing.T) {
 		t.Errorf("saved report ID mismatch: got %s, want %s", saved.ID.String(), report.ID.String())
 	}
 }
+
+// ──────────────────────────────────────────────────
+// Truncation honesty
+// ──────────────────────────────────────────────────
+
+// seedManyEvents adds count auth events inside the test period.
+func seedManyEvents(t *testing.T, store *memory.Store, count int) {
+	t.Helper()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	streamID := id.NewStreamID()
+
+	for i := range count {
+		e := &audit.Event{
+			ID:        id.NewAuditID(),
+			StreamID:  streamID,
+			Sequence:  uint64(i + 1000),
+			AppID:     "test-app",
+			TenantID:  "tenant-1",
+			Action:    "login",
+			Resource:  "session",
+			Category:  "auth",
+			Outcome:   audit.OutcomeSuccess,
+			Severity:  audit.SeverityInfo,
+			UserID:    "bulk-user",
+			Timestamp: now.Add(-12 * time.Hour).Add(time.Duration(i) * time.Millisecond),
+		}
+		if err := store.Append(ctx, e); err != nil {
+			t.Fatalf("append bulk event: %v", err)
+		}
+	}
+}
+
+// TestSectionReportsTruncation pins that a report says so when its evidence
+// listing is a sample rather than the whole set.
+//
+// Sections cap the embedded events. Emitting a capped list with no marker
+// produced an attestation artefact that looked complete but was not, and whose
+// own aggregate stats contradicted its event count.
+func TestSectionReportsTruncation(t *testing.T) {
+	engine, store := newTestEngine(t)
+	ctx := context.Background()
+
+	// Push well past the per-section cap.
+	seedManyEvents(t, store, compliance.MaxSectionEvents+250)
+
+	report, err := engine.SOC2(ctx, &compliance.SOC2Input{
+		Period:      testPeriod(),
+		AppID:       "test-app",
+		TenantID:    "tenant-1",
+		GeneratedBy: "test-runner",
+	})
+	if err != nil {
+		t.Fatalf("SOC2: %v", err)
+	}
+
+	var found bool
+	for _, s := range report.Sections {
+		if len(s.Events) > compliance.MaxSectionEvents {
+			t.Fatalf("section %q embedded %d events, above the cap of %d",
+				s.Title, len(s.Events), compliance.MaxSectionEvents)
+		}
+
+		if s.MatchedEvents < int64(len(s.Events)) {
+			t.Errorf("section %q reports %d matched but embeds %d events",
+				s.Title, s.MatchedEvents, len(s.Events))
+		}
+
+		if s.MatchedEvents > int64(len(s.Events)) {
+			found = true
+			if !s.EventsTruncated {
+				t.Errorf("section %q embedded %d of %d events without setting EventsTruncated",
+					s.Title, len(s.Events), s.MatchedEvents)
+			}
+		}
+	}
+
+	if !found {
+		t.Fatal("expected at least one truncated section given the seeded volume")
+	}
+}
+
+// TestStatsAreExactWhenSectionsAreTruncated pins that the summary counts describe
+// the period rather than the truncated evidence sample. Deriving them from the
+// sample made a 50,000-event period report as 1,000.
+func TestStatsAreExactWhenSectionsAreTruncated(t *testing.T) {
+	engine, store := newTestEngine(t)
+	ctx := context.Background()
+
+	const bulk = compliance.MaxSectionEvents + 250
+	seedManyEvents(t, store, bulk)
+
+	report, err := engine.SOC2(ctx, &compliance.SOC2Input{
+		Period:      testPeriod(),
+		AppID:       "test-app",
+		TenantID:    "tenant-1",
+		GeneratedBy: "test-runner",
+	})
+	if err != nil {
+		t.Fatalf("SOC2: %v", err)
+	}
+
+	if report.Stats.TotalEvents <= int64(compliance.MaxSectionEvents) {
+		t.Fatalf("Stats.TotalEvents = %d, which is capped at the section limit; "+
+			"summary counts must reflect the period, not the evidence sample",
+			report.Stats.TotalEvents)
+	}
+
+	// The seeded bulk events are all in the period, so the total must exceed them.
+	if report.Stats.TotalEvents < int64(bulk) {
+		t.Errorf("Stats.TotalEvents = %d, want at least %d", report.Stats.TotalEvents, bulk)
+	}
+}
+
+// TestExportCSVNeutralisesFormulaInjection pins that audit field values cannot
+// become live formulas when the export is opened in a spreadsheet.
+//
+// Audit fields are attacker-influenced: a login action carries whatever username
+// was submitted. Excel and Sheets treat a leading =, +, -, @, tab or CR as the
+// start of a formula, so an unescaped export turns an audit trail into code
+// execution on the reviewer's machine.
+func TestExportCSVNeutralisesFormulaInjection(t *testing.T) {
+	payloads := []string{
+		`=1+1`,
+		`=cmd|'/c calc'!A0`,
+		`+1+1`,
+		`-1+1`,
+		`@SUM(A1:A2)`,
+		"\t=1+1",
+		"\r=1+1",
+	}
+
+	for _, payload := range payloads {
+		t.Run(payload, func(t *testing.T) {
+			report := &compliance.Report{
+				Title: "injection",
+				Sections: []compliance.Section{{
+					Title: "events",
+					Events: []*audit.Event{{
+						ID:        id.NewAuditID(),
+						Timestamp: time.Now().UTC(),
+						Action:    payload,
+						UserID:    payload,
+						Reason:    payload,
+						Resource:  "r",
+						Category:  "auth",
+						Outcome:   audit.OutcomeSuccess,
+						Severity:  audit.SeverityInfo,
+					}},
+				}},
+			}
+
+			var buf bytes.Buffer
+			if err := compliance.NewEngine(nil, nil, nil, log.NewNoopLogger()).
+				Export(context.Background(), report, compliance.FormatCSV, &buf); err != nil {
+				t.Fatalf("Export: %v", err)
+			}
+
+			records, err := csv.NewReader(bytes.NewReader(buf.Bytes())).ReadAll()
+			if err != nil {
+				t.Fatalf("parse CSV: %v", err)
+			}
+			if len(records) < 2 {
+				t.Fatalf("expected a data row, got %d records", len(records))
+			}
+
+			for _, field := range records[1] {
+				if field == "" {
+					continue
+				}
+				switch field[0] {
+				case '=', '+', '-', '@', '\t', '\r':
+					t.Fatalf("field %q still begins with a formula trigger", field)
+				}
+			}
+		})
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
+	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/store"
 	"github.com/xraph/chronicle/stream"
@@ -35,6 +36,10 @@ var (
 	_ retention.Store        = (*Store)(nil)
 	_ compliance.ReportStore = (*Store)(nil)
 )
+
+// hasher re-links events into the chain inside Append's transaction. hash.Chain
+// is stateless, so one package-level value is safe to share.
+var hasher = &hash.Chain{}
 
 // New creates a new grove ORM store with the given database connection.
 func New(db *grove.DB) *Store {

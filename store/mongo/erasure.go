@@ -42,7 +42,7 @@ func (s *Store) GetErasure(ctx context.Context, erasureID id.ID) (*erasure.Erasu
 func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*erasure.Erasure, error) {
 	var models []ErasureModel
 	findQ := s.mdb.NewFind(&models).
-		Filter(bson.M{}).
+		Filter(scopeFilter(opts.AppID, opts.TenantID)).
 		Sort(bson.D{{Key: "created_at", Value: -1}})
 
 	if opts.Limit > 0 {
@@ -68,17 +68,35 @@ func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*era
 	return erasures, nil
 }
 
-// CountBySubject returns the number of events for a subject.
-func (s *Store) CountBySubject(ctx context.Context, subjectID string) (int64, error) {
-	count, err := s.mdb.Collection(colEvents).CountDocuments(ctx, bson.M{"subject_id": subjectID})
-	return count, err
+// CountErasures returns the number of erasure records in the given scope.
+func (s *Store) CountErasures(ctx context.Context, sc erasure.Scope) (int64, error) {
+	return s.mdb.Collection(colErasures).CountDocuments(ctx, scopeFilter(sc.AppID, sc.TenantID))
 }
 
-// MarkErased updates events to show [ERASED] for a given subject.
-func (s *Store) MarkErased(ctx context.Context, subjectID string, erasureID id.ID) (int64, error) {
+// CountBySubject returns the number of events for a subject within the query's
+// scope.
+//
+// Security-critical: without the scope filter this reveals how many events other
+// tenants hold on the subject.
+func (s *Store) CountBySubject(ctx context.Context, sq erasure.SubjectQuery) (int64, error) {
+	filter := scopeFilter(sq.AppID, sq.TenantID)
+	filter["subject_id"] = sq.SubjectID
+	return s.mdb.Collection(colEvents).CountDocuments(ctx, filter)
+}
+
+// MarkErased flags a subject's events as erased within the query's scope.
+//
+// Security-critical: without the scope filter any caller could flag every
+// tenant's events for a guessed subject ID.
+func (s *Store) MarkErased(
+	ctx context.Context, sq erasure.SubjectQuery, erasureID id.ID,
+) (int64, error) {
+	filter := scopeFilter(sq.AppID, sq.TenantID)
+	filter["subject_id"] = sq.SubjectID
+
 	now := time.Now().UTC()
 	result, err := s.mdb.Collection(colEvents).UpdateMany(ctx,
-		bson.M{"subject_id": subjectID},
+		filter,
 		bson.M{"$set": bson.M{
 			"erased":     true,
 			"erased_at":  now,

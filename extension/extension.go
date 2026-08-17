@@ -23,7 +23,9 @@ import (
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/compliance"
+	"github.com/xraph/chronicle/crypto"
 	chronicledash "github.com/xraph/chronicle/dashboard"
+	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/handler"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/sink"
@@ -31,6 +33,7 @@ import (
 	mongostore "github.com/xraph/chronicle/store/mongo"
 	pgstore "github.com/xraph/chronicle/store/postgres"
 	redisstore "github.com/xraph/chronicle/store/redis"
+	"github.com/xraph/chronicle/store/sealedstore"
 	sqlitestore "github.com/xraph/chronicle/store/sqlite"
 )
 
@@ -51,6 +54,7 @@ var (
 type internalOpts struct {
 	store       store.Store
 	archiveSink sink.Sink
+	keyStore    crypto.KeyStore
 }
 
 // Extension adapts Chronicle as a Forge extension. It implements the
@@ -58,15 +62,16 @@ type internalOpts struct {
 type Extension struct {
 	*forge.BaseExtension
 
-	config     Config
-	opts       internalOpts
-	chronicle  *chronicle.Chronicle
-	engine     *compliance.Engine
-	enforcer   *retention.Enforcer
-	api        *handler.API
-	store      store.Store
-	useGrove   bool
-	useGroveKV bool
+	config         Config
+	opts           internalOpts
+	chronicle      *chronicle.Chronicle
+	engine         *compliance.Engine
+	enforcer       *retention.Enforcer
+	api            *handler.API
+	erasureService *erasure.Service
+	store          store.Store
+	useGrove       bool
+	useGroveKV     bool
 
 	cancel context.CancelFunc
 }
@@ -151,12 +156,34 @@ func (e *Extension) init(fapp forge.App) error {
 	}
 	e.store = s
 
+	// Crypto-erasure: build the sealer, then wrap the store so every consumer
+	// reads decrypted events. Encryption itself happens in Chronicle.Record,
+	// before the hash is computed over the stored bytes.
+	var sealer *crypto.Sealer
+	if e.config.EnableCryptoErasure {
+		if e.opts.keyStore == nil {
+			return ErrKeyStoreRequired
+		}
+		sealer = crypto.NewSealer(e.opts.keyStore)
+
+		// Wrapping here means the admin API, the dashboard, compliance reports and
+		// Chronicle's own queries all see readable events without each having to
+		// remember to decrypt.
+		s = sealedstore.New(s, sealer)
+		e.store = s
+
+		e.erasureService = erasure.NewService(s, e.opts.keyStore)
+	}
+
 	// Create the store adapter for Chronicle.
 	adapter := store.NewAdapter(s)
 
 	// Build Chronicle options.
 	chronicleOpts := []chronicle.Option{
 		chronicle.WithStore(adapter),
+	}
+	if sealer != nil {
+		chronicleOpts = append(chronicleOpts, chronicle.WithSealer(sealer))
 	}
 	if e.config.BatchSize > 0 {
 		chronicleOpts = append(chronicleOpts, chronicle.WithBatchSize(e.config.BatchSize))
@@ -184,16 +211,31 @@ func (e *Extension) init(fapp forge.App) error {
 	// Create retention enforcer.
 	e.enforcer = retention.NewEnforcer(s, e.opts.archiveSink, logger)
 
+	// Security-critical: decide API access before building the handler. The API
+	// can purge audit history, so an unauthenticated mount has to be a choice the
+	// operator made rather than a default they inherited.
+	if err := e.config.Auth.Validate(!e.config.DisableRoutes); err != nil {
+		return err
+	}
+
+	guards, err := e.buildGuards(fapp)
+	if err != nil {
+		return err
+	}
+
 	// Create the API handler with Forge router.
 	e.api = handler.New(handler.Dependencies{
 		AuditStore:     s,
 		VerifyStore:    s,
+		StreamStore:    s,
 		ErasureStore:   s,
+		Erasure:        e.erasureService,
 		RetentionStore: s,
 		ReportStore:    s,
 		Compliance:     e.engine,
 		Retention:      e.enforcer,
 		Logger:         logger,
+		Guards:         guards,
 	}, fapp.Router())
 
 	// Register HTTP routes unless disabled.
@@ -313,6 +355,7 @@ func (e *Extension) DashboardContributor() contributor.LocalContributor {
 			RetentionInterval:   e.config.RetentionInterval,
 			EnableCryptoErasure: e.config.EnableCryptoErasure,
 			BasePath:            e.config.BasePath,
+			AllowMutations:      e.config.DashboardMutations,
 		},
 	)
 }

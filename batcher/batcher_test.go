@@ -2,6 +2,7 @@ package batcher_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -125,5 +126,102 @@ func TestBatcherFlushesOnShutdown(t *testing.T) {
 
 	if count != 2 {
 		t.Errorf("expected 2 flushed events on shutdown, got %d", count)
+	}
+}
+
+// TestStopIsIdempotent pins that a second Stop does not panic.
+//
+// Stop closed stopCh unconditionally, so a caller with both a deferred Stop and
+// an explicit one on the shutdown path crashed the process on a closed channel.
+func TestStopIsIdempotent(t *testing.T) {
+	var flushed [][]*audit.Event
+	var mu sync.Mutex
+
+	b := batcher.New(10, time.Hour, func(_ context.Context, events []*audit.Event) error {
+		mu.Lock()
+		defer mu.Unlock()
+		flushed = append(flushed, events)
+		return nil
+	}, nil)
+	b.Start()
+
+	ctx := context.Background()
+	if err := b.Add(ctx, testEvent()); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := b.Stop(ctx); err != nil {
+		t.Fatalf("first Stop: %v", err)
+	}
+
+	// Must not panic, and must not double-flush.
+	if err := b.Stop(ctx); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(flushed) != 1 {
+		t.Fatalf("expected exactly 1 flush across two Stops, got %d", len(flushed))
+	}
+}
+
+// TestStopRetainsEventsWhenFlushFails pins that a failed final flush does not
+// discard the batch, so a caller can retry instead of silently losing audit
+// events during shutdown.
+func TestStopRetainsEventsWhenFlushFails(t *testing.T) {
+	var attempts int
+	var mu sync.Mutex
+
+	b := batcher.New(10, time.Hour, func(_ context.Context, _ []*audit.Event) error {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts++
+		if attempts == 1 {
+			return errors.New("store unavailable")
+		}
+		return nil
+	}, nil)
+	b.Start()
+
+	ctx := context.Background()
+	if err := b.Add(ctx, testEvent()); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := b.Stop(ctx); err == nil {
+		t.Fatal("Stop should surface the flush failure")
+	}
+
+	if got := b.Pending(); got != 1 {
+		t.Fatalf("Pending = %d, want 1; a failed flush must not drop the batch", got)
+	}
+
+	// Retrying must now succeed and drain.
+	if err := b.Flush(ctx); err != nil {
+		t.Fatalf("retry Flush: %v", err)
+	}
+	if got := b.Pending(); got != 0 {
+		t.Fatalf("Pending = %d after a successful retry, want 0", got)
+	}
+}
+
+// TestAddRetainsEventsWhenSizeFlushFails covers the same property on the
+// size-triggered path.
+func TestAddRetainsEventsWhenSizeFlushFails(t *testing.T) {
+	b := batcher.New(2, time.Hour, func(_ context.Context, _ []*audit.Event) error {
+		return errors.New("store unavailable")
+	}, nil)
+
+	ctx := context.Background()
+	if err := b.Add(ctx, testEvent()); err != nil {
+		t.Fatalf("Add 1: %v", err)
+	}
+	if err := b.Add(ctx, testEvent()); err == nil {
+		t.Fatal("the size-triggered flush should surface its failure")
+	}
+
+	if got := b.Pending(); got != 2 {
+		t.Fatalf("Pending = %d, want 2; a failed flush must not drop the batch", got)
 	}
 }

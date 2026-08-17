@@ -2,6 +2,8 @@ package sink
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	log "github.com/xraph/go-utils/log"
 
@@ -9,7 +11,12 @@ import (
 )
 
 // MultiSink fans out events to multiple sinks.
-// Individual sink errors are logged but do not stop other sinks.
+//
+// A failing sink does not stop the others: every sink is always attempted. The
+// combined failure is then returned, so a caller that depends on the write
+// having landed can tell. Returning nil here made MultiSink unsafe as a
+// retention archive target, because the enforcer checks the archive write's
+// error before purging and would delete events that were never archived.
 type MultiSink struct {
 	sinks  []Sink
 	logger log.Logger
@@ -28,40 +35,35 @@ func NewMultiSink(logger log.Logger, sinks ...Sink) *MultiSink {
 
 func (m *MultiSink) Name() string { return "multi" }
 
+// Write sends events to every sink and returns the combined failure, if any.
 func (m *MultiSink) Write(ctx context.Context, events []*audit.Event) error {
-	for _, s := range m.sinks {
-		if err := s.Write(ctx, events); err != nil {
-			m.logger.Error("sink write error",
-				log.String("sink", s.Name()),
-				log.String("error", err.Error()),
-			)
-		}
-	}
-	return nil
+	return m.fanOut("write", func(s Sink) error { return s.Write(ctx, events) })
 }
 
+// Flush flushes every sink and returns the combined failure, if any.
 func (m *MultiSink) Flush(ctx context.Context) error {
-	for _, s := range m.sinks {
-		if err := s.Flush(ctx); err != nil {
-			m.logger.Error("sink flush error",
-				log.String("sink", s.Name()),
-				log.String("error", err.Error()),
-			)
-		}
-	}
-	return nil
+	return m.fanOut("flush", func(s Sink) error { return s.Flush(ctx) })
 }
 
+// Close closes every sink and returns the combined failure, if any.
 func (m *MultiSink) Close() error {
+	return m.fanOut("close", func(s Sink) error { return s.Close() })
+}
+
+// fanOut applies op to every sink, logging and collecting failures as it goes.
+// Every sink is attempted even after one fails.
+func (m *MultiSink) fanOut(opName string, op func(Sink) error) error {
+	var errs []error
 	for _, s := range m.sinks {
-		if err := s.Close(); err != nil {
-			m.logger.Error("sink close error",
+		if err := op(s); err != nil {
+			m.logger.Error("sink "+opName+" error",
 				log.String("sink", s.Name()),
 				log.String("error", err.Error()),
 			)
+			errs = append(errs, fmt.Errorf("sink %s: %s: %w", s.Name(), opName, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Add appends a sink to the multi-sink fan-out.

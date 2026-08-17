@@ -34,8 +34,35 @@ type Result struct {
 	KeyDestroyed   bool   `json:"key_destroyed"`
 }
 
-// ListOpts defines pagination options for listing erasure records.
+// Scope identifies the app and tenant an erasure operation is confined to.
+//
+// A zero Scope matches every app and tenant. Only trusted in-process callers
+// may use one: erasure records carry subject IDs and request reasons, and
+// MarkErased mutates events, so an unscoped call both leaks and tampers across
+// tenants.
+type Scope struct {
+	AppID    string `json:"app_id,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+// IsZero reports whether the scope names no app and no tenant.
+func (s Scope) IsZero() bool { return s.AppID == "" && s.TenantID == "" }
+
+// ListOpts defines pagination and scope options for listing erasure records.
+//
+// Scope is applied by the store, before LIMIT/OFFSET: filtering after
+// pagination would silently hide a caller's own records behind another
+// tenant's.
 type ListOpts struct {
+	Scope
+
 	Limit  int
 	Offset int
+}
+
+// SubjectQuery identifies a data subject within a scope.
+type SubjectQuery struct {
+	Scope
+
+	SubjectID string `json:"subject_id"`
 }

@@ -47,7 +47,10 @@ func (e *Engine) SOC2(ctx context.Context, input *SOC2Input) (*Report, error) {
 		return nil, fmt.Errorf("building SOC2 sections: %w", err)
 	}
 
-	stats := calculateStats(sections)
+	stats, err := e.periodStats(ctx, input.Period, input.AppID, input.TenantID)
+	if err != nil {
+		return nil, err
+	}
 
 	report := &Report{
 		Entity:      chronicle.NewEntity(),
@@ -88,7 +91,10 @@ func (e *Engine) HIPAA(ctx context.Context, input *HIPAAInput) (*Report, error) 
 		return nil, fmt.Errorf("building HIPAA sections: %w", err)
 	}
 
-	stats := calculateStats(sections)
+	stats, err := e.periodStats(ctx, input.Period, input.AppID, input.TenantID)
+	if err != nil {
+		return nil, err
+	}
 
 	report := &Report{
 		Entity:      chronicle.NewEntity(),
@@ -129,7 +135,10 @@ func (e *Engine) EUAIAct(ctx context.Context, input *EUAIActInput) (*Report, err
 		return nil, fmt.Errorf("building EU AI Act sections: %w", err)
 	}
 
-	stats := calculateStats(sections)
+	stats, err := e.periodStats(ctx, input.Period, input.AppID, input.TenantID)
+	if err != nil {
+		return nil, err
+	}
 
 	report := &Report{
 		Entity:      chronicle.NewEntity(),
@@ -171,7 +180,10 @@ func (e *Engine) Custom(ctx context.Context, input *CustomInput) (*Report, error
 		return nil, fmt.Errorf("building custom sections: %w", err)
 	}
 
-	stats := calculateStats(sections)
+	stats, err := e.periodStats(ctx, input.Period, input.AppID, input.TenantID)
+	if err != nil {
+		return nil, err
+	}
 
 	report := &Report{
 		Entity:      chronicle.NewEntity(),
@@ -215,33 +227,41 @@ func (e *Engine) Export(_ context.Context, r *Report, format Format, w io.Writer
 	}
 }
 
-// calculateStats computes summary statistics across all report sections.
-func calculateStats(sections []Section) *Stats {
-	stats := &Stats{}
+// periodStats computes exact summary statistics for a report's period and scope.
+//
+// These counts must not be derived from the sections' embedded events: those are
+// capped at MaxSectionEvents, so a busy period would report its cap instead of
+// its real volume, contradicting the sections' own aggregate stats. A single
+// grouped aggregate over the whole period is both exact and one round trip.
+//
+// The counts describe every event in the period, which is what an auditor reads
+// "total events" to mean, rather than the union of the sections' filters.
+func (e *Engine) periodStats(
+	ctx context.Context, period DateRange, appID, tenantID string,
+) (*Stats, error) {
+	result, err := e.auditStore.Aggregate(ctx, &audit.AggregateQuery{
+		After:    period.From,
+		Before:   period.To,
+		AppID:    appID,
+		TenantID: tenantID,
+		GroupBy:  []string{"outcome", "severity"},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("aggregating period stats: %w", err)
+	}
 
-	seen := make(map[string]bool)
-
-	for _, s := range sections {
-		for _, ev := range s.Events {
-			key := ev.ID.String()
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-
-			stats.TotalEvents++
-
-			if ev.Severity == audit.SeverityCritical {
-				stats.CriticalEvents++
-			}
-			if ev.Outcome == audit.OutcomeFailure {
-				stats.FailedEvents++
-			}
-			if ev.Outcome == audit.OutcomeDenied {
-				stats.DeniedEvents++
-			}
+	stats := &Stats{TotalEvents: result.Total}
+	for _, g := range result.Groups {
+		if g.Severity == audit.SeverityCritical {
+			stats.CriticalEvents += g.Count
+		}
+		switch g.Outcome {
+		case audit.OutcomeFailure:
+			stats.FailedEvents += g.Count
+		case audit.OutcomeDenied:
+			stats.DeniedEvents += g.Count
 		}
 	}
 
-	return stats
+	return stats, nil
 }

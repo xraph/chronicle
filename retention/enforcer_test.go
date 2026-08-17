@@ -2,6 +2,7 @@ package retention_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -36,6 +37,13 @@ func setupEnforcerTest(t *testing.T) (store.Store, *mockSink) {
 
 func seedEvents(t *testing.T, s store.Store, category string, count int, age time.Duration) []*audit.Event {
 	t.Helper()
+	return seedEventsForApp(t, s, "app1", "", category, count, age)
+}
+
+func seedEventsForApp(
+	t *testing.T, s store.Store, appID, tenantID, category string, count int, age time.Duration,
+) []*audit.Event {
+	t.Helper()
 	ctx := context.Background()
 
 	events := make([]*audit.Event, count)
@@ -45,7 +53,8 @@ func seedEvents(t *testing.T, s store.Store, category string, count int, age tim
 			StreamID:  id.NewStreamID(),
 			Sequence:  uint64(i + 1),
 			Hash:      "hash",
-			AppID:     "app1",
+			AppID:     appID,
+			TenantID:  tenantID,
 			Action:    "test.action",
 			Resource:  "test.resource",
 			Category:  category,
@@ -60,6 +69,168 @@ func seedEvents(t *testing.T, s store.Store, category string, count int, age tim
 	}
 	return events
 }
+
+// TestEnforceDoesNotPurgeOtherApps is the cross-tenant destruction path: app2
+// registers a one-hour policy on a category app1 also uses, and enforcement
+// must leave app1's events alone.
+func TestEnforceDoesNotPurgeOtherApps(t *testing.T) {
+	s, sink := setupEnforcerTest(t)
+	ctx := context.Background()
+
+	victimEvents := seedEventsForApp(t, s, "app1", "", "auth", 4, 48*time.Hour)
+	attackerEvents := seedEventsForApp(t, s, "app2", "", "auth", 2, 48*time.Hour)
+
+	policy := &retention.Policy{
+		ID:       id.NewPolicyID(),
+		Category: "auth",
+		Duration: 1 * time.Hour,
+		AppID:    "app2",
+	}
+	policy.CreatedAt = time.Now()
+	policy.UpdatedAt = time.Now()
+
+	if err := s.SavePolicy(ctx, policy); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+
+	enforcer := retention.NewEnforcer(s, sink, nil)
+	result, err := enforcer.Enforce(ctx)
+	if err != nil {
+		t.Fatalf("enforce: %v", err)
+	}
+
+	if result.Purged != int64(len(attackerEvents)) {
+		t.Errorf("purged = %d, want %d (only app2's own events)", result.Purged, len(attackerEvents))
+	}
+
+	for _, e := range victimEvents {
+		if _, getErr := s.Get(ctx, e.ID); getErr != nil {
+			t.Errorf("app1 event %s was purged by app2's policy: %v", e.ID, getErr)
+		}
+	}
+}
+
+// TestEnforceIsolatesTenantsWithinAnApp covers the tenant dimension.
+func TestEnforceIsolatesTenantsWithinAnApp(t *testing.T) {
+	s, sink := setupEnforcerTest(t)
+	ctx := context.Background()
+
+	tenantA := seedEventsForApp(t, s, "app1", "tenant-a", "auth", 3, 48*time.Hour)
+	tenantB := seedEventsForApp(t, s, "app1", "tenant-b", "auth", 2, 48*time.Hour)
+
+	policy := &retention.Policy{
+		ID:       id.NewPolicyID(),
+		Category: "auth",
+		Duration: 1 * time.Hour,
+		AppID:    "app1",
+		TenantID: "tenant-b",
+	}
+	policy.CreatedAt = time.Now()
+	policy.UpdatedAt = time.Now()
+
+	if err := s.SavePolicy(ctx, policy); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+
+	enforcer := retention.NewEnforcer(s, sink, nil)
+	result, err := enforcer.Enforce(ctx)
+	if err != nil {
+		t.Fatalf("enforce: %v", err)
+	}
+
+	if result.Purged != int64(len(tenantB)) {
+		t.Errorf("purged = %d, want %d", result.Purged, len(tenantB))
+	}
+	for _, e := range tenantA {
+		if _, getErr := s.Get(ctx, e.ID); getErr != nil {
+			t.Errorf("tenant-a event %s purged by tenant-b's policy: %v", e.ID, getErr)
+		}
+	}
+}
+
+// TestEnforceForAppOnlyRunsThatApp pins that the HTTP enforce endpoint can run
+// one caller's policies without touching anyone else's.
+func TestEnforceForAppOnlyRunsThatApp(t *testing.T) {
+	s, sink := setupEnforcerTest(t)
+	ctx := context.Background()
+
+	app1Events := seedEventsForApp(t, s, "app1", "", "auth", 3, 48*time.Hour)
+	app2Events := seedEventsForApp(t, s, "app2", "", "auth", 2, 48*time.Hour)
+
+	for _, appID := range []string{"app1", "app2"} {
+		p := &retention.Policy{
+			ID:       id.NewPolicyID(),
+			Category: "auth",
+			Duration: 1 * time.Hour,
+			AppID:    appID,
+		}
+		p.CreatedAt = time.Now()
+		p.UpdatedAt = time.Now()
+		if err := s.SavePolicy(ctx, p); err != nil {
+			t.Fatalf("save policy for %s: %v", appID, err)
+		}
+	}
+
+	enforcer := retention.NewEnforcer(s, sink, nil)
+	result, err := enforcer.EnforceScope(ctx, retention.Scope{AppID: "app2"})
+	if err != nil {
+		t.Fatalf("EnforceScope: %v", err)
+	}
+
+	if result.Purged != int64(len(app2Events)) {
+		t.Errorf("purged = %d, want %d", result.Purged, len(app2Events))
+	}
+	for _, e := range app1Events {
+		if _, getErr := s.Get(ctx, e.ID); getErr != nil {
+			t.Errorf("app1 event %s purged by an app2-scoped enforce: %v", e.ID, getErr)
+		}
+	}
+}
+
+// TestEnforceDoesNotPurgeWhenArchiveFails pins that a failed archive write
+// aborts the purge, so events are never lost without a copy.
+func TestEnforceDoesNotPurgeWhenArchiveFails(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+
+	events := seedEventsForApp(t, s, "app1", "", "auth", 3, 48*time.Hour)
+
+	policy := &retention.Policy{
+		ID:       id.NewPolicyID(),
+		Category: "auth",
+		Duration: 1 * time.Hour,
+		Archive:  true,
+		AppID:    "app1",
+	}
+	policy.CreatedAt = time.Now()
+	policy.UpdatedAt = time.Now()
+	if err := s.SavePolicy(ctx, policy); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+
+	enforcer := retention.NewEnforcer(s, &failingSink{}, nil)
+	if _, err := enforcer.Enforce(ctx); err == nil {
+		t.Fatal("Enforce should surface the archive failure")
+	}
+
+	for _, e := range events {
+		if _, getErr := s.Get(ctx, e.ID); getErr != nil {
+			t.Errorf("event %s purged despite the archive write failing: %v", e.ID, getErr)
+		}
+	}
+}
+
+// failingSink fails every write, standing in for an unreachable archive target.
+type failingSink struct{}
+
+func (s *failingSink) Name() string { return "failing" }
+func (s *failingSink) Write(_ context.Context, _ []*audit.Event) error {
+	return errArchiveUnavailable
+}
+func (s *failingSink) Flush(_ context.Context) error { return nil }
+func (s *failingSink) Close() error                  { return nil }
+
+var errArchiveUnavailable = errors.New("archive target unavailable")
 
 func TestEnforceWithArchive(t *testing.T) {
 	s, sink := setupEnforcerTest(t)

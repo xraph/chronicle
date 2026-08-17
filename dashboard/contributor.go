@@ -11,11 +11,11 @@ import (
 
 	"github.com/xraph/forge/extensions/dashboard/contributor"
 
+	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/dashboard/pages"
 	"github.com/xraph/chronicle/dashboard/widgets"
-	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/store"
@@ -33,6 +33,17 @@ type Config struct {
 	RetentionInterval   time.Duration
 	EnableCryptoErasure bool
 	BasePath            string
+
+	// AllowMutations permits the dashboard's write actions: creating and
+	// deleting retention policies, running enforcement, and generating reports.
+	//
+	// Defaults to false, so the dashboard is read-only until an operator opts in.
+	// Chronicle cannot authenticate the dashboard itself — pages are rendered
+	// through Forge's dashboard extension, which owns that route — so it cannot
+	// tell an operator from anyone else who reaches the page. Enabling this
+	// asserts that the dashboard route is already protected. Enforcement here
+	// purges audit events, so the default has to be the safe one.
+	AllowMutations bool
 }
 
 // Contributor implements the dashboard LocalContributor interface for the
@@ -117,15 +128,18 @@ func (c *Contributor) RenderSettings(ctx context.Context, settingID string) (tem
 // ─── Page Renderers ──────────────────────────────────────────────────────────
 
 func (c *Contributor) renderOverview(ctx context.Context) (templ.Component, error) {
+	v := resolveScope(ctx)
+
+	counts := fetchOverviewCounts(ctx, c.store, v)
 	stats := pages.OverviewStats{
-		TotalEvents:    fetchTotalEventCount(ctx, c.store),
-		CriticalEvents: fetchCriticalEventCount(ctx, c.store),
-		FailedEvents:   fetchFailedEventCount(ctx, c.store),
-		ErasureCount:   fetchErasureCount(ctx, c.store),
+		TotalEvents:    counts.TotalEvents,
+		CriticalEvents: counts.CriticalEvents,
+		FailedEvents:   counts.FailedEvents,
+		ErasureCount:   int(counts.ErasureCount),
 	}
 
-	recentEvents := fetchRecentEvents(ctx, c.store, 10)
-	recentCritical := fetchRecentCriticalEvents(ctx, c.store, 10)
+	recentEvents := fetchRecentEvents(ctx, c.store, v, 10)
+	recentCritical := fetchRecentCriticalEvents(ctx, c.store, v, 10)
 
 	return pages.OverviewPage(stats, recentEvents, recentCritical), nil
 }
@@ -150,7 +164,7 @@ func (c *Contributor) renderEvents(ctx context.Context, params contributor.Param
 		q.Outcome = []string{outcomeFilter}
 	}
 
-	events, total, err := fetchEvents(ctx, c.store, q)
+	events, total, err := fetchEvents(ctx, c.store, resolveScope(ctx), q)
 	if err != nil {
 		events = nil
 		total = 0
@@ -182,6 +196,11 @@ func (c *Contributor) renderEventDetail(ctx context.Context, params contributor.
 	event, err := c.store.Get(ctx, eventID)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: resolve event: %w", err)
+	}
+
+	// Security-critical: an event must not be readable by ID alone.
+	if !inScope(ctx, event.AppID, event.TenantID) {
+		return nil, contributor.ErrPageNotFound
 	}
 
 	return pages.EventDetailPage(event), nil
@@ -227,6 +246,14 @@ func (c *Contributor) renderVerification(ctx context.Context, params contributor
 			}
 		}
 
+		// Security-critical: confirm the viewer owns the stream, otherwise the
+		// page reports another tenant's event count, range and integrity.
+		st, streamErr := c.store.GetStream(ctx, streamID)
+		if streamErr != nil || !inScope(ctx, st.AppID, st.TenantID) {
+			data.Error = "Stream not found"
+			return pages.VerifyPage(data), nil
+		}
+
 		verifier := verify.NewVerifier(c.store)
 		report, err := verifier.VerifyChain(ctx, &verify.Input{
 			StreamID: streamID,
@@ -247,46 +274,59 @@ func (c *Contributor) renderVerification(ctx context.Context, params contributor
 func (c *Contributor) renderReports(ctx context.Context, params contributor.Params) (templ.Component, error) {
 	data := pages.ReportsPageData{}
 
+	v := resolveScope(ctx)
+
 	// Handle report generation actions.
 	if action := params.QueryParams["action"]; action != "" {
-		now := time.Now()
-		period := compliance.DateRange{
-			From: now.AddDate(0, 0, -90),
-			To:   now,
-		}
+		switch {
+		case !c.config.AllowMutations:
+			data.Error = readOnlyMessage
 
-		var report *compliance.Report
-		var err error
+		default:
+			now := time.Now()
+			period := compliance.DateRange{
+				From: now.AddDate(0, 0, -90),
+				To:   now,
+			}
 
-		switch action {
-		case "generate_soc2":
-			report, err = c.engine.SOC2(ctx, &compliance.SOC2Input{
-				Period:      period,
-				GeneratedBy: "dashboard",
-			})
-		case "generate_hipaa":
-			report, err = c.engine.HIPAA(ctx, &compliance.HIPAAInput{
-				Period:      period,
-				GeneratedBy: "dashboard",
-			})
-		case "generate_euaiact":
-			report, err = c.engine.EUAIAct(ctx, &compliance.EUAIActInput{
-				Period:      period,
-				GeneratedBy: "dashboard",
-			})
-		}
+			var err error
 
-		if err != nil {
-			data.Error = fmt.Sprintf("Report generation failed: %v", err)
-		} else if report != nil {
-			// Save the generated report.
-			if saveErr := c.store.SaveReport(ctx, report); saveErr != nil {
-				data.Error = fmt.Sprintf("Report generated but save failed: %v", saveErr)
+			// Security-critical: the scope confines what the report aggregates.
+			// Generating unscoped produced a report describing every tenant's
+			// events, saved under an empty scope so nobody could see it again.
+			switch action {
+			case "generate_soc2":
+				_, err = c.engine.SOC2(ctx, &compliance.SOC2Input{
+					Period:      period,
+					AppID:       v.AppID,
+					TenantID:    v.TenantID,
+					GeneratedBy: "dashboard",
+				})
+			case "generate_hipaa":
+				_, err = c.engine.HIPAA(ctx, &compliance.HIPAAInput{
+					Period:      period,
+					AppID:       v.AppID,
+					TenantID:    v.TenantID,
+					GeneratedBy: "dashboard",
+				})
+			case "generate_euaiact":
+				_, err = c.engine.EUAIAct(ctx, &compliance.EUAIActInput{
+					Period:      period,
+					AppID:       v.AppID,
+					TenantID:    v.TenantID,
+					GeneratedBy: "dashboard",
+				})
+			}
+
+			// The engine persists the report itself, so saving it again here
+			// stored every dashboard-generated report twice.
+			if err != nil {
+				data.Error = fmt.Sprintf("Report generation failed: %v", err)
 			}
 		}
 	}
 
-	reports, err := fetchReports(ctx, c.store, compliance.ListOpts{Limit: 50})
+	reports, err := fetchReports(ctx, c.store, v, 50, 0)
 	if err != nil {
 		reports = nil
 	}
@@ -314,11 +354,16 @@ func (c *Contributor) renderReportDetail(ctx context.Context, params contributor
 		return nil, fmt.Errorf("dashboard: resolve report: %w", err)
 	}
 
+	// Security-critical: a report must not be readable by ID alone.
+	if !inScope(ctx, report.AppID, report.TenantID) {
+		return nil, contributor.ErrPageNotFound
+	}
+
 	return pages.ReportDetailPage(report), nil
 }
 
 func (c *Contributor) renderErasures(ctx context.Context) (templ.Component, error) {
-	erasures, err := fetchErasures(ctx, c.store, erasure.ListOpts{Limit: 50})
+	erasures, err := fetchErasures(ctx, c.store, resolveScope(ctx), 50, 0)
 	if err != nil {
 		erasures = nil
 	}
@@ -353,8 +398,17 @@ func (c *Contributor) renderErasureDetail(ctx context.Context, params contributo
 func (c *Contributor) renderRetention(ctx context.Context, params contributor.Params) (templ.Component, error) {
 	data := pages.RetentionPageData{}
 
+	v := resolveScope(ctx)
+	mutating := params.FormData["action"] == "create_policy" ||
+		params.QueryParams["action"] == "delete" ||
+		params.QueryParams["action"] == "enforce"
+
+	if mutating && !c.config.AllowMutations {
+		data.Error = readOnlyMessage
+	}
+
 	// Handle create policy form submission.
-	if params.FormData["action"] == "create_policy" {
+	if params.FormData["action"] == "create_policy" && c.config.AllowMutations {
 		category := strings.TrimSpace(params.FormData["category"])
 		durationStr := strings.TrimSpace(params.FormData["duration"])
 		archiveStr := params.FormData["archive"]
@@ -366,11 +420,18 @@ func (c *Contributor) renderRetention(ctx context.Context, params contributor.Pa
 			if err != nil {
 				data.Error = fmt.Sprintf("Invalid duration: %v", err)
 			} else {
+				// Security-critical: stamp the viewer's scope. A policy with an
+				// empty AppID matches every app in the purge query, so an
+				// unscoped policy created here would delete every tenant's
+				// audit history on the next enforcement run.
 				policy := &retention.Policy{
+					Entity:   chronicle.NewEntity(),
 					ID:       id.New(id.PrefixPolicy),
 					Category: category,
 					Duration: duration,
 					Archive:  archiveStr == "on" || archiveStr == "true",
+					AppID:    v.AppID,
+					TenantID: v.TenantID,
 				}
 				if err := c.store.SavePolicy(ctx, policy); err != nil {
 					data.Error = fmt.Sprintf("Failed to save policy: %v", err)
@@ -380,20 +441,32 @@ func (c *Contributor) renderRetention(ctx context.Context, params contributor.Pa
 	}
 
 	// Handle delete action.
-	if params.QueryParams["action"] == "delete" {
+	if params.QueryParams["action"] == "delete" && c.config.AllowMutations {
 		if delIDStr := params.QueryParams["id"]; delIDStr != "" {
 			if delID, err := id.Parse(delIDStr); err == nil {
-				if delErr := c.store.DeletePolicy(ctx, delID); delErr != nil {
-					data.Error = fmt.Sprintf("Failed to delete policy: %v", delErr)
+				// Security-critical: confirm ownership. Without this, any viewer
+				// could disable another tenant's retention by guessing an ID.
+				existing, getErr := c.store.GetPolicy(ctx, delID)
+				switch {
+				case getErr != nil:
+					data.Error = "Policy not found"
+				case !inScope(ctx, existing.AppID, existing.TenantID):
+					data.Error = "Policy not found"
+				default:
+					if delErr := c.store.DeletePolicy(ctx, delID); delErr != nil {
+						data.Error = fmt.Sprintf("Failed to delete policy: %v", delErr)
+					}
 				}
 			}
 		}
 	}
 
 	// Handle enforce action.
-	if params.QueryParams["action"] == "enforce" {
+	if params.QueryParams["action"] == "enforce" && c.config.AllowMutations {
 		if c.enforcer != nil {
-			result, err := c.enforcer.Enforce(ctx)
+			// Security-critical: run only the viewer's own policies. Enforce()
+			// covers every app and belongs to the background scheduler.
+			result, err := c.enforcer.EnforceScope(ctx, resolveScope(ctx).retention())
 			if err != nil {
 				data.Error = fmt.Sprintf("Enforcement failed: %v", err)
 			} else {
@@ -402,7 +475,7 @@ func (c *Contributor) renderRetention(ctx context.Context, params contributor.Pa
 		}
 	}
 
-	policies, err := fetchPolicies(ctx, c.store)
+	policies, err := fetchPolicies(ctx, c.store, resolveScope(ctx))
 	if err != nil {
 		policies = nil
 	}
@@ -430,11 +503,16 @@ func (c *Contributor) renderRetentionDetail(ctx context.Context, params contribu
 		return nil, fmt.Errorf("dashboard: resolve retention policy: %w", err)
 	}
 
+	// Security-critical: a policy must not be readable by ID alone.
+	if !inScope(ctx, policy.AppID, policy.TenantID) {
+		return nil, contributor.ErrPageNotFound
+	}
+
 	return pages.RetentionDetailPage(policy), nil
 }
 
 func (c *Contributor) renderArchives(ctx context.Context) (templ.Component, error) {
-	archives, err := fetchArchives(ctx, c.store, retention.ListOpts{Limit: 50})
+	archives, err := fetchArchives(ctx, c.store, resolveScope(ctx), 50, 0)
 	if err != nil {
 		archives = nil
 	}
@@ -457,17 +535,18 @@ func (c *Contributor) renderSettings(_ context.Context) (templ.Component, error)
 // ─── Widget Renderers ────────────────────────────────────────────────────────
 
 func (c *Contributor) renderStatsWidget(ctx context.Context) (templ.Component, error) {
+	counts := fetchOverviewCounts(ctx, c.store, resolveScope(ctx))
 	data := widgets.StatsData{
-		TotalEvents:    fetchTotalEventCount(ctx, c.store),
-		CriticalEvents: fetchCriticalEventCount(ctx, c.store),
-		FailedEvents:   fetchFailedEventCount(ctx, c.store),
-		ErasureCount:   fetchErasureCount(ctx, c.store),
+		TotalEvents:    counts.TotalEvents,
+		CriticalEvents: counts.CriticalEvents,
+		FailedEvents:   counts.FailedEvents,
+		ErasureCount:   int(counts.ErasureCount),
 	}
 	return widgets.StatsWidget(data), nil
 }
 
 func (c *Contributor) renderRecentEventsWidget(ctx context.Context) (templ.Component, error) {
-	events := fetchRecentEvents(ctx, c.store, 5)
+	events := fetchRecentEvents(ctx, c.store, resolveScope(ctx), 5)
 	return widgets.RecentEventsWidget(events), nil
 }
 

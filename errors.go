@@ -42,4 +42,17 @@ var (
 
 	// ErrMigrationFailed is returned when database migrations fail.
 	ErrMigrationFailed = errors.New("chronicle: migration failed")
+
+	// ErrCryptoErasureUnavailable is returned when crypto-erasure is enabled
+	// without a sealer to perform the encryption.
+	//
+	// Accepting the flag without one would store subject data as plaintext while
+	// the operator believed a key deletion made it unrecoverable. Refusing to
+	// start is the safer failure: a compliance guarantee that silently does not
+	// hold is worse than one that is explicitly unavailable.
+	ErrCryptoErasureUnavailable = errors.New(
+		"chronicle: crypto-erasure is enabled but no sealer was provided; " +
+			"pass chronicle.WithSealer(crypto.NewSealer(keyStore)) so subject " +
+			"payloads are encrypted, or disable enable_crypto_erasure",
+	)
 )

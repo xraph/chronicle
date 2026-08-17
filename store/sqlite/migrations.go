@@ -193,6 +193,94 @@ CREATE INDEX IF NOT EXISTS idx_chronicle_reports_scope ON chronicle_reports (app
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "scope_retention_to_app_and_tenant",
+			Version: "20240101000005",
+			Comment: "Key retention policies per (app_id, tenant_id, category) and scope archives",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// chronicle_retention_policies declared `category TEXT NOT NULL
+				// UNIQUE` inline, which SQLite cannot drop with ALTER TABLE, so
+				// the table is rebuilt. The INSERT names the pre-migration
+				// columns explicitly; tenant_id takes its default. Any column
+				// added to this table in a later migration must be appended to
+				// the new CREATE TABLE, never to this copy list.
+				_, err := exec.Exec(ctx, `
+CREATE TABLE chronicle_retention_policies_new (
+    id          TEXT PRIMARY KEY,
+    category    TEXT NOT NULL,
+    duration    INTEGER NOT NULL,
+    archive     INTEGER NOT NULL DEFAULT 0,
+    app_id      TEXT NOT NULL DEFAULT '',
+    tenant_id   TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(app_id, tenant_id, category)
+);
+
+INSERT INTO chronicle_retention_policies_new
+    (id, category, duration, archive, app_id, created_at, updated_at)
+SELECT id, category, duration, archive, app_id, created_at, updated_at
+FROM chronicle_retention_policies;
+
+DROP TABLE chronicle_retention_policies;
+
+ALTER TABLE chronicle_retention_policies_new RENAME TO chronicle_retention_policies;
+
+ALTER TABLE chronicle_archives ADD COLUMN app_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE chronicle_archives ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_chronicle_archives_scope
+    ON chronicle_archives (app_id, tenant_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_chronicle_events_retention
+    ON chronicle_events (app_id, tenant_id, category, timestamp);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_chronicle_events_retention;
+DROP INDEX IF EXISTS idx_chronicle_archives_scope;
+
+CREATE TABLE chronicle_archives_old (
+    id              TEXT PRIMARY KEY,
+    policy_id       TEXT NOT NULL,
+    category        TEXT NOT NULL,
+    event_count     INTEGER NOT NULL,
+    from_timestamp  TEXT NOT NULL,
+    to_timestamp    TEXT NOT NULL,
+    sink_name       TEXT NOT NULL,
+    sink_ref        TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO chronicle_archives_old
+    (id, policy_id, category, event_count, from_timestamp, to_timestamp, sink_name, sink_ref, created_at)
+SELECT id, policy_id, category, event_count, from_timestamp, to_timestamp, sink_name, sink_ref, created_at
+FROM chronicle_archives;
+DROP TABLE chronicle_archives;
+ALTER TABLE chronicle_archives_old RENAME TO chronicle_archives;
+
+CREATE TABLE chronicle_retention_policies_old (
+    id          TEXT PRIMARY KEY,
+    category    TEXT NOT NULL UNIQUE,
+    duration    INTEGER NOT NULL,
+    archive     INTEGER NOT NULL DEFAULT 0,
+    app_id      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO chronicle_retention_policies_old
+    (id, category, duration, archive, app_id, created_at, updated_at)
+SELECT id, category, duration, archive, app_id, created_at, updated_at
+FROM chronicle_retention_policies
+GROUP BY category;
+DROP TABLE chronicle_retention_policies;
+ALTER TABLE chronicle_retention_policies_old RENAME TO chronicle_retention_policies;
+`)
+				return err
+			},
+		},
 	)
 	return g
 }()

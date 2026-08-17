@@ -48,10 +48,23 @@ type Report struct {
 
 // Section is a part of a compliance report.
 type Section struct {
-	Title  string                 `json:"title"`
-	Events []*audit.Event         `json:"events,omitempty"`
-	Stats  *audit.AggregateResult `json:"stats,omitempty"`
-	Notes  string                 `json:"notes,omitempty"`
+	Title string `json:"title"`
+
+	// Events is the evidence listing. It is capped at MaxSectionEvents, so it
+	// may be a sample rather than the full set — check EventsTruncated.
+	Events []*audit.Event `json:"events,omitempty"`
+
+	// MatchedEvents is how many events matched this section's filters,
+	// regardless of how many are embedded above.
+	MatchedEvents int64 `json:"matched_events"`
+
+	// EventsTruncated reports that Events is a sample of MatchedEvents.
+	// A report that silently truncated its evidence would read as complete
+	// when it was not.
+	EventsTruncated bool `json:"events_truncated"`
+
+	Stats *audit.AggregateResult `json:"stats,omitempty"`
+	Notes string                 `json:"notes,omitempty"`
 }
 
 // Stats holds summary statistics for a report.
@@ -62,8 +75,15 @@ type Stats struct {
 	DeniedEvents   int64 `json:"denied_events"`
 }
 
-// ListOpts defines pagination options for listing reports.
+// ListOpts defines pagination and scope options for listing reports.
+//
+// Scope is applied by the store, before LIMIT/OFFSET. Filtering after
+// pagination returned an empty page whenever another tenant's reports filled
+// the first page.
 type ListOpts struct {
+	AppID    string
+	TenantID string
+
 	Limit  int
 	Offset int
 }
@@ -76,7 +96,7 @@ type ReportStore interface {
 	// GetReport returns a report by ID.
 	GetReport(ctx context.Context, reportID id.ID) (*Report, error)
 
-	// ListReports returns reports, optionally filtered.
+	// ListReports returns reports matching opts, scoped before pagination.
 	ListReports(ctx context.Context, opts ListOpts) ([]*Report, error)
 
 	// DeleteReport removes a report.

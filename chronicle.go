@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	log "github.com/xraph/go-utils/log"
@@ -54,6 +55,17 @@ type Storer interface {
 	Close() error
 }
 
+// EventSealer encrypts an event's personal payload before the event is hashed
+// and stored, and is what makes crypto-erasure possible: destroying the
+// subject's key leaves the payload unrecoverable.
+//
+// crypto.Sealer implements this. It is an interface here so the root package
+// does not import crypto, which imports this package for its error sentinels.
+type EventSealer interface {
+	// Seal encrypts the event's personal payload in place.
+	Seal(event *audit.Event) error
+}
+
 // Compile-time check: Chronicle implements Emitter.
 var _ Emitter = (*Chronicle)(nil)
 
@@ -64,7 +76,38 @@ type Chronicle struct {
 	config Config
 	store  Storer
 	hasher *hash.Chain
+	sealer EventSealer
 	logger log.Logger
+
+	// streamLocks serialises the hash-chain critical section per stream scope.
+	// See Record for why this is required.
+	streamLocks sync.Map // map[string]*sync.Mutex, keyed by appID + "\x00" + tenantID
+}
+
+// lockStream serialises appends to one app+tenant stream and returns the unlock
+// function.
+//
+// Linking an event into the chain is a read-modify-write over the stream head:
+// read the head hash, derive the new hash from it, append, then advance the
+// head. Two goroutines interleaving there both read the same head and produce
+// two events claiming the same predecessor, which makes VerifyChain report
+// tampering on a healthy log.
+//
+// The key is the stream's scope, so unrelated tenants never contend. Entries are
+// retained for the process lifetime: they are two words each, bounded by the
+// number of active scopes, and dropping one while a waiter held it would
+// reintroduce the race.
+//
+// This guards a single process. Deployments running several replicas against one
+// database also rely on the store's own transaction: the SQL backends re-derive
+// the sequence and the previous hash while holding a row lock on the stream, so
+// the chain stays linked even across processes.
+func (c *Chronicle) lockStream(appID, tenantID string) func() {
+	key := appID + "\x00" + tenantID
+	actual, _ := c.streamLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := actual.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // Health checks the health of the Chronicle by pinging its store.
@@ -87,6 +130,12 @@ func New(opts ...Option) (*Chronicle, error) {
 		if err := opt(c); err != nil {
 			return nil, err
 		}
+	}
+
+	// Checked after every option has run, because the flag and the sealer can be
+	// supplied in either order.
+	if c.config.EnableCryptoErasure && c.sealer == nil {
+		return nil, ErrCryptoErasureUnavailable
 	}
 
 	return c, nil
@@ -116,13 +165,33 @@ func (c *Chronicle) Record(ctx context.Context, event *audit.Event) error {
 		return err
 	}
 
+	// 3a. Seal the subject's personal payload before anything hashes it.
+	//
+	// Order is critical: the hash must cover the stored (encrypted) bytes. If it
+	// covered the plaintext, destroying a subject's key would leave every one of
+	// their events unverifiable, and a healthy chain would report tampering.
+	if c.sealer != nil {
+		if err := c.sealer.Seal(event); err != nil {
+			return fmt.Errorf("chronicle: seal event: %w", err)
+		}
+	}
+
+	// Steps 4 through 7 are one critical section: reading the stream head,
+	// deriving this event's hash from it, appending, and advancing the head must
+	// not interleave with another append to the same stream, or two events end
+	// up sharing a prev_hash and the chain verifies as tampered.
+	unlock := c.lockStream(event.AppID, event.TenantID)
+	defer unlock()
+
 	// 4. Resolve or create stream for this app+tenant scope.
 	s, err := c.resolveStream(ctx, event.AppID, event.TenantID)
 	if err != nil {
 		return fmt.Errorf("chronicle: resolve stream: %w", err)
 	}
 
-	// 5. Compute hash chain.
+	// 5. Compute hash chain. Backends that can hold a row lock re-derive the
+	// sequence and prev_hash inside their append transaction and overwrite these,
+	// which is what keeps the chain linked across replicas.
 	event.StreamID = s.ID
 	event.Sequence = s.HeadSeq + 1
 	event.PrevHash = s.HeadHash
@@ -133,12 +202,29 @@ func (c *Chronicle) Record(ctx context.Context, event *audit.Event) error {
 		return fmt.Errorf("chronicle: append: %w", err)
 	}
 
-	// 7. Update stream head.
+	// 7. Update stream head. Read back from the event: a store that re-linked
+	// under its own lock has updated these in place.
 	if err := c.store.UpdateStreamHead(ctx, s.ID, event.Hash, event.Sequence); err != nil {
 		return fmt.Errorf("chronicle: update stream head: %w", err)
 	}
 
 	return nil
+}
+
+// StoredReader is implemented by stores that decrypt on read, to expose the
+// stored representation that hash verification requires.
+type StoredReader interface {
+	// GetStored returns an event exactly as persisted, without decrypting.
+	GetStored(ctx context.Context, eventID id.ID) (*audit.Event, error)
+}
+
+// getStored fetches an event in its stored form, falling back to Get for stores
+// that never transform events on read.
+func getStored(ctx context.Context, s Storer, eventID id.ID) (*audit.Event, error) {
+	if sr, ok := s.(StoredReader); ok {
+		return sr.GetStored(ctx, eventID)
+	}
+	return s.Get(ctx, eventID)
 }
 
 // resolveStream gets or creates the hash chain stream for an app+tenant scope.
@@ -170,13 +256,17 @@ func (c *Chronicle) VerifyEvent(ctx context.Context, eventID id.ID) (bool, error
 		return false, ErrNoStore
 	}
 
-	event, err := c.store.Get(ctx, eventID)
+	// Read the stored form. A store that decrypts on read would hand back
+	// plaintext, which no longer matches the digest computed over the sealed
+	// bytes, and every sealed event would look tampered.
+	event, err := getStored(ctx, c.store, eventID)
 	if err != nil {
 		return false, err
 	}
 
-	computed := c.hasher.Compute(event.PrevHash, event)
-	return computed == event.Hash, nil
+	// Verify accepts the legacy hash scheme too, so events written before the
+	// hash coverage was extended are not all reported as tampered.
+	return c.hasher.Verify(event.PrevHash, event), nil
 }
 
 // VerifyChain verifies the integrity of a hash chain for a stream.

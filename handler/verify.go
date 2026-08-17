@@ -39,6 +39,24 @@ func (a *API) verifyChain(ctx forge.Context, req *VerifyChainRequest) (*verify.R
 		))
 	defer span.End()
 
+	// Security-critical: confirm the caller owns the stream. Without this, any
+	// caller could verify another tenant's chain, learning its event count,
+	// sequence range and integrity status.
+	if a.deps.StreamStore == nil {
+		return nil, forge.NewHTTPError(
+			http.StatusServiceUnavailable,
+			"stream store not configured; chain verification cannot confirm stream ownership",
+		)
+	}
+
+	st, err := a.deps.StreamStore.GetStream(c, streamID)
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
+	if !ownedByCaller(c, st.AppID, st.TenantID) {
+		return nil, forge.NotFound("stream not found")
+	}
+
 	input := &verify.Input{
 		StreamID: streamID,
 		FromSeq:  req.FromSeq,
@@ -52,5 +70,5 @@ func (a *API) verifyChain(ctx forge.Context, req *VerifyChainRequest) (*verify.R
 		return nil, fmt.Errorf("verify chain: %w", err)
 	}
 
-	return report, ctx.JSON(http.StatusOK, report)
+	return report, nil
 }

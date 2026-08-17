@@ -32,23 +32,35 @@ func (s *Store) GetErasure(ctx context.Context, erasureID id.ID) (*erasure.Erasu
 	return e, nil
 }
 
-// ListErasures returns erasure records with pagination.
+// ListErasures returns erasure records matching opts, scoped before pagination.
 func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*erasure.Erasure, error) {
 	var models []ErasureModel
-	err := s.pg.NewSelect(&models).
-		OrderExpr("er.created_at DESC").
-		Limit(opts.Limit).
-		Offset(opts.Offset).
-		Scan(ctx)
-	if err != nil {
+	q := s.pg.NewSelect(&models)
+
+	if opts.AppID != "" {
+		q.Where("er.app_id = ?", opts.AppID)
+	}
+	if opts.TenantID != "" {
+		q.Where("er.tenant_id = ?", opts.TenantID)
+	}
+
+	q = q.OrderExpr("er.created_at DESC")
+	if opts.Limit > 0 {
+		q = q.Limit(opts.Limit)
+	}
+	if opts.Offset > 0 {
+		q = q.Offset(opts.Offset)
+	}
+
+	if err := q.Scan(ctx); err != nil {
 		return nil, err
 	}
 
 	erasures := make([]*erasure.Erasure, 0, len(models))
 	for i := range models {
-		e, err := toErasure(&models[i])
-		if err != nil {
-			return nil, err
+		e, convErr := toErasure(&models[i])
+		if convErr != nil {
+			return nil, convErr
 		}
 		erasures = append(erasures, e)
 	}
@@ -56,22 +68,55 @@ func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*era
 	return erasures, nil
 }
 
-// CountBySubject returns the number of events for a subject.
-func (s *Store) CountBySubject(ctx context.Context, subjectID string) (int64, error) {
-	count, err := s.pg.NewSelect((*EventModel)(nil)).
-		Where("subject_id = ?", subjectID).
-		Count(ctx)
-	return count, err
+// CountErasures returns the number of erasure records in the given scope.
+func (s *Store) CountErasures(ctx context.Context, sc erasure.Scope) (int64, error) {
+	q := s.pg.NewSelect((*ErasureModel)(nil))
+	if sc.AppID != "" {
+		q.Where("er.app_id = ?", sc.AppID)
+	}
+	if sc.TenantID != "" {
+		q.Where("er.tenant_id = ?", sc.TenantID)
+	}
+	return q.Count(ctx)
 }
 
-// MarkErased updates events to show [ERASED] for a given subject.
-func (s *Store) MarkErased(ctx context.Context, subjectID string, erasureID id.ID) (int64, error) {
-	result, err := s.pg.NewUpdate((*EventModel)(nil)).
+// CountBySubject returns the number of events for a subject within the query's
+// scope.
+//
+// Security-critical: without the scope filter this reveals how many events other
+// tenants hold on the subject.
+func (s *Store) CountBySubject(ctx context.Context, sq erasure.SubjectQuery) (int64, error) {
+	q := s.pg.NewSelect((*EventModel)(nil)).Where("subject_id = ?", sq.SubjectID)
+	if sq.AppID != "" {
+		q.Where("app_id = ?", sq.AppID)
+	}
+	if sq.TenantID != "" {
+		q.Where("tenant_id = ?", sq.TenantID)
+	}
+	return q.Count(ctx)
+}
+
+// MarkErased flags a subject's events as erased within the query's scope.
+//
+// Security-critical: without the scope filter any caller could flag every
+// tenant's events for a guessed subject ID.
+func (s *Store) MarkErased(
+	ctx context.Context, sq erasure.SubjectQuery, erasureID id.ID,
+) (int64, error) {
+	q := s.pg.NewUpdate((*EventModel)(nil)).
 		Set("erased = true").
 		Set("erased_at = NOW()").
 		Set("erasure_id = ?", erasureID.String()).
-		Where("subject_id = ?", subjectID).
-		Exec(ctx)
+		Where("subject_id = ?", sq.SubjectID)
+
+	if sq.AppID != "" {
+		q.Where("app_id = ?", sq.AppID)
+	}
+	if sq.TenantID != "" {
+		q.Where("tenant_id = ?", sq.TenantID)
+	}
+
+	result, err := q.Exec(ctx)
 	if err != nil {
 		return 0, err
 	}

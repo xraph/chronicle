@@ -25,8 +25,9 @@ type Batcher struct {
 	flushFn       FlushFunc
 	logger        log.Logger
 
-	stopCh chan struct{}
-	doneCh chan struct{}
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // New creates a new Batcher.
@@ -50,35 +51,64 @@ func (b *Batcher) Start() {
 	go b.run()
 }
 
-// Add adds an event to the batch buffer. If the batch is full, it flushes immediately.
+// Add adds an event to the batch buffer. If the batch is full, it flushes
+// immediately.
+//
+// A failed flush leaves the events buffered so a later flush can retry, rather
+// than dropping audit records because the store was briefly unavailable.
 func (b *Batcher) Add(ctx context.Context, event *audit.Event) error {
 	b.mu.Lock()
 	b.buffer = append(b.buffer, event)
-	if len(b.buffer) >= b.batchSize {
-		batch := b.buffer
-		b.buffer = make([]*audit.Event, 0, b.batchSize)
-		b.mu.Unlock()
-		return b.flush(ctx, batch)
-	}
+	full := len(b.buffer) >= b.batchSize
 	b.mu.Unlock()
+
+	if !full {
+		return nil
+	}
+	return b.Flush(ctx)
+}
+
+// Flush writes any buffered events. The buffer is only cleared once flushFn
+// succeeds, so a failure can be retried without losing the batch.
+func (b *Batcher) Flush(ctx context.Context) error {
+	b.mu.Lock()
+	batch := b.buffer
+	b.mu.Unlock()
+
+	if len(batch) == 0 {
+		return nil
+	}
+
+	if err := b.flushFn(ctx, batch); err != nil {
+		return err
+	}
+
+	// Drop only what was written; Add may have appended more meanwhile.
+	b.mu.Lock()
+	b.buffer = b.buffer[len(batch):]
+	b.mu.Unlock()
+
 	return nil
 }
 
-// Stop signals the batcher to stop and flushes remaining events.
-func (b *Batcher) Stop(ctx context.Context) error {
-	close(b.stopCh)
-	<-b.doneCh
-
-	// Final flush of remaining events.
+// Pending reports how many events are buffered.
+func (b *Batcher) Pending() int {
 	b.mu.Lock()
-	batch := b.buffer
-	b.buffer = nil
-	b.mu.Unlock()
+	defer b.mu.Unlock()
+	return len(b.buffer)
+}
 
-	if len(batch) > 0 {
-		return b.flush(ctx, batch)
-	}
-	return nil
+// Stop signals the batcher to stop and flushes remaining events.
+//
+// Safe to call more than once: a caller that both defers Stop and calls it on
+// the shutdown path used to panic here, because stopCh was closed twice.
+func (b *Batcher) Stop(ctx context.Context) error {
+	b.stopOnce.Do(func() {
+		close(b.stopCh)
+		<-b.doneCh
+	})
+
+	return b.Flush(ctx)
 }
 
 func (b *Batcher) run() {
@@ -90,16 +120,7 @@ func (b *Batcher) run() {
 	for {
 		select {
 		case <-ticker.C:
-			b.mu.Lock()
-			if len(b.buffer) == 0 {
-				b.mu.Unlock()
-				continue
-			}
-			batch := b.buffer
-			b.buffer = make([]*audit.Event, 0, b.batchSize)
-			b.mu.Unlock()
-
-			if err := b.flush(context.Background(), batch); err != nil {
+			if err := b.Flush(context.Background()); err != nil {
 				b.logger.Error("batcher interval flush error",
 					log.String("error", err.Error()),
 				)
@@ -108,11 +129,4 @@ func (b *Batcher) run() {
 			return
 		}
 	}
-}
-
-func (b *Batcher) flush(ctx context.Context, batch []*audit.Event) error {
-	if len(batch) == 0 {
-		return nil
-	}
-	return b.flushFn(ctx, batch)
 }

@@ -8,14 +8,14 @@ Chronicle is a production-grade audit trail library that records every event int
 ## Features
 
 - **Hash chain integrity** — Every event is linked by SHA-256 hashes. Tampering breaks the chain.
-- **GDPR crypto-erasure** — Per-subject AES-256-GCM encryption. Delete the key, the data becomes irrecoverable, but the hash chain stays intact.
+- **GDPR crypto-erasure** — Per-subject AES-256-GCM encryption of the personal payload. Destroy the key and it is irrecoverable, while the operational record and the hash chain stay intact and verifiable.
 - **Multi-tenant scoping** — Events are automatically scoped to app + tenant from context. Cross-tenant queries are impossible.
 - **Compliance reports** — Generate SOC2 Type II, HIPAA, EU AI Act, and custom reports. Export to JSON, CSV, Markdown, or HTML.
 - **Pluggable stores** — Postgres (pgx), Grove ORM, SQLite, Redis (cache layer), and in-memory (testing).
 - **Pluggable sinks** — Fire-and-forget event outputs (stdout, file, S3, custom). Sinks never block the pipeline.
 - **Plugin system** — BeforeRecord enrichment, AfterRecord notification, SinkProvider, AlertHandler, and more.
 - **Retention policies** — Automatic archival and purge with configurable schedules.
-- **Admin HTTP API** — 21 endpoints for events, verification, erasure, retention, compliance, and stats.
+- **Admin HTTP API** — 21 endpoints for events, verification, erasure, retention, compliance, and stats, guarded per operation class (read / write / admin).
 - **Forge integration** — Drop-in extension for the Forge framework with DI-injected Emitter.
 - **Type-safe IDs** — TypeID-based identifiers (`audit_01h2x...`, `stream_01h2x...`).
 
@@ -240,8 +240,15 @@ Chronicle ships as a Forge extension with full lifecycle management:
 ```go
 ext := extension.New(
     extension.WithBatchSize(100),
-    extension.WithCryptoErasure(true),
+    extension.WithCryptoErasure(false),  // see note below: not implemented yet
     extension.WithRetentionInterval(24 * time.Hour),
+
+    // Required: the admin API can purge audit history.
+    extension.WithAuth("jwt",
+        []string{"chronicle:read"},   // observe events, reports, policies
+        []string{"chronicle:write"},  // save policies, generate reports
+        []string{"chronicle:admin"},  // enforce retention, delete policies, erase
+    ),
 )
 
 ext.Init(ctx, store)  // runs migrations, wires components
@@ -256,6 +263,59 @@ emitter.Info(ctx, "login", "session", "sess-1").Category("auth").Record()
 mux.Handle("/", ext.Routes())
 ```
 
+### API authentication
+
+The admin API exposes operations that permanently destroy audit data:
+`POST /v1/retention/enforce` purges events, `DELETE /v1/retention/:id` disables
+retention, and `POST /v1/erasures` cannot be undone. Chronicle's per-request
+scope check keeps tenants out of each other's data, but it does not gate these
+operations, so the extension refuses to start until you decide who may call them.
+
+Pick one:
+
+```yaml
+chronicle:
+  auth:
+    provider: jwt                      # a registered forge auth provider
+    read_scopes:  [chronicle:read]
+    write_scopes: [chronicle:write]
+    admin_scopes: [chronicle:admin]
+```
+
+```yaml
+chronicle:
+  auth:
+    allow_unauthenticated: true        # something upstream already authenticates
+```
+
+```yaml
+chronicle:
+  disable_routes: true                 # do not mount the API at all
+```
+
+Routes are graded by blast radius. `read` observes; `write` creates records that
+destroy nothing (saving a policy, generating a report); `admin` covers the
+irreversible operations. A token that can read events cannot purge them.
+
+Note that forge's `WithAuth` route options only annotate the OpenAPI spec — they
+are not enforced at request time in forge v1.9.5. Chronicle enforces with the
+auth registry's middleware and uses those options for documentation only.
+
+### Dashboard
+
+The Forge dashboard pages are read-only by default. Chronicle cannot authenticate
+the dashboard route (Forge's dashboard extension owns it), so creating and
+deleting retention policies, running enforcement, and generating reports are
+disabled until you assert that the route is already protected:
+
+```yaml
+chronicle:
+  dashboard_mutations: true
+```
+
+Dashboard reads are always tenant-scoped, and dashboard enforcement only runs the
+viewing tenant's own policies.
+
 ## Configuration
 
 ```go
@@ -264,9 +324,50 @@ c, _ := chronicle.New(
     chronicle.WithLogger(logger),             // slog.Logger (default: slog.Default)
     chronicle.WithBatchSize(100),             // max events before flush
     chronicle.WithFlushInterval(time.Second), // max time between flushes
-    chronicle.WithCryptoErasure(true),        // enable GDPR crypto-erasure
+    chronicle.WithCryptoErasure(false),       // see note below
 )
 ```
+
+### Crypto-erasure
+
+Enabling it requires a key store, because the key store's durability decides
+whether sealed events can ever be read again:
+
+```go
+c, _ := chronicle.New(
+    chronicle.WithStore(adapter),
+    chronicle.WithCryptoErasure(true),
+    chronicle.WithSealer(crypto.NewSealer(keyStore)),
+)
+```
+
+Under the Forge extension, `extension.WithKeyStore(...)` supplies it and the
+store is wrapped automatically so reads come back decrypted.
+
+**What is encrypted:** `Metadata`, `Reason` and `IP`, keyed per subject, for any
+event carrying a `SubjectID`.
+
+**What is not, and why:** `SubjectID` stays readable because it is the lookup key
+used to find a subject's events in order to erase them and to prove afterwards
+that they were erased. `UserID` stays readable because it identifies the *actor*
+rather than the data subject, and `ByUser` depends on it. `Action`, `Resource`,
+`Category`, `Outcome`, `Severity`, `ResourceID` and the timestamps stay readable
+because they are the operational record that must outlive an erasure, and queries
+and compliance reports group on them.
+
+So an erasure destroys what was recorded *about* a subject, not the fact that an
+event involving them occurred. Read the guarantee as exactly that.
+
+**Why the chain survives:** the digest is computed over the encrypted bytes, not
+the plaintext. Destroying a key therefore changes nothing the verifier reads. Had
+the hash covered plaintext, every erased event would have reported as tampered.
+The corollary is that verification paths (`EventRange`, `VerifyEvent`) read the
+stored form while display paths (`Get`, `Query`, `ByUser`) return decrypted
+copies. Retention archives the sealed bytes, so cold storage never holds
+plaintext an erasure was meant to destroy.
+
+Once a key is gone, sealed fields read back as `[ERASED]`, metadata is dropped,
+and the event reports `Erased: true`.
 
 | Option | Default |
 |--------|---------|

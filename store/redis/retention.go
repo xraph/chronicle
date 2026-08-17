@@ -21,6 +21,7 @@ type policyModel struct {
 	Duration  int64     `json:"duration"` // nanoseconds
 	Archive   bool      `json:"archive"`
 	AppID     string    `json:"app_id"`
+	TenantID  string    `json:"tenant_id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -32,6 +33,7 @@ func toPolicyModel(p *retention.Policy) *policyModel {
 		Duration:  int64(p.Duration),
 		Archive:   p.Archive,
 		AppID:     p.AppID,
+		TenantID:  p.TenantID,
 		CreatedAt: p.CreatedAt,
 		UpdatedAt: p.UpdatedAt,
 	}
@@ -52,6 +54,7 @@ func fromPolicyModel(m *policyModel) (*retention.Policy, error) {
 		Duration: time.Duration(m.Duration),
 		Archive:  m.Archive,
 		AppID:    m.AppID,
+		TenantID: m.TenantID,
 	}, nil
 }
 
@@ -65,6 +68,8 @@ type archiveModel struct {
 	ToTimestamp   time.Time `json:"to_timestamp"`
 	SinkName      string    `json:"sink_name"`
 	SinkRef       string    `json:"sink_ref"`
+	AppID         string    `json:"app_id"`
+	TenantID      string    `json:"tenant_id"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
@@ -78,6 +83,8 @@ func toArchiveModel(a *retention.Archive) *archiveModel {
 		ToTimestamp:   a.ToTimestamp,
 		SinkName:      a.SinkName,
 		SinkRef:       a.SinkRef,
+		AppID:         a.AppID,
+		TenantID:      a.TenantID,
 		CreatedAt:     a.CreatedAt,
 	}
 }
@@ -103,18 +110,23 @@ func fromArchiveModel(m *archiveModel) (*retention.Archive, error) {
 		ToTimestamp:   m.ToTimestamp,
 		SinkName:      m.SinkName,
 		SinkRef:       m.SinkRef,
+		AppID:         m.AppID,
+		TenantID:      m.TenantID,
 	}, nil
 }
 
-// SavePolicy persists a retention policy (upsert by category).
+// SavePolicy persists a retention policy, replacing any existing policy for the
+// same (app, tenant, category).
+//
+// The uniqueness key includes the owning scope. Keying on category alone let a
+// save from one app evict another app's policy for that category.
 func (s *Store) SavePolicy(ctx context.Context, p *retention.Policy) error {
 	m := toPolicyModel(p)
 
-	// Check if a policy for this category already exists.
-	catKey := uniquePolicyCategory + m.Category
-	existingID, err := s.rdb.Get(ctx, catKey).Result()
+	scopeKey := policyScopeKey(m.AppID, m.TenantID, m.Category)
+	existingID, err := s.rdb.Get(ctx, scopeKey).Result()
 	if err == nil && existingID != "" && existingID != m.ID {
-		// Remove the old policy.
+		// Replace this scope's previous policy for the category.
 		s.rdb.Del(ctx, entityKey(prefixPolicy, existingID))
 		s.rdb.ZRem(ctx, zPolicyAll, existingID)
 	}
@@ -126,12 +138,16 @@ func (s *Store) SavePolicy(ctx context.Context, p *retention.Policy) error {
 
 	pipe := s.rdb.Pipeline()
 	pipe.ZAdd(ctx, zPolicyAll, goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
-	pipe.Set(ctx, catKey, m.ID, 0)
-	_, err = pipe.Exec(ctx)
-	if err != nil {
+	pipe.Set(ctx, scopeKey, m.ID, 0)
+	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("chronicle/redis: save policy indexes: %w", err)
 	}
 	return nil
+}
+
+// policyScopeKey builds the per-scope uniqueness key for a policy category.
+func policyScopeKey(appID, tenantID, category string) string {
+	return uniquePolicyScope + appID + ":" + tenantID + ":" + category
 }
 
 // GetPolicy returns a retention policy by ID.
@@ -146,8 +162,11 @@ func (s *Store) GetPolicy(ctx context.Context, policyID id.ID) (*retention.Polic
 	return fromPolicyModel(&m)
 }
 
-// ListPolicies returns all retention policies.
-func (s *Store) ListPolicies(ctx context.Context) ([]*retention.Policy, error) {
+// ListPolicies returns retention policies matching opts, scoped before
+// pagination so a caller's own rows are never hidden behind another tenant's.
+func (s *Store) ListPolicies(
+	ctx context.Context, opts retention.ListPoliciesOpts,
+) ([]*retention.Policy, error) {
 	ids, err := s.rdb.ZRevRange(ctx, zPolicyAll, 0, -1).Result()
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: list policies: %w", err)
@@ -156,20 +175,26 @@ func (s *Store) ListPolicies(ctx context.Context) ([]*retention.Policy, error) {
 	result := make([]*retention.Policy, 0, len(ids))
 	for _, entryID := range ids {
 		var m policyModel
-		if err := s.getEntity(ctx, entityKey(prefixPolicy, entryID), &m); err != nil {
-			if isNotFound(err) {
+		if getErr := s.getEntity(ctx, entityKey(prefixPolicy, entryID), &m); getErr != nil {
+			if isNotFound(getErr) {
 				continue
 			}
-			return nil, err
+			return nil, getErr
 		}
-		p, err := fromPolicyModel(&m)
-		if err != nil {
-			return nil, err
+		if opts.AppID != "" && m.AppID != opts.AppID {
+			continue
+		}
+		if opts.TenantID != "" && m.TenantID != opts.TenantID {
+			continue
+		}
+		p, convErr := fromPolicyModel(&m)
+		if convErr != nil {
+			return nil, convErr
 		}
 		result = append(result, p)
 	}
 
-	return result, nil
+	return applyPagination(result, opts.Offset, opts.Limit), nil
 }
 
 // DeletePolicy removes a retention policy.
@@ -190,7 +215,7 @@ func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
 
 	pipe := s.rdb.Pipeline()
 	pipe.ZRem(ctx, zPolicyAll, m.ID)
-	pipe.Del(ctx, uniquePolicyCategory+m.Category)
+	pipe.Del(ctx, policyScopeKey(m.AppID, m.TenantID, m.Category))
 	_, err := pipe.Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("chronicle/redis: delete policy indexes: %w", err)
@@ -198,30 +223,62 @@ func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
 	return nil
 }
 
-// EventsOlderThan returns events older than a given time for a category.
-func (s *Store) EventsOlderThan(ctx context.Context, category string, before time.Time) ([]*audit.Event, error) {
-	maxScore := scoreFromTime(before)
-	ids, err := s.zRangeByScoreIDs(ctx, zEventCategory+category, math.Inf(-1), maxScore)
+// EventsOlderThan returns the events the purge query selects.
+//
+// Security-critical: the scope filter is what keeps one tenant's policy from
+// selecting, and therefore purging, every tenant's history. The bound keeps a
+// large backlog from being loaded into memory all at once.
+func (s *Store) EventsOlderThan(
+	ctx context.Context, pq retention.PurgeQuery,
+) ([]*audit.Event, error) {
+	maxScore := scoreFromTime(pq.Before)
+
+	// Prefer the narrowest index available for the query.
+	zKey := zEventAll
+	switch {
+	case pq.AppID != "" && pq.TenantID != "":
+		zKey = zEventScope + pq.AppID + ":" + pq.TenantID
+	case pq.AppID != "":
+		zKey = zEventApp + pq.AppID
+	case pq.Category != "*":
+		zKey = zEventCategory + pq.Category
+	}
+
+	ids, err := s.zRangeByScoreIDs(ctx, zKey, math.Inf(-1), maxScore)
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: events older than: %w", err)
 	}
 
+	limit := pq.EffectiveLimit()
+
 	events := make([]*audit.Event, 0, len(ids))
 	for _, eid := range ids {
+		if limit > 0 && len(events) == limit {
+			break
+		}
+
 		var m eventModel
-		if err := s.getEntity(ctx, entityKey(prefixEvent, eid), &m); err != nil {
-			if isNotFound(err) {
+		if getErr := s.getEntity(ctx, entityKey(prefixEvent, eid), &m); getErr != nil {
+			if isNotFound(getErr) {
 				continue
 			}
-			return nil, err
+			return nil, getErr
 		}
-		// Double-check category and time filter.
-		if m.Category != category || !m.Timestamp.Before(before) {
+		if !m.Timestamp.Before(pq.Before) {
 			continue
 		}
-		evt, err := fromEventModel(&m)
-		if err != nil {
-			return nil, err
+		if pq.Category != "*" && m.Category != pq.Category {
+			continue
+		}
+		if pq.AppID != "" && m.AppID != pq.AppID {
+			continue
+		}
+		if pq.TenantID != "" && m.TenantID != pq.TenantID {
+			continue
+		}
+		evt, convErr := fromEventModel(&m)
+		if convErr != nil {
+			return nil, convErr
 		}
 		events = append(events, evt)
 	}
@@ -258,6 +315,7 @@ func (s *Store) PurgeEvents(ctx context.Context, eventIDs []id.ID) (int64, error
 		pipe.ZRem(ctx, zEventAll, m.ID)
 		pipe.ZRem(ctx, zEventStream+m.StreamID, m.ID)
 		pipe.ZRem(ctx, zEventScope+m.AppID+":"+m.TenantID, m.ID)
+		pipe.ZRem(ctx, zEventApp+m.AppID, m.ID)
 		if m.Category != "" {
 			pipe.ZRem(ctx, zEventCategory+m.Category, m.ID)
 		}
@@ -306,9 +364,15 @@ func (s *Store) ListArchives(ctx context.Context, opts retention.ListOpts) ([]*r
 			}
 			return nil, err
 		}
-		a, err := fromArchiveModel(&m)
-		if err != nil {
-			return nil, err
+		if opts.AppID != "" && m.AppID != opts.AppID {
+			continue
+		}
+		if opts.TenantID != "" && m.TenantID != opts.TenantID {
+			continue
+		}
+		a, convErr := fromArchiveModel(&m)
+		if convErr != nil {
+			return nil, convErr
 		}
 		result = append(result, a)
 	}

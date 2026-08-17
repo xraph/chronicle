@@ -35,6 +35,7 @@ type EventsByUserRequest struct {
 	UserID string `path:"userId" description:"User ID"`
 	After  string `query:"after" optional:"true" description:"Events after this time (RFC3339)"`
 	Before string `query:"before" optional:"true" description:"Events before this time (RFC3339)"`
+	Limit  int    `query:"limit" optional:"true" description:"Maximum events to return"`
 }
 
 // ──────────────────────────────────────────────────
