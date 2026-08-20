@@ -2,10 +2,10 @@ package dashboard
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/xraph/forge"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/compliance"
@@ -95,26 +95,29 @@ type overviewCounts struct {
 func fetchOverviewCounts(ctx context.Context, s store.Store, v viewScope) overviewCounts {
 	var counts overviewCounts
 
-	g, gctx := errgroup.WithContext(ctx)
+	// Each task writes a distinct field and reports 0 on failure, so there is no
+	// error to propagate and a plain WaitGroup is enough.
+	var wg sync.WaitGroup
+	wg.Add(4)
 
-	g.Go(func() error {
-		counts.TotalEvents = fetchTotalEventCount(gctx, s, v)
-		return nil
-	})
-	g.Go(func() error {
-		counts.CriticalEvents = fetchCriticalEventCount(gctx, s, v)
-		return nil
-	})
-	g.Go(func() error {
-		counts.FailedEvents = fetchFailedEventCount(gctx, s, v)
-		return nil
-	})
-	g.Go(func() error {
-		counts.ErasureCount = fetchErasureCount(gctx, s, v)
-		return nil
-	})
+	go func() {
+		defer wg.Done()
+		counts.TotalEvents = fetchTotalEventCount(ctx, s, v)
+	}()
+	go func() {
+		defer wg.Done()
+		counts.CriticalEvents = fetchCriticalEventCount(ctx, s, v)
+	}()
+	go func() {
+		defer wg.Done()
+		counts.FailedEvents = fetchFailedEventCount(ctx, s, v)
+	}()
+	go func() {
+		defer wg.Done()
+		counts.ErasureCount = fetchErasureCount(ctx, s, v)
+	}()
 
-	_ = g.Wait() // every task swallows its own error and reports 0
+	wg.Wait()
 	return counts
 }
 

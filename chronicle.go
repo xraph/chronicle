@@ -79,9 +79,10 @@ type Chronicle struct {
 	sealer EventSealer
 	logger log.Logger
 
-	// streamLocks serialises the hash-chain critical section per stream scope.
-	// See Record for why this is required.
-	streamLocks sync.Map // map[string]*sync.Mutex, keyed by appID + "\x00" + tenantID
+	// streamLocks serialises the hash-chain critical section per stream scope,
+	// keyed by appID + "\x00" + tenantID. See Record for why this is required.
+	streamLocksMu sync.Mutex
+	streamLocks   map[string]*sync.Mutex
 }
 
 // lockStream serialises appends to one app+tenant stream and returns the unlock
@@ -104,8 +105,18 @@ type Chronicle struct {
 // the chain stays linked even across processes.
 func (c *Chronicle) lockStream(appID, tenantID string) func() {
 	key := appID + "\x00" + tenantID
-	actual, _ := c.streamLocks.LoadOrStore(key, &sync.Mutex{})
-	mu := actual.(*sync.Mutex)
+
+	c.streamLocksMu.Lock()
+	if c.streamLocks == nil {
+		c.streamLocks = make(map[string]*sync.Mutex)
+	}
+	mu, ok := c.streamLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		c.streamLocks[key] = mu
+	}
+	c.streamLocksMu.Unlock()
+
 	mu.Lock()
 	return mu.Unlock
 }

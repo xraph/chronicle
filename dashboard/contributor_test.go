@@ -5,12 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xraph/forge/extensions/dashboard/contributor"
 	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/compliance"
-	"github.com/xraph/forge/extensions/dashboard/contributor"
-
 	chronicledash "github.com/xraph/chronicle/dashboard"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/retention"
@@ -56,7 +55,9 @@ func viewerCtx() context.Context {
 	return scope.WithTenantID(ctx, viewerTenant)
 }
 
-func seedEvent(t *testing.T, mem *memory.Store, appID, tenantID, category string, age time.Duration) *audit.Event {
+// seedEvent appends one event. The category is fixed at "auth" because that is
+// what the retention policies in these tests match on.
+func seedEvent(t *testing.T, mem *memory.Store, appID, tenantID string, age time.Duration) *audit.Event {
 	t.Helper()
 
 	e := &audit.Event{
@@ -68,7 +69,7 @@ func seedEvent(t *testing.T, mem *memory.Store, appID, tenantID, category string
 		TenantID:  tenantID,
 		Action:    "test",
 		Resource:  "r",
-		Category:  category,
+		Category:  "auth",
 		Outcome:   audit.OutcomeSuccess,
 		Severity:  audit.SeverityInfo,
 		Timestamp: time.Now().UTC().Add(-age),
@@ -118,8 +119,8 @@ func TestDashboardPolicyCarriesViewerScope(t *testing.T) {
 func TestDashboardPolicyDoesNotPurgeOtherTenants(t *testing.T) {
 	ts := newDashSetup(t, true)
 
-	victim := seedEvent(t, ts.store, otherApp, "tenant_other", "auth", 48*time.Hour)
-	mine := seedEvent(t, ts.store, viewerApp, viewerTenant, "auth", 48*time.Hour)
+	victim := seedEvent(t, ts.store, otherApp, "tenant_other", 48*time.Hour)
+	mine := seedEvent(t, ts.store, viewerApp, viewerTenant, 48*time.Hour)
 
 	// Create an aggressive policy, then enforce it, both via the dashboard.
 	if _, err := ts.contributor.RenderPage(viewerCtx(), "/retention", contributor.Params{
@@ -209,8 +210,8 @@ func TestDashboardDeleteRemovesOwnPolicy(t *testing.T) {
 func TestDashboardReportsAreScoped(t *testing.T) {
 	ts := newDashSetup(t, true)
 
-	seedEvent(t, ts.store, otherApp, "tenant_other", "auth", time.Hour)
-	seedEvent(t, ts.store, viewerApp, viewerTenant, "auth", time.Hour)
+	seedEvent(t, ts.store, otherApp, "tenant_other", time.Hour)
+	seedEvent(t, ts.store, viewerApp, viewerTenant, time.Hour)
 
 	if _, err := ts.contributor.RenderPage(viewerCtx(), "/reports", contributor.Params{
 		QueryParams: map[string]string{"action": "generate_soc2"},
@@ -266,7 +267,7 @@ func TestDashboardMutationsDeniedByDefault(t *testing.T) {
 func TestDashboardEnforceDeniedByDefault(t *testing.T) {
 	ts := newDashSetup(t, false)
 
-	mine := seedEvent(t, ts.store, viewerApp, viewerTenant, "auth", 48*time.Hour)
+	mine := seedEvent(t, ts.store, viewerApp, viewerTenant, 48*time.Hour)
 
 	policy := &retention.Policy{
 		ID:       id.NewPolicyID(),
@@ -296,7 +297,7 @@ func TestDashboardEnforceDeniedByDefault(t *testing.T) {
 // useful.
 func TestDashboardReadsStillWorkWithMutationsDisabled(t *testing.T) {
 	ts := newDashSetup(t, false)
-	seedEvent(t, ts.store, viewerApp, viewerTenant, "auth", time.Hour)
+	seedEvent(t, ts.store, viewerApp, viewerTenant, time.Hour)
 
 	for _, route := range []string{"/", "/events", "/retention", "/erasures", "/reports"} {
 		t.Run(route, func(t *testing.T) {

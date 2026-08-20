@@ -156,7 +156,7 @@ func (s *Store) CountErasures(ctx context.Context, sc erasure.Scope) (int64, err
 // The per-subject index is not partitioned by scope, so when a scope is given
 // each event is read to confirm ownership. ZCard is only correct unscoped.
 func (s *Store) CountBySubject(ctx context.Context, sq erasure.SubjectQuery) (int64, error) {
-	if sq.Scope.IsZero() {
+	if sq.IsZero() {
 		return s.rdb.ZCard(ctx, zEventSubject+sq.SubjectID).Result()
 	}
 

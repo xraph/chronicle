@@ -248,8 +248,8 @@ func TestLastSequenceAndLastHash(t *testing.T) {
 	now := time.Now().UTC()
 	for i := range 3 {
 		ev := testEvent(streamID, "app-1", "", "u1", "auth", now.Add(time.Duration(i)*time.Second))
-		if err := s.Append(ctx, ev); err != nil {
-			t.Fatalf("append: %v", err)
+		if appendErr := s.Append(ctx, ev); appendErr != nil {
+			t.Fatalf("append: %v", appendErr)
 		}
 	}
 
@@ -492,8 +492,8 @@ func TestSealedFieldsSurviveSQLiteRoundTrip(t *testing.T) {
 	}
 
 	// Opening it yields the original values.
-	if err := sealer.Open(got); err != nil {
-		t.Fatalf("Open: %v", err)
+	if openErr := sealer.Open(got); openErr != nil {
+		t.Fatalf("Open: %v", openErr)
 	}
 	if got.Reason != "subject access request" {
 		t.Fatalf("Reason = %q, want the original plaintext", got.Reason)
@@ -506,8 +506,8 @@ func TestSealedFieldsSurviveSQLiteRoundTrip(t *testing.T) {
 	}
 
 	// After key destruction the digest still verifies.
-	if err := keys.Delete("subject-1"); err != nil {
-		t.Fatalf("Delete key: %v", err)
+	if delErr := keys.Delete("subject-1"); delErr != nil {
+		t.Fatalf("Delete key: %v", delErr)
 	}
 	reread, err := s.Get(ctx, ev.ID)
 	if err != nil {
@@ -515,5 +515,35 @@ func TestSealedFieldsSurviveSQLiteRoundTrip(t *testing.T) {
 	}
 	if !chain.Verify(storedPrev, reread) {
 		t.Fatal("digest must still verify after the key is destroyed")
+	}
+}
+
+// TestByUserIsolatesTenantsWithinAnApp covers the tenant half of the scope. The
+// other tests all use an empty tenant, so without this the tenant filter on the
+// sqlite backend was never exercised.
+func TestByUserIsolatesTenantsWithinAnApp(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	streamA := seedStream(t, s, "app-1", "tenant-a")
+	streamB := seedStream(t, s, "app-1", "tenant-b")
+	now := time.Now().UTC()
+
+	if err := s.Append(ctx, testEvent(streamA, "app-1", "tenant-a", "alice", "auth", now)); err != nil {
+		t.Fatalf("append tenant-a: %v", err)
+	}
+	if err := s.Append(ctx, testEvent(streamB, "app-1", "tenant-b", "alice", "auth", now)); err != nil {
+		t.Fatalf("append tenant-b: %v", err)
+	}
+
+	result, err := s.ByUser(ctx, "alice", audit.TimeRange{AppID: "app-1", TenantID: "tenant-a"})
+	if err != nil {
+		t.Fatalf("ByUser: %v", err)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("expected 1 event scoped to tenant-a, got %d", len(result.Events))
+	}
+	if result.Events[0].TenantID != "tenant-a" {
+		t.Fatalf("leaked event from tenant %q", result.Events[0].TenantID)
 	}
 }

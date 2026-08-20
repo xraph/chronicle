@@ -795,8 +795,8 @@ func TestErasureMakesPayloadIrrecoverableButKeepsChainValid(t *testing.T) {
 	streamID := before.Events[0].StreamID
 
 	// Erase the subject by destroying its key.
-	if err := keys.Delete("subject-1"); err != nil {
-		t.Fatalf("Delete key: %v", err)
+	if delErr := keys.Delete("subject-1"); delErr != nil {
+		t.Fatalf("Delete key: %v", delErr)
 	}
 
 	after, err := c.Query(ctx, &audit.Query{Limit: 10})
@@ -881,8 +881,8 @@ func TestVerifyEventUsesStoredForm(t *testing.T) {
 	}
 
 	// Still valid once the key is gone.
-	if err := keys.Delete("subject-1"); err != nil {
-		t.Fatalf("Delete key: %v", err)
+	if delErr := keys.Delete("subject-1"); delErr != nil {
+		t.Fatalf("Delete key: %v", delErr)
 	}
 
 	valid, err = c.VerifyEvent(ctx, eventID)

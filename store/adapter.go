@@ -64,5 +64,5 @@ func (a *Adapter) GetStored(ctx context.Context, eventID id.ID) (*audit.Event, e
 	if sr, ok := a.Store.(chronicle.StoredReader); ok {
 		return sr.GetStored(ctx, eventID)
 	}
-	return a.Store.Get(ctx, eventID)
+	return a.Get(ctx, eventID)
 }

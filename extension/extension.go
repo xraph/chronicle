@@ -214,13 +214,13 @@ func (e *Extension) init(fapp forge.App) error {
 	// Security-critical: decide API access before building the handler. The API
 	// can purge audit history, so an unauthenticated mount has to be a choice the
 	// operator made rather than a default they inherited.
-	if err := e.config.Auth.Validate(!e.config.DisableRoutes); err != nil {
-		return err
+	if authErr := e.config.Auth.Validate(!e.config.DisableRoutes); authErr != nil {
+		return authErr
 	}
 
-	guards, err := e.buildGuards(fapp)
-	if err != nil {
-		return err
+	guards, guardErr := e.buildGuards(fapp)
+	if guardErr != nil {
+		return guardErr
 	}
 
 	// Create the API handler with Forge router.

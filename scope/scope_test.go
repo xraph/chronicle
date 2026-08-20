@@ -233,7 +233,7 @@ func TestFromRequestPreservesContextScope(t *testing.T) {
 // part of an audit record most worth falsifying, so proxy headers are only
 // honoured when the peer is a configured trusted proxy.
 func TestFromRequestIgnoresForwardedHeadersByDefault(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.RemoteAddr = "198.51.100.7:34512"
 	r.Header.Set("X-Forwarded-For", "1.2.3.4")
 	r.Header.Set("X-Real-IP", "5.6.7.8")
@@ -253,7 +253,7 @@ func TestFromRequestStripsPortFromRemoteAddr(t *testing.T) {
 
 	for remote, want := range tests {
 		t.Run(remote, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 			r.RemoteAddr = remote
 
 			if got := scope.FromRequest(r).IP; got != want {
@@ -271,7 +271,7 @@ func TestFromRequestBehindTrustedProxyUsesForwardedFor(t *testing.T) {
 		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.RemoteAddr = "10.1.2.3:34512"
 	r.Header.Set("X-Forwarded-For", "203.0.113.9, 10.1.2.3")
 
@@ -289,7 +289,7 @@ func TestFromRequestUntrustedPeerIgnoresForwardedFor(t *testing.T) {
 		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.RemoteAddr = "203.0.113.200:34512"
 	r.Header.Set("X-Forwarded-For", "1.2.3.4")
 
@@ -307,7 +307,7 @@ func TestFromRequestTrimsForwardedWhitespace(t *testing.T) {
 		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.RemoteAddr = "10.1.2.3:34512"
 	r.Header.Set("X-Forwarded-For", "   203.0.113.9   ,  10.1.2.3 ")
 
@@ -324,7 +324,7 @@ func TestFromRequestRejectsGarbageForwardedValue(t *testing.T) {
 		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.RemoteAddr = "10.1.2.3:34512"
 	r.Header.Set("X-Forwarded-For", "not-an-ip")
 
@@ -335,7 +335,7 @@ func TestFromRequestRejectsGarbageForwardedValue(t *testing.T) {
 
 // TestFromRequestPrefersExistingContextIP keeps the existing precedence.
 func TestFromRequestPrefersExistingContextIP(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.RemoteAddr = "198.51.100.7:34512"
 	r = r.WithContext(scope.WithIP(r.Context(), "192.0.2.1"))
 
@@ -356,7 +356,7 @@ func TestParseTrustedProxiesAcceptsBareAddress(t *testing.T) {
 		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	r.RemoteAddr = "10.1.2.3:34512"
 	r.Header.Set("X-Forwarded-For", "203.0.113.9")
 
