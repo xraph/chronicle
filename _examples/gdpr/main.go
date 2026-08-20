@@ -18,6 +18,7 @@ import (
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store"
 	"github.com/xraph/chronicle/store/memory"
+	"github.com/xraph/chronicle/store/sealedstore"
 	"github.com/xraph/chronicle/verify"
 )
 
@@ -26,20 +27,32 @@ func main() {
 	ctx = scope.WithAppID(ctx, "myapp")
 	ctx = scope.WithTenantID(ctx, "tenant-1")
 
-	// 1. Create store, adapter, and Chronicle with crypto-erasure enabled.
+	// 1. Create the key store, then Chronicle with crypto-erasure enabled.
+	//
+	// The store is wrapped so reads come back decrypted, while the hash chain is
+	// computed over the encrypted bytes — which is what lets a chain keep
+	// verifying after a key is destroyed.
+	//
+	// An in-memory key store is fine for an example. In production it must be
+	// durable: losing it is indistinguishable from erasing every subject.
+	keyStore := crypto.NewInMemoryKeyStore()
+	sealer := crypto.NewSealer(keyStore)
+
 	mem := memory.New()
-	adapter := store.NewAdapter(mem)
+	sealed := sealedstore.New(mem, sealer)
+	adapter := store.NewAdapter(sealed)
+
 	c, err := chronicle.New(
 		chronicle.WithStore(adapter),
 		chronicle.WithCryptoErasure(true),
+		chronicle.WithSealer(sealer),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// 2. Create a key store and the erasure service.
-	keyStore := crypto.NewInMemoryKeyStore()
-	erasureService := erasure.NewService(mem, keyStore)
+	// 2. Create the erasure service, which destroys a subject's key.
+	erasureService := erasure.NewService(sealed, keyStore)
 
 	// 3. Record events for two different data subjects.
 	fmt.Println("--- Recording events for Subject A (user-alice) ---")

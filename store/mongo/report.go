@@ -41,11 +41,11 @@ func (s *Store) GetReport(ctx context.Context, reportID id.ID) (*compliance.Repo
 	return r, nil
 }
 
-// ListReports returns reports with pagination.
+// ListReports returns reports matching opts, scoped before pagination.
 func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*compliance.Report, error) {
 	var models []ReportModel
 	findQ := s.mdb.NewFind(&models).
-		Filter(bson.M{}).
+		Filter(scopeFilter(opts.AppID, opts.TenantID)).
 		Sort(bson.D{{Key: "created_at", Value: -1}})
 
 	if opts.Limit > 0 {
@@ -61,9 +61,9 @@ func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*c
 
 	reports := make([]*compliance.Report, 0, len(models))
 	for i := range models {
-		r, err := toReport(&models[i])
-		if err != nil {
-			return nil, err
+		r, convErr := toReport(&models[i])
+		if convErr != nil {
+			return nil, convErr
 		}
 		reports = append(reports, r)
 	}

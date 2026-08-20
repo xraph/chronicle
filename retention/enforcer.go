@@ -38,16 +38,29 @@ func NewEnforcer(store Store, archiveSink sink.Sink, logger log.Logger) *Enforce
 	}
 }
 
-// Enforce runs all retention policies once.
-// For each policy, it finds events older than the retention duration,
-// optionally archives them to the archive sink, then purges them from the store.
+// Enforce runs every retention policy once, each against its own scope.
+//
+// This is the entry point for the background scheduler, which legitimately
+// covers all apps and tenants. Each policy still only purges the events its own
+// (AppID, TenantID) owns. Request handlers must call EnforceScope instead, so a
+// caller cannot trigger another tenant's retention.
 func (e *Enforcer) Enforce(ctx context.Context) (*EnforceResult, error) {
-	policies, err := e.store.ListPolicies(ctx)
+	return e.enforce(ctx, ListPoliciesOpts{Limit: -1})
+}
+
+// EnforceScope runs only the policies owned by the given scope.
+func (e *Enforcer) EnforceScope(ctx context.Context, s Scope) (*EnforceResult, error) {
+	return e.enforce(ctx, ListPoliciesOpts{Scope: s, Limit: -1})
+}
+
+func (e *Enforcer) enforce(ctx context.Context, opts ListPoliciesOpts) (*EnforceResult, error) {
+	policies, err := e.store.ListPolicies(ctx, opts)
 	if err != nil {
 		return nil, fmt.Errorf("retention: list policies: %w", err)
 	}
 
 	result := &EnforceResult{}
+	var firstErr error
 
 	for _, policy := range policies {
 		policyResult, err := e.enforcePolicy(ctx, policy)
@@ -55,13 +68,24 @@ func (e *Enforcer) Enforce(ctx context.Context) (*EnforceResult, error) {
 			e.logger.Error("retention: enforce policy failed",
 				log.String("policy_id", policy.ID.String()),
 				log.String("category", policy.Category),
+				log.String("app_id", policy.AppID),
+				log.String("tenant_id", policy.TenantID),
 				log.String("error", err.Error()),
 			)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		result.Archived += policyResult.Archived
 		result.Purged += policyResult.Purged
 		result.Retained += policyResult.Retained
+	}
+
+	// Surface a failure rather than reporting a clean run. A caller that sees
+	// only counts cannot tell that archiving broke and nothing was purged.
+	if firstErr != nil {
+		return result, fmt.Errorf("retention: %w", firstErr)
 	}
 
 	return result, nil
@@ -71,7 +95,13 @@ func (e *Enforcer) enforcePolicy(ctx context.Context, policy *Policy) (*EnforceR
 	cutoff := time.Now().Add(-policy.Duration)
 	result := &EnforceResult{}
 
-	events, err := e.store.EventsOlderThan(ctx, policy.Category, cutoff)
+	// Security-critical: the query carries the policy's own scope, so a policy
+	// can only ever purge the events its app and tenant own.
+	events, err := e.store.EventsOlderThan(ctx, PurgeQuery{
+		Scope:    policy.Scope(),
+		Category: policy.Category,
+		Before:   cutoff,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("events older than %v: %w", policy.Duration, err)
 	}
@@ -109,6 +139,8 @@ func (e *Enforcer) enforcePolicy(ctx context.Context, policy *Policy) (*EnforceR
 			FromTimestamp: minTS,
 			ToTimestamp:   maxTS,
 			SinkName:      e.archiveSink.Name(),
+			AppID:         policy.AppID,
+			TenantID:      policy.TenantID,
 		}
 		archive.CreatedAt = time.Now()
 

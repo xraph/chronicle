@@ -32,9 +32,15 @@ func (a *API) listReports(ctx forge.Context) error {
 	c, span := a.tracer.Start(c, "chronicle.listReports")
 	defer span.End()
 
+	// Security-critical: scope is applied by the store, before LIMIT/OFFSET.
+	// Filtering after pagination returned an empty page whenever another
+	// tenant's reports filled the first page.
+	info := scope.FromContext(c)
 	opts := compliance.ListOpts{
-		Limit:  defaultLimit(queryInt(ctx, "limit")),
-		Offset: defaultOffset(queryInt(ctx, "offset")),
+		AppID:    info.AppID,
+		TenantID: info.TenantID,
+		Limit:    defaultLimit(queryInt(ctx, "limit")),
+		Offset:   defaultOffset(queryInt(ctx, "offset")),
 	}
 
 	reports, err := a.deps.ReportStore.ListReports(c, opts)
@@ -43,16 +49,7 @@ func (a *API) listReports(ctx forge.Context) error {
 		return fmt.Errorf("list reports: %w", err)
 	}
 
-	// Filter by app scope.
-	info := scope.FromContext(c)
-	filtered := make([]*compliance.Report, 0, len(reports))
-	for _, rpt := range reports {
-		if rpt.AppID == info.AppID {
-			filtered = append(filtered, rpt)
-		}
-	}
-
-	return ctx.JSON(http.StatusOK, filtered)
+	return ctx.JSON(http.StatusOK, reports)
 }
 
 // generateSOC2 handles POST /v1/reports/soc2.
@@ -82,7 +79,7 @@ func (a *API) generateSOC2(ctx forge.Context, req *compliance.SOC2Input) (*compl
 		return nil, fmt.Errorf("generate SOC2: %w", err)
 	}
 
-	return report, ctx.JSON(http.StatusCreated, report)
+	return nil, ctx.JSON(http.StatusCreated, report)
 }
 
 // generateHIPAA handles POST /v1/reports/hipaa.
@@ -111,7 +108,7 @@ func (a *API) generateHIPAA(ctx forge.Context, req *compliance.HIPAAInput) (*com
 		return nil, fmt.Errorf("generate HIPAA: %w", err)
 	}
 
-	return report, ctx.JSON(http.StatusCreated, report)
+	return nil, ctx.JSON(http.StatusCreated, report)
 }
 
 // generateEUAIAct handles POST /v1/reports/euaiact.
@@ -140,7 +137,7 @@ func (a *API) generateEUAIAct(ctx forge.Context, req *compliance.EUAIActInput) (
 		return nil, fmt.Errorf("generate EU AI Act: %w", err)
 	}
 
-	return report, ctx.JSON(http.StatusCreated, report)
+	return nil, ctx.JSON(http.StatusCreated, report)
 }
 
 // generateCustom handles POST /v1/reports/custom.
@@ -169,7 +166,7 @@ func (a *API) generateCustom(ctx forge.Context, req *compliance.CustomInput) (*c
 		return nil, fmt.Errorf("generate custom: %w", err)
 	}
 
-	return report, ctx.JSON(http.StatusCreated, report)
+	return nil, ctx.JSON(http.StatusCreated, report)
 }
 
 // getReport handles GET /v1/reports/:id.
@@ -198,7 +195,7 @@ func (a *API) getReport(ctx forge.Context, _ *GetReportRequest) (*compliance.Rep
 		return nil, forge.NotFound("report not found")
 	}
 
-	return report, ctx.JSON(http.StatusOK, report)
+	return report, nil
 }
 
 // exportReport handles GET /v1/reports/:id/export/:format.

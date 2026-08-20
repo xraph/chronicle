@@ -67,8 +67,39 @@ type CountQuery struct {
 	Category string    `json:"category,omitempty"`
 }
 
-// TimeRange defines a time range for queries.
+// DefaultUserQueryLimit bounds [Store.ByUser] when TimeRange.Limit is unset, so
+// a lookup against a high-traffic subject cannot load the whole table.
+const DefaultUserQueryLimit = 1000
+
+// TimeRange defines a time range for queries, plus the optional scope and
+// bound that [Store.ByUser] applies.
+//
+// A zero After or Before means "unbounded on that side". Backends must check
+// IsZero rather than comparing against the zero time, which would otherwise
+// filter every row out.
 type TimeRange struct {
 	After  time.Time `json:"after"`
 	Before time.Time `json:"before"`
+
+	// Scope restricts results to one app/tenant. Leave empty only for trusted
+	// in-process callers; anything serving a request should set both.
+	AppID    string `json:"app_id,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
+
+	// Limit bounds the number of events returned. Zero means
+	// DefaultUserQueryLimit; a negative value means unbounded.
+	Limit int `json:"limit,omitempty"`
+}
+
+// EffectiveLimit returns the row bound to apply, resolving 0 to
+// DefaultUserQueryLimit and negatives to 0 (meaning "no bound").
+func (r TimeRange) EffectiveLimit() int {
+	switch {
+	case r.Limit == 0:
+		return DefaultUserQueryLimit
+	case r.Limit < 0:
+		return 0
+	default:
+		return r.Limit
+	}
 }

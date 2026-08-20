@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -146,6 +145,9 @@ func (s *Store) storeEvent(ctx context.Context, event *audit.Event) error {
 	pipe.ZAdd(ctx, zEventAll, goredis.Z{Score: score, Member: m.ID})
 	pipe.ZAdd(ctx, zEventStream+m.StreamID, goredis.Z{Score: float64(m.Sequence), Member: m.ID})
 	pipe.ZAdd(ctx, zEventScope+m.AppID+":"+m.TenantID, goredis.Z{Score: score, Member: m.ID})
+	// An app-only index so a single-tenant query (AppID set, TenantID empty)
+	// does not have to scan every event in the deployment.
+	pipe.ZAdd(ctx, zEventApp+m.AppID, goredis.Z{Score: score, Member: m.ID})
 	if m.Category != "" {
 		pipe.ZAdd(ctx, zEventCategory+m.Category, goredis.Z{Score: score, Member: m.ID})
 	}
@@ -177,15 +179,19 @@ func (s *Store) Get(ctx context.Context, eventID id.ID) (*audit.Event, error) {
 
 // Query returns events matching filters with pagination.
 func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, error) {
-	// Determine the best index to scan.
+	// Determine the narrowest index to scan. Falling back to zEventAll means one
+	// GET per event in the deployment, so prefer any scoped index first — an
+	// AppID with no TenantID is the common single-tenant case and used to miss.
 	var zKey string
 	switch {
 	case q.AppID != "" && q.TenantID != "":
 		zKey = zEventScope + q.AppID + ":" + q.TenantID
-	case len(q.Categories) == 1:
-		zKey = zEventCategory + q.Categories[0]
+	case q.AppID != "":
+		zKey = zEventApp + q.AppID
 	case q.UserID != "":
 		zKey = zEventUser + q.UserID
+	case len(q.Categories) == 1:
+		zKey = zEventCategory + q.Categories[0]
 	default:
 		zKey = zEventAll
 	}
@@ -243,8 +249,9 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 
 // Aggregate returns grouped event statistics.
 func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.AggregateResult, error) {
-	if len(q.GroupBy) == 0 {
-		return nil, errors.New("aggregate query requires at least one group_by field")
+	// Validate the grouping fields before touching redis.
+	if _, err := audit.ResolveGroupBy(q.GroupBy); err != nil {
+		return nil, err
 	}
 
 	minScore := math.Inf(-1)
@@ -256,10 +263,13 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 		maxScore = scoreFromTime(q.Before)
 	}
 
-	// Determine index key.
+	// Determine the narrowest index key available.
 	zKey := zEventAll
-	if q.AppID != "" && q.TenantID != "" {
+	switch {
+	case q.AppID != "" && q.TenantID != "":
 		zKey = zEventScope + q.AppID + ":" + q.TenantID
+	case q.AppID != "":
+		zKey = zEventApp + q.AppID
 	}
 
 	ids, err := s.zRangeByScoreIDs(ctx, zKey, minScore, maxScore)
@@ -311,17 +321,8 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 		if _, ok := counts[gk]; !ok {
 			g := &audit.AggregateGroup{}
 			for i, field := range q.GroupBy {
-				switch field {
-				case "category":
-					g.Category = parts[i]
-				case "action":
-					g.Action = parts[i]
-				case "outcome":
-					g.Outcome = parts[i]
-				case "severity":
-					g.Severity = parts[i]
-				case "resource":
-					g.Resource = parts[i]
+				if err := audit.AssignGroupValue(g, field, parts[i]); err != nil {
+					return nil, err
 				}
 			}
 			counts[gk] = g
@@ -349,16 +350,30 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 
 // ByUser returns events for a specific user within a time range.
 func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange) (*audit.QueryResult, error) {
-	minScore := scoreFromTime(opts.After)
-	maxScore := scoreFromTime(opts.Before)
+	// A zero After/Before means "unbounded". Deriving both scores from the zero
+	// time yields an empty range that matches nothing.
+	minScore := math.Inf(-1)
+	maxScore := math.Inf(1)
+	if !opts.After.IsZero() {
+		minScore = scoreFromTime(opts.After)
+	}
+	if !opts.Before.IsZero() {
+		maxScore = scoreFromTime(opts.Before)
+	}
 
 	ids, err := s.zRangeByScoreIDs(ctx, zEventUser+userID, minScore, maxScore)
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: events by user: %w", err)
 	}
 
+	limit := opts.EffectiveLimit()
+
 	events := make([]*audit.Event, 0, len(ids))
 	for i := len(ids) - 1; i >= 0; i-- { // reverse for DESC
+		if limit > 0 && len(events) == limit {
+			break
+		}
+
 		var m eventModel
 		if err := s.getEntity(ctx, entityKey(prefixEvent, ids[i]), &m); err != nil {
 			if isNotFound(err) {
@@ -366,6 +381,16 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 			}
 			return nil, err
 		}
+
+		// Scope filtering happens here because the per-user index is not
+		// partitioned by app/tenant.
+		if opts.AppID != "" && m.AppID != opts.AppID {
+			continue
+		}
+		if opts.TenantID != "" && m.TenantID != opts.TenantID {
+			continue
+		}
+
 		evt, err := fromEventModel(&m)
 		if err != nil {
 			return nil, err
@@ -376,17 +401,20 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 	return &audit.QueryResult{
 		Events:  events,
 		Total:   int64(len(events)),
-		HasMore: false,
+		HasMore: limit > 0 && len(events) == limit,
 	}, nil
 }
 
 // Count returns the total number of events matching filters.
 func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
-	// Determine the best index.
+	// Determine the narrowest index available.
 	zKey := zEventAll
-	if q.AppID != "" && q.TenantID != "" {
+	switch {
+	case q.AppID != "" && q.TenantID != "":
 		zKey = zEventScope + q.AppID + ":" + q.TenantID
-	} else if q.Category != "" {
+	case q.AppID != "":
+		zKey = zEventApp + q.AppID
+	case q.Category != "":
 		zKey = zEventCategory + q.Category
 	}
 

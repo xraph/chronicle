@@ -286,7 +286,8 @@ func TestErasureCRUD(t *testing.T) {
 		t.Fatalf("AppendBatch: %v", err)
 	}
 
-	count, err := s.CountBySubject(ctx, "subj1")
+	subject := erasure.SubjectQuery{SubjectID: "subj1"}
+	count, err := s.CountBySubject(ctx, subject)
 	if err != nil {
 		t.Fatalf("CountBySubject: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestErasureCRUD(t *testing.T) {
 	}
 
 	erasureID := id.NewErasureID()
-	marked, err := s.MarkErased(ctx, "subj1", erasureID)
+	marked, err := s.MarkErased(ctx, subject, erasureID)
 	if err != nil {
 		t.Fatalf("MarkErased: %v", err)
 	}
@@ -360,7 +361,7 @@ func TestRetentionPolicyCRUD(t *testing.T) {
 		t.Errorf("got Category %s, want auth", got.Category)
 	}
 
-	list, err := s.ListPolicies(ctx)
+	list, err := s.ListPolicies(ctx, retention.ListPoliciesOpts{})
 	if err != nil {
 		t.Fatalf("ListPolicies: %v", err)
 	}
@@ -373,7 +374,7 @@ func TestRetentionPolicyCRUD(t *testing.T) {
 		t.Fatalf("DeletePolicy: %v", err)
 	}
 
-	list, err = s.ListPolicies(ctx)
+	list, err = s.ListPolicies(ctx, retention.ListPoliciesOpts{})
 	if err != nil {
 		t.Fatalf("ListPolicies after delete: %v", err)
 	}
@@ -399,7 +400,10 @@ func TestEventsOlderThanAndPurge(t *testing.T) {
 	}
 
 	cutoff := time.Now().UTC().Add(-24 * time.Hour)
-	oldEvents, err := s.EventsOlderThan(ctx, "auth", cutoff)
+	oldEvents, err := s.EventsOlderThan(ctx, retention.PurgeQuery{
+		Category: "auth",
+		Before:   cutoff,
+	})
 	if err != nil {
 		t.Fatalf("EventsOlderThan: %v", err)
 	}
@@ -547,4 +551,105 @@ func TestMigrateAndPing(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
+}
+
+// TestReadsDoNotAliasStoredEvents pins that a caller cannot corrupt the store by
+// mutating what a read returned.
+//
+// The store used to hand out pointers into its own slice, so any consumer that
+// adjusted a field — a crypto layer decrypting in place, a redaction pass, a test
+// helper — silently rewrote the persisted event. For an append-only audit store
+// whose hashes cover the stored bytes, that turns a read into tampering.
+func TestReadsDoNotAliasStoredEvents(t *testing.T) {
+	s := New()
+	ctx := context.Background()
+
+	original := &audit.Event{
+		ID: id.NewAuditID(), Timestamp: time.Now().UTC(), Sequence: 1,
+		StreamID: id.NewStreamID(), AppID: "app1", UserID: "u1",
+		Action: "create", Resource: "user", Category: "auth",
+		Outcome: audit.OutcomeSuccess, Severity: audit.SeverityInfo,
+		Reason:   "original reason",
+		Metadata: map[string]any{"key": "original"},
+	}
+	if err := s.Append(ctx, original); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	tamper := func(e *audit.Event) {
+		e.Reason = "tampered"
+		e.Action = "tampered"
+	}
+
+	t.Run("Get", func(t *testing.T) {
+		got, err := s.Get(ctx, original.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		tamper(got)
+
+		fresh, err := s.Get(ctx, original.ID)
+		if err != nil {
+			t.Fatalf("Get again: %v", err)
+		}
+		if fresh.Reason != "original reason" || fresh.Action != "create" {
+			t.Fatalf("mutating a returned event changed the store: reason=%q action=%q",
+				fresh.Reason, fresh.Action)
+		}
+	})
+
+	t.Run("Query", func(t *testing.T) {
+		result, err := s.Query(ctx, &audit.Query{Limit: 10})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		if len(result.Events) == 0 {
+			t.Fatal("expected an event")
+		}
+		tamper(result.Events[0])
+
+		fresh, err := s.Query(ctx, &audit.Query{Limit: 10})
+		if err != nil {
+			t.Fatalf("Query again: %v", err)
+		}
+		if fresh.Events[0].Reason != "original reason" {
+			t.Fatalf("mutating a queried event changed the store: %q", fresh.Events[0].Reason)
+		}
+	})
+
+	t.Run("ByUser", func(t *testing.T) {
+		result, err := s.ByUser(ctx, "u1", audit.TimeRange{})
+		if err != nil {
+			t.Fatalf("ByUser: %v", err)
+		}
+		if len(result.Events) == 0 {
+			t.Fatal("expected an event")
+		}
+		tamper(result.Events[0])
+
+		fresh, err := s.ByUser(ctx, "u1", audit.TimeRange{})
+		if err != nil {
+			t.Fatalf("ByUser again: %v", err)
+		}
+		if fresh.Events[0].Reason != "original reason" {
+			t.Fatalf("mutating a ByUser event changed the store: %q", fresh.Events[0].Reason)
+		}
+	})
+
+	t.Run("Metadata map", func(t *testing.T) {
+		got, err := s.Get(ctx, original.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		got.Metadata["key"] = "tampered"
+
+		fresh, err := s.Get(ctx, original.ID)
+		if err != nil {
+			t.Fatalf("Get again: %v", err)
+		}
+		if fresh.Metadata["key"] != "original" {
+			t.Fatalf("mutating a returned metadata map changed the store: %v",
+				fresh.Metadata["key"])
+		}
+	})
 }

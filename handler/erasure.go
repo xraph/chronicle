@@ -39,8 +39,35 @@ func (a *API) requestErasure(ctx forge.Context, req *RequestErasureRequest) (*er
 
 	info := scope.FromContext(c)
 
+	// Security-critical: the subject is resolved within the caller's scope, so
+	// an erasure request can only count and mark that app and tenant's events.
+	// Unscoped, any caller could both learn how many events another tenant holds
+	// on a subject and flag them all as erased.
+	subject := erasure.SubjectQuery{
+		Scope:     erasure.Scope{AppID: info.AppID, TenantID: info.TenantID},
+		SubjectID: req.SubjectID,
+	}
+
+	// Prefer the erasure service: it destroys the subject's encryption key, which
+	// is what makes the payload unrecoverable. The store-only path below can only
+	// flag events, and is correct only when nothing encrypted them.
+	if a.deps.Erasure != nil {
+		result, svcErr := a.deps.Erasure.Erase(c, &erasure.Input{
+			SubjectID:   req.SubjectID,
+			Reason:      req.Reason,
+			RequestedBy: req.RequestedBy,
+		}, info.AppID, info.TenantID)
+		if svcErr != nil {
+			a.deps.Logger.Error("failed to erase subject",
+				log.String("subject_id", req.SubjectID), log.Error(svcErr))
+			return nil, fmt.Errorf("erase subject: %w", svcErr)
+		}
+
+		return nil, ctx.JSON(http.StatusCreated, result)
+	}
+
 	// Count affected events before recording.
-	affected, err := a.deps.ErasureStore.CountBySubject(c, req.SubjectID)
+	affected, err := a.deps.ErasureStore.CountBySubject(c, subject)
 	if err != nil {
 		a.deps.Logger.Error("failed to count events by subject", log.String("subject_id", req.SubjectID), log.Error(err))
 		return nil, fmt.Errorf("count affected events: %w", err)
@@ -68,7 +95,7 @@ func (a *API) requestErasure(ctx forge.Context, req *RequestErasureRequest) (*er
 	}
 
 	// Mark affected events as erased.
-	marked, err := a.deps.ErasureStore.MarkErased(c, req.SubjectID, erasureID)
+	marked, err := a.deps.ErasureStore.MarkErased(c, subject, erasureID)
 	if err != nil {
 		a.deps.Logger.Error("failed to mark events as erased", log.Error(err))
 		return nil, fmt.Errorf("mark events as erased: %w", err)
@@ -80,7 +107,9 @@ func (a *API) requestErasure(ctx forge.Context, req *RequestErasureRequest) (*er
 		EventsAffected: marked,
 	}
 
-	return result, ctx.JSON(http.StatusCreated, result)
+	// forge writes http.StatusOK for any non-nil first return, so a 201 has to
+	// be written here with a nil body returned so forge does not write again.
+	return nil, ctx.JSON(http.StatusCreated, result)
 }
 
 // listErasures handles GET /v1/erasures.
@@ -93,7 +122,11 @@ func (a *API) listErasures(ctx forge.Context) error {
 	c, span := a.tracer.Start(c, "chronicle.listErasures")
 	defer span.End()
 
+	// Security-critical: erasure records carry subject IDs, reasons and
+	// requesters. Scope is applied by the store, before LIMIT/OFFSET.
+	info := scope.FromContext(c)
 	opts := erasure.ListOpts{
+		Scope:  erasure.Scope{AppID: info.AppID, TenantID: info.TenantID},
 		Limit:  defaultLimit(queryInt(ctx, "limit")),
 		Offset: defaultOffset(queryInt(ctx, "offset")),
 	}
@@ -127,5 +160,10 @@ func (a *API) getErasure(ctx forge.Context, _ *GetErasureRequest) (*erasure.Eras
 		return nil, mapStoreError(err)
 	}
 
-	return rec, ctx.JSON(http.StatusOK, rec)
+	// Security-critical: a record must not be readable by ID alone.
+	if !ownedByCaller(c, rec.AppID, rec.TenantID) {
+		return nil, forge.NotFound("erasure not found")
+	}
+
+	return rec, nil
 }

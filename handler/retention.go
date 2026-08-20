@@ -24,22 +24,20 @@ func (a *API) listPolicies(ctx forge.Context) error {
 	c, span := a.tracer.Start(c, "chronicle.listPolicies")
 	defer span.End()
 
-	policies, err := a.deps.RetentionStore.ListPolicies(c)
+	// Security-critical: scope is applied by the store, before LIMIT/OFFSET.
+	// Filtering after pagination returned an empty page whenever another
+	// tenant's policies filled the first page.
+	policies, err := a.deps.RetentionStore.ListPolicies(c, retention.ListPoliciesOpts{
+		Scope:  retentionScope(c),
+		Limit:  defaultLimit(queryInt(ctx, "limit")),
+		Offset: defaultOffset(queryInt(ctx, "offset")),
+	})
 	if err != nil {
 		a.deps.Logger.Error("failed to list retention policies", log.Error(err))
 		return fmt.Errorf("list policies: %w", err)
 	}
 
-	// Filter by app scope.
-	info := scope.FromContext(c)
-	filtered := make([]*retention.Policy, 0, len(policies))
-	for _, p := range policies {
-		if p.AppID == info.AppID {
-			filtered = append(filtered, p)
-		}
-	}
-
-	return ctx.JSON(http.StatusOK, filtered)
+	return ctx.JSON(http.StatusOK, policies)
 }
 
 // savePolicy handles POST /v1/retention.
@@ -73,6 +71,7 @@ func (a *API) savePolicy(ctx forge.Context, req *SavePolicyRequest) (*retention.
 		Duration: dur,
 		Archive:  req.Archive,
 		AppID:    info.AppID,
+		TenantID: info.TenantID,
 	}
 
 	if err := a.deps.RetentionStore.SavePolicy(c, policy); err != nil {
@@ -80,7 +79,9 @@ func (a *API) savePolicy(ctx forge.Context, req *SavePolicyRequest) (*retention.
 		return nil, fmt.Errorf("save policy: %w", err)
 	}
 
-	return policy, ctx.JSON(http.StatusCreated, policy)
+	// forge writes http.StatusOK for any non-nil first return, so a 201 has to
+	// be written here with a nil body returned so forge does not write again.
+	return nil, ctx.JSON(http.StatusCreated, policy)
 }
 
 // deletePolicy handles DELETE /v1/retention/:id.
@@ -97,6 +98,16 @@ func (a *API) deletePolicy(ctx forge.Context, _ *DeletePolicyRequest) (*struct{}
 
 	c, span := a.tracer.Start(c, "chronicle.deletePolicy")
 	defer span.End()
+
+	// Security-critical: confirm ownership before deleting. Without this any
+	// caller could disable another tenant's retention by guessing an ID.
+	existing, err := a.deps.RetentionStore.GetPolicy(c, policyID)
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
+	if !ownedByCaller(c, existing.AppID, existing.TenantID) {
+		return nil, forge.NotFound("policy not found")
+	}
 
 	if err := a.deps.RetentionStore.DeletePolicy(c, policyID); err != nil {
 		return nil, mapStoreError(err)
@@ -119,7 +130,9 @@ func (a *API) enforceRetention(ctx forge.Context) error {
 	c, span := a.tracer.Start(c, "chronicle.enforceRetention")
 	defer span.End()
 
-	result, err := a.deps.Retention.Enforce(c)
+	// Security-critical: run only the caller's own policies. Enforce() covers
+	// every app and belongs to the background scheduler, not to a request.
+	result, err := a.deps.Retention.EnforceScope(c, retentionScope(c))
 	if err != nil {
 		a.deps.Logger.Error("failed to enforce retention", log.Error(err))
 		return fmt.Errorf("enforce retention: %w", err)
@@ -139,6 +152,7 @@ func (a *API) listArchives(ctx forge.Context) error {
 	defer span.End()
 
 	opts := retention.ListOpts{
+		Scope:  retentionScope(c),
 		Limit:  defaultLimit(queryInt(ctx, "limit")),
 		Offset: defaultOffset(queryInt(ctx, "offset")),
 	}

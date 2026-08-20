@@ -28,8 +28,15 @@ func NewService(store Store, keyStore crypto.KeyStore) *Service {
 // 3. Mark events as erased in the store
 // 4. Record the erasure event
 func (s *Service) Erase(ctx context.Context, input *Input, appID, tenantID string) (*Result, error) {
+	// The subject is resolved within the caller's scope, so an erasure can only
+	// ever count and mark events belonging to that app and tenant.
+	subject := SubjectQuery{
+		Scope:     Scope{AppID: appID, TenantID: tenantID},
+		SubjectID: input.SubjectID,
+	}
+
 	// 1. Count events for subject.
-	count, err := s.store.CountBySubject(ctx, input.SubjectID)
+	count, err := s.store.CountBySubject(ctx, subject)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +68,7 @@ func (s *Service) Erase(ctx context.Context, input *Input, appID, tenantID strin
 	}
 
 	// 4. Mark events as erased.
-	affected, err := s.store.MarkErased(ctx, input.SubjectID, erasureID)
+	affected, err := s.store.MarkErased(ctx, subject, erasureID)
 	if err != nil {
 		return nil, err
 	}

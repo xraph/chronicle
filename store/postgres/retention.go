@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
@@ -12,13 +11,16 @@ import (
 )
 
 // SavePolicy persists a retention policy (INSERT or UPDATE on conflict).
+//
+// The conflict target is the owning scope plus the category, not the category
+// alone: a policy must never overwrite, or take ownership of, another app or
+// tenant's policy for the same category.
 func (s *Store) SavePolicy(ctx context.Context, p *retention.Policy) error {
 	m := fromPolicy(p)
 	_, err := s.pg.NewInsert(m).
-		OnConflict("(category) DO UPDATE").
+		OnConflict("(app_id, tenant_id, category) DO UPDATE").
 		Set("duration = EXCLUDED.duration").
 		Set("archive = EXCLUDED.archive").
-		Set("app_id = EXCLUDED.app_id").
 		Set("updated_at = EXCLUDED.updated_at").
 		Exec(ctx)
 	return err
@@ -40,21 +42,38 @@ func (s *Store) GetPolicy(ctx context.Context, policyID id.ID) (*retention.Polic
 	return p, nil
 }
 
-// ListPolicies returns all retention policies.
-func (s *Store) ListPolicies(ctx context.Context) ([]*retention.Policy, error) {
+// ListPolicies returns retention policies matching opts, scoped before
+// pagination so a caller's own rows are never hidden behind another tenant's.
+func (s *Store) ListPolicies(
+	ctx context.Context, opts retention.ListPoliciesOpts,
+) ([]*retention.Policy, error) {
 	var models []RetentionPolicyModel
-	err := s.pg.NewSelect(&models).
-		OrderExpr("rp.created_at DESC").
-		Scan(ctx)
-	if err != nil {
+	q := s.pg.NewSelect(&models)
+
+	if opts.AppID != "" {
+		q.Where("rp.app_id = ?", opts.AppID)
+	}
+	if opts.TenantID != "" {
+		q.Where("rp.tenant_id = ?", opts.TenantID)
+	}
+
+	q = q.OrderExpr("rp.created_at DESC")
+	if opts.Limit > 0 {
+		q = q.Limit(opts.Limit)
+	}
+	if opts.Offset > 0 {
+		q = q.Offset(opts.Offset)
+	}
+
+	if err := q.Scan(ctx); err != nil {
 		return nil, err
 	}
 
 	policies := make([]*retention.Policy, 0, len(models))
 	for i := range models {
-		p, err := toPolicy(&models[i])
-		if err != nil {
-			return nil, err
+		p, convErr := toPolicy(&models[i])
+		if convErr != nil {
+			return nil, convErr
 		}
 		policies = append(policies, p)
 	}
@@ -83,15 +102,33 @@ func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
 	return nil
 }
 
-// EventsOlderThan returns events older than a given time for a category.
-func (s *Store) EventsOlderThan(ctx context.Context, category string, before time.Time) ([]*audit.Event, error) {
+// EventsOlderThan returns the events the purge query selects.
+//
+// Security-critical: the scope filter is what keeps one tenant's policy from
+// selecting, and therefore purging, every tenant's history. The bound keeps a
+// large backlog from being loaded into memory all at once.
+func (s *Store) EventsOlderThan(
+	ctx context.Context, pq retention.PurgeQuery,
+) ([]*audit.Event, error) {
 	var models []EventModel
-	err := s.pg.NewSelect(&models).
-		Where("e.category = ?", category).
-		Where("e.timestamp < ?", before).
-		OrderExpr("e.timestamp ASC").
-		Scan(ctx)
-	if err != nil {
+	q := s.pg.NewSelect(&models).Where("e.timestamp < ?", pq.Before)
+
+	if pq.Category != "*" {
+		q.Where("e.category = ?", pq.Category)
+	}
+	if pq.AppID != "" {
+		q.Where("e.app_id = ?", pq.AppID)
+	}
+	if pq.TenantID != "" {
+		q.Where("e.tenant_id = ?", pq.TenantID)
+	}
+
+	q = q.OrderExpr("e.timestamp ASC")
+	if limit := pq.EffectiveLimit(); limit > 0 {
+		q = q.Limit(limit)
+	}
+
+	if err := q.Scan(ctx); err != nil {
 		return nil, err
 	}
 
@@ -131,23 +168,35 @@ func (s *Store) RecordArchive(ctx context.Context, a *retention.Archive) error {
 	return err
 }
 
-// ListArchives returns archive records with pagination.
+// ListArchives returns archive records matching opts, scoped before pagination.
 func (s *Store) ListArchives(ctx context.Context, opts retention.ListOpts) ([]*retention.Archive, error) {
 	var models []ArchiveModel
-	err := s.pg.NewSelect(&models).
-		OrderExpr("a.created_at DESC").
-		Limit(opts.Limit).
-		Offset(opts.Offset).
-		Scan(ctx)
-	if err != nil {
+	q := s.pg.NewSelect(&models)
+
+	if opts.AppID != "" {
+		q.Where("a.app_id = ?", opts.AppID)
+	}
+	if opts.TenantID != "" {
+		q.Where("a.tenant_id = ?", opts.TenantID)
+	}
+
+	q = q.OrderExpr("a.created_at DESC")
+	if opts.Limit > 0 {
+		q = q.Limit(opts.Limit)
+	}
+	if opts.Offset > 0 {
+		q = q.Offset(opts.Offset)
+	}
+
+	if err := q.Scan(ctx); err != nil {
 		return nil, err
 	}
 
 	archives := make([]*retention.Archive, 0, len(models))
 	for i := range models {
-		a, err := toArchive(&models[i])
-		if err != nil {
-			return nil, err
+		a, convErr := toArchive(&models[i])
+		if convErr != nil {
+			return nil, convErr
 		}
 		archives = append(archives, a)
 	}

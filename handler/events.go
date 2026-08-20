@@ -2,7 +2,6 @@ package handler
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -69,7 +68,7 @@ func (a *API) listEvents(ctx forge.Context, req *ListEventsRequest) (*audit.Quer
 		return nil, fmt.Errorf("list events: %w", err)
 	}
 
-	return result, ctx.JSON(http.StatusOK, result)
+	return result, nil
 }
 
 // getEvent handles GET /v1/events/:id.
@@ -101,7 +100,7 @@ func (a *API) getEvent(ctx forge.Context, _ *GetEventRequest) (*audit.Event, err
 		return nil, forge.NotFound("event not found")
 	}
 
-	return event, ctx.JSON(http.StatusOK, event)
+	return event, nil
 }
 
 // eventsByUser handles GET /v1/events/user/:userId.
@@ -120,7 +119,16 @@ func (a *API) eventsByUser(ctx forge.Context, req *EventsByUserRequest) (*audit.
 		trace.WithAttributes(attribute.String("user_id", userID)))
 	defer span.End()
 
-	var opts audit.TimeRange
+	// Security-critical: confine the lookup to the caller's scope and bound it.
+	// Without the scope a per-user lookup returns every tenant's events for that
+	// user ID.
+	info := scope.FromContext(c)
+	opts := audit.TimeRange{
+		AppID:    info.AppID,
+		TenantID: info.TenantID,
+		Limit:    defaultLimit(req.Limit),
+	}
+
 	if req.After != "" {
 		if t, err := time.Parse(time.RFC3339, req.After); err == nil {
 			opts.After = t
@@ -138,7 +146,7 @@ func (a *API) eventsByUser(ctx forge.Context, req *EventsByUserRequest) (*audit.
 		return nil, fmt.Errorf("events by user: %w", err)
 	}
 
-	return result, ctx.JSON(http.StatusOK, result)
+	return result, nil
 }
 
 // aggregateEvents handles POST /v1/events/aggregate.
@@ -160,5 +168,5 @@ func (a *API) aggregateEvents(ctx forge.Context, req *audit.AggregateQuery) (*au
 		return nil, fmt.Errorf("aggregate events: %w", err)
 	}
 
-	return result, ctx.JSON(http.StatusOK, result)
+	return result, nil
 }

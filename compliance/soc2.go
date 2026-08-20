@@ -70,6 +70,14 @@ type sectionDef struct {
 	notes      string
 }
 
+// MaxSectionEvents bounds the evidence listing embedded in one report section.
+//
+// A report covering a busy period can match far more events than belong in a
+// single document, so the listing is a sample. Section.MatchedEvents and
+// Section.EventsTruncated say so explicitly; the report's summary Stats are
+// computed separately and are exact.
+const MaxSectionEvents = 1000
+
 // buildSection queries audit data and assembles a single report section.
 func (e *Engine) buildSection(ctx context.Context, def sectionDef, period DateRange, appID, tenantID string) (Section, error) {
 	q := &audit.Query{
@@ -80,7 +88,7 @@ func (e *Engine) buildSection(ctx context.Context, def sectionDef, period DateRa
 		Categories: def.categories,
 		Actions:    def.actions,
 		Severity:   def.severity,
-		Limit:      1000,
+		Limit:      MaxSectionEvents,
 		Order:      "asc",
 	}
 
@@ -104,9 +112,11 @@ func (e *Engine) buildSection(ctx context.Context, def sectionDef, period DateRa
 	}
 
 	return Section{
-		Title:  def.title,
-		Events: result.Events,
-		Stats:  aggResult,
-		Notes:  def.notes,
+		Title:           def.title,
+		Events:          result.Events,
+		MatchedEvents:   result.Total,
+		EventsTruncated: result.Total > int64(len(result.Events)),
+		Stats:           aggResult,
+		Notes:           def.notes,
 	}, nil
 }

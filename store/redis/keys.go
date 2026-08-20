@@ -16,6 +16,7 @@ const (
 	zEventAll      = "chronicle:z:evt:all"
 	zEventStream   = "chronicle:z:evt:stream:"   // + stream ID
 	zEventScope    = "chronicle:z:evt:scope:"    // + appID:tenantID
+	zEventApp      = "chronicle:z:evt:app:"      // + appID
 	zEventCategory = "chronicle:z:evt:category:" // + category
 	zEventUser     = "chronicle:z:evt:user:"     // + user ID
 	zEventSubject  = "chronicle:z:evt:subject:"  // + subject ID
@@ -38,8 +39,10 @@ const (
 
 // Key prefixes for unique indexes.
 const (
-	uniqueStreamScope    = "chronicle:u:str:scope:" // + appID:tenantID
-	uniquePolicyCategory = "chronicle:u:pol:cat:"   // + category
+	uniqueStreamScope = "chronicle:u:str:scope:" // + appID:tenantID
+	// uniquePolicyScope keys a policy by its owner, not by category alone: a
+	// category-only key let one app evict another app's policy.
+	uniquePolicyScope = "chronicle:u:pol:scope:" // + appID:tenantID:category
 )
 
 // entityKey returns the primary key for an entity.

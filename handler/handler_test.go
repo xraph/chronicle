@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,6 +21,7 @@ import (
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store/memory"
+	"github.com/xraph/chronicle/stream"
 )
 
 const (
@@ -50,6 +53,7 @@ func newTestSetup(t *testing.T) *testSetup {
 	api := handler.New(handler.Dependencies{
 		AuditStore:     store,
 		VerifyStore:    store,
+		StreamStore:    store,
 		ErasureStore:   store,
 		RetentionStore: store,
 		ReportStore:    store,
@@ -498,5 +502,257 @@ func TestGenerateSOC2Report(t *testing.T) {
 	}
 	if report.AppID != testAppID {
 		t.Errorf("expected app_id %q, got %q", testAppID, report.AppID)
+	}
+}
+
+// ──────────────────────────────────────────────────
+// Response shape
+// ──────────────────────────────────────────────────
+
+// TestResponsesCarryExactlyOneJSONDocument pins the double-serialisation fix.
+//
+// Handlers used to both call ctx.JSON and return the value; forge serialises a
+// non-nil first return too, so every body contained the payload twice. A
+// json.Decoder stops after the first document, which is why the other tests
+// never noticed — this one asserts nothing follows it.
+func TestResponsesCarryExactlyOneJSONDocument(t *testing.T) {
+	ts := newTestSetup(t)
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   any
+		status int
+	}{
+		{"listEvents", http.MethodGet, "/v1/events", nil, http.StatusOK},
+		{"eventsByUser", http.MethodGet, "/v1/events/user/" + testUserID, nil, http.StatusOK},
+		{"stats", http.MethodGet, "/v1/stats", nil, http.StatusOK},
+		{"listErasures", http.MethodGet, "/v1/erasures", nil, http.StatusOK},
+		{"listPolicies", http.MethodGet, "/v1/retention", nil, http.StatusOK},
+		{"listArchives", http.MethodGet, "/v1/retention/archives", nil, http.StatusOK},
+		{"listReports", http.MethodGet, "/v1/reports", nil, http.StatusOK},
+		{
+			"aggregateEvents", http.MethodPost, "/v1/events/aggregate",
+			map[string]any{"group_by": []string{"category"}}, http.StatusOK,
+		},
+		{
+			"savePolicy", http.MethodPost, "/v1/retention",
+			map[string]any{"category": "auth", "duration": "720h", "archive": false},
+			http.StatusCreated,
+		},
+		{
+			"requestErasure", http.MethodPost, "/v1/erasures",
+			map[string]any{
+				"subject_id":   "subject_1",
+				"reason":       "GDPR request",
+				"requested_by": testUserID,
+			},
+			http.StatusCreated,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := ts.do(t, tc.method, tc.path, tc.body)
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.status, rec.Body.String())
+			}
+
+			dec := json.NewDecoder(bytes.NewReader(rec.Body.Bytes()))
+
+			var first json.RawMessage
+			if err := dec.Decode(&first); err != nil {
+				t.Fatalf("decode first document: %v (body %q)", err, rec.Body.String())
+			}
+
+			// Anything left after the first document means the body was written
+			// twice.
+			var extra json.RawMessage
+			if err := dec.Decode(&extra); err == nil {
+				t.Fatalf("body contains a second JSON document: %q", rec.Body.String())
+			} else if !errors.Is(err, io.EOF) {
+				t.Fatalf("expected EOF after the first document, got %v (body %q)", err, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestAggregateRejectsInjectedGroupBy pins that the HTTP layer refuses an
+// injected group_by rather than passing it to the store.
+func TestAggregateRejectsInjectedGroupBy(t *testing.T) {
+	ts := newTestSetup(t)
+
+	rec := ts.do(t, http.MethodPost, "/v1/events/aggregate", map[string]any{
+		"group_by": []string{"category, (SELECT COUNT(*) FROM chronicle_streams)"},
+	})
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("injected group_by was accepted: %s", rec.Body.String())
+	}
+}
+
+// TestCrossTenantReadsAreNotVisible pins that a caller scoped to one app cannot
+// read another app's events, erasures, policies or reports.
+func TestCrossTenantReadsAreNotVisible(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := context.Background()
+
+	// Seed a record owned by a different app.
+	otherEvent := &audit.Event{
+		ID:        id.NewAuditID(),
+		StreamID:  id.NewStreamID(),
+		Sequence:  1,
+		Hash:      "other-hash",
+		AppID:     "app_other",
+		TenantID:  "tenant_other",
+		UserID:    testUserID,
+		Action:    "other.action",
+		Resource:  "other",
+		Category:  "auth",
+		Outcome:   audit.OutcomeSuccess,
+		Severity:  audit.SeverityInfo,
+		Timestamp: time.Now().UTC(),
+	}
+	if err := ts.store.Append(ctx, otherEvent); err != nil {
+		t.Fatalf("seed other-app event: %v", err)
+	}
+
+	t.Run("listEvents", func(t *testing.T) {
+		rec := ts.do(t, http.MethodGet, "/v1/events", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+		}
+		var result audit.QueryResult
+		if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		for _, e := range result.Events {
+			if e.AppID != testAppID {
+				t.Fatalf("leaked event from app %q", e.AppID)
+			}
+		}
+	})
+
+	t.Run("getEvent", func(t *testing.T) {
+		rec := ts.do(t, http.MethodGet, "/v1/events/"+otherEvent.ID.String(), nil)
+		if rec.Code == http.StatusOK {
+			t.Fatalf("another app's event was readable by ID: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("eventsByUser", func(t *testing.T) {
+		rec := ts.do(t, http.MethodGet, "/v1/events/user/"+testUserID, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+		}
+		var result audit.QueryResult
+		if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(result.Events) == 0 {
+			t.Fatal("expected the caller's own events to be returned")
+		}
+		for _, e := range result.Events {
+			if e.AppID != testAppID {
+				t.Fatalf("leaked event from app %q", e.AppID)
+			}
+		}
+	})
+}
+
+// TestEnforceRetentionDoesNotPurgeOtherApps pins that the enforce endpoint runs
+// only the caller's policies.
+func TestEnforceRetentionDoesNotPurgeOtherApps(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := context.Background()
+
+	victim := &audit.Event{
+		ID:        id.NewAuditID(),
+		StreamID:  id.NewStreamID(),
+		Sequence:  1,
+		Hash:      "victim-hash",
+		AppID:     "app_other",
+		TenantID:  "tenant_other",
+		Action:    "other.action",
+		Resource:  "other",
+		Category:  "auth",
+		Outcome:   audit.OutcomeSuccess,
+		Severity:  audit.SeverityInfo,
+		Timestamp: time.Now().UTC().Add(-72 * time.Hour),
+	}
+	if err := ts.store.Append(ctx, victim); err != nil {
+		t.Fatalf("seed other-app event: %v", err)
+	}
+
+	// The caller registers an aggressive policy on the same category.
+	rec := ts.do(t, http.MethodPost, "/v1/retention", map[string]any{
+		"category": "auth",
+		"duration": "1h",
+		"archive":  false,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("savePolicy status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = ts.do(t, http.MethodPost, "/v1/retention/enforce", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enforce status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if _, err := ts.store.Get(ctx, victim.ID); err != nil {
+		t.Fatalf("another app's event was purged by the caller's policy: %v", err)
+	}
+}
+
+// TestVerifyChainRejectsOtherTenantsStream pins that chain verification confirms
+// stream ownership. A stream is per app+tenant, so verifying someone else's
+// leaks its event count, sequence range and integrity status.
+func TestVerifyChainRejectsOtherTenantsStream(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := context.Background()
+
+	other := &stream.Stream{
+		ID:       id.NewStreamID(),
+		AppID:    "app_other",
+		TenantID: "tenant_other",
+	}
+	if err := ts.store.CreateStream(ctx, other); err != nil {
+		t.Fatalf("create other stream: %v", err)
+	}
+
+	rec := ts.do(t, http.MethodPost, "/v1/verify", map[string]any{
+		"stream_id": other.ID.String(),
+		"from_seq":  1,
+		"to_seq":    10,
+	})
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("verified another tenant's stream: %s", rec.Body.String())
+	}
+}
+
+// TestVerifyChainAcceptsOwnStream keeps the endpoint working for its owner.
+func TestVerifyChainAcceptsOwnStream(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := context.Background()
+
+	own := &stream.Stream{
+		ID:       id.NewStreamID(),
+		AppID:    testAppID,
+		TenantID: testTenantID,
+	}
+	if err := ts.store.CreateStream(ctx, own); err != nil {
+		t.Fatalf("create own stream: %v", err)
+	}
+
+	rec := ts.do(t, http.MethodPost, "/v1/verify", map[string]any{
+		"stream_id": own.ID.String(),
+		"from_seq":  1,
+		"to_seq":    10,
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 }

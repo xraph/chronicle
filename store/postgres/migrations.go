@@ -192,5 +192,48 @@ CREATE INDEX IF NOT EXISTS idx_chronicle_reports_scope ON chronicle_reports (app
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "scope_retention_to_app_and_tenant",
+			Version: "20240101000005",
+			Comment: "Key retention policies per (app_id, tenant_id, category) and scope archives",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// A category was globally UNIQUE, so saving a policy in one app
+				// overwrote another app's policy for the same category and took
+				// ownership of it. Uniqueness belongs to the owning scope.
+				_, err := exec.Exec(ctx, `
+ALTER TABLE chronicle_retention_policies
+    ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE chronicle_retention_policies
+    DROP CONSTRAINT IF EXISTS chronicle_retention_policies_category_key;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chronicle_retention_policies_scope
+    ON chronicle_retention_policies (app_id, tenant_id, category);
+
+ALTER TABLE chronicle_archives
+    ADD COLUMN IF NOT EXISTS app_id TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_chronicle_archives_scope
+    ON chronicle_archives (app_id, tenant_id, created_at DESC);
+
+-- Retention purges filter on scope + category + timestamp.
+CREATE INDEX IF NOT EXISTS idx_chronicle_events_retention
+    ON chronicle_events (app_id, tenant_id, category, timestamp);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_chronicle_events_retention;
+DROP INDEX IF EXISTS idx_chronicle_archives_scope;
+ALTER TABLE chronicle_archives DROP COLUMN IF EXISTS tenant_id;
+ALTER TABLE chronicle_archives DROP COLUMN IF EXISTS app_id;
+DROP INDEX IF EXISTS idx_chronicle_retention_policies_scope;
+ALTER TABLE chronicle_retention_policies DROP COLUMN IF EXISTS tenant_id;
+`)
+				return err
+			},
+		},
 	)
 }

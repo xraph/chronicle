@@ -93,7 +93,7 @@ func (s *Store) GetReport(ctx context.Context, reportID id.ID) (*compliance.Repo
 	return fromReportModel(&m)
 }
 
-// ListReports returns reports with pagination.
+// ListReports returns reports matching opts, scoped before pagination.
 func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*compliance.Report, error) {
 	ids, err := s.rdb.ZRevRange(ctx, zReportAll, 0, -1).Result()
 	if err != nil {
@@ -103,15 +103,21 @@ func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*c
 	result := make([]*compliance.Report, 0, len(ids))
 	for _, entryID := range ids {
 		var m reportModel
-		if err := s.getEntity(ctx, entityKey(prefixReport, entryID), &m); err != nil {
-			if isNotFound(err) {
+		if getErr := s.getEntity(ctx, entityKey(prefixReport, entryID), &m); getErr != nil {
+			if isNotFound(getErr) {
 				continue
 			}
-			return nil, err
+			return nil, getErr
 		}
-		r, err := fromReportModel(&m)
-		if err != nil {
-			return nil, err
+		if opts.AppID != "" && m.AppID != opts.AppID {
+			continue
+		}
+		if opts.TenantID != "" && m.TenantID != opts.TenantID {
+			continue
+		}
+		r, convErr := fromReportModel(&m)
+		if convErr != nil {
+			return nil, convErr
 		}
 		result = append(result, r)
 	}

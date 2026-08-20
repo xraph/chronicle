@@ -16,6 +16,14 @@ import (
 	"github.com/xraph/chronicle/stream"
 )
 
+// safeUint64 converts an int64 to uint64, clamping negative values to 0.
+func safeUint64(v int64) uint64 {
+	if v < 0 {
+		return 0
+	}
+	return uint64(v)
+}
+
 // ──────────────────────────────────────────────────
 // EventModel
 // ──────────────────────────────────────────────────
@@ -302,6 +310,7 @@ type RetentionPolicyModel struct {
 	Duration  int64  `grove:"duration"` // nanoseconds
 	Archive   int    `grove:"archive"`  // INTEGER boolean
 	AppID     string `grove:"app_id"`
+	TenantID  string `grove:"tenant_id"`
 	CreatedAt string `grove:"created_at"` // TEXT RFC3339Nano
 	UpdatedAt string `grove:"updated_at"` // TEXT RFC3339Nano
 }
@@ -332,6 +341,7 @@ func toPolicy(m *RetentionPolicyModel) (*retention.Policy, error) {
 		Duration: time.Duration(m.Duration),
 		Archive:  m.Archive != 0,
 		AppID:    m.AppID,
+		TenantID: m.TenantID,
 	}, nil
 }
 
@@ -346,6 +356,7 @@ func fromPolicy(p *retention.Policy) *RetentionPolicyModel {
 		Duration:  int64(p.Duration),
 		Archive:   archive,
 		AppID:     p.AppID,
+		TenantID:  p.TenantID,
 		CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt: p.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
@@ -367,6 +378,8 @@ type ArchiveModel struct {
 	ToTimestamp   string `grove:"to_timestamp"`   // TEXT RFC3339Nano
 	SinkName      string `grove:"sink_name"`
 	SinkRef       string `grove:"sink_ref"`
+	AppID         string `grove:"app_id"`
+	TenantID      string `grove:"tenant_id"`
 	CreatedAt     string `grove:"created_at"` // TEXT RFC3339Nano
 }
 
@@ -408,6 +421,8 @@ func toArchive(m *ArchiveModel) (*retention.Archive, error) {
 		ToTimestamp:   toTs,
 		SinkName:      m.SinkName,
 		SinkRef:       m.SinkRef,
+		AppID:         m.AppID,
+		TenantID:      m.TenantID,
 	}, nil
 }
 
@@ -421,6 +436,8 @@ func fromArchive(a *retention.Archive) *ArchiveModel {
 		ToTimestamp:   a.ToTimestamp.UTC().Format(time.RFC3339Nano),
 		SinkName:      a.SinkName,
 		SinkRef:       a.SinkRef,
+		AppID:         a.AppID,
+		TenantID:      a.TenantID,
 		CreatedAt:     a.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }

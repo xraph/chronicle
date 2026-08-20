@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/xraph/chronicle/audit"
@@ -20,7 +23,15 @@ type S3Writer interface {
 }
 
 // S3Sink archives events to S3 as gzip-compressed JSONL files.
-// Key format: {prefix}/{category}/{year}/{month}/{day}/events.jsonl.gz
+//
+// Key format: {prefix}/{category}/{year}/{month}/{day}/events-{digest}.jsonl.gz
+//
+// The digest is over the batch's compressed bytes. A fixed name per
+// category+day meant a second flush on the same day replaced the first archive,
+// and since the retention enforcer purges the source rows once the archive
+// write returns, the first batch was lost from both S3 and the database.
+// Deriving the suffix from content also makes a retried flush idempotent: the
+// same batch resolves to the same key rather than accumulating duplicates.
 type S3Sink struct {
 	writer S3Writer
 	bucket string
@@ -52,10 +63,13 @@ func (s *S3Sink) Write(_ context.Context, events []*audit.Event) error {
 
 // Flush compresses buffered events as gzip JSONL and uploads to S3.
 // Events are partitioned by category and date.
+//
+// The buffer is only cleared once every partition has uploaded. A failed flush
+// leaves the events in place so the caller can retry, rather than dropping the
+// batch on the floor.
 func (s *S3Sink) Flush(ctx context.Context) error {
 	s.mu.Lock()
 	events := s.buffer
-	s.buffer = nil
 	s.mu.Unlock()
 
 	if len(events) == 0 {
@@ -65,25 +79,60 @@ func (s *S3Sink) Flush(ctx context.Context) error {
 	// Partition events by category + date.
 	partitions := make(map[string][]*audit.Event)
 	for _, e := range events {
-		key := fmt.Sprintf("%s/%s/%d/%02d/%02d/events.jsonl.gz",
-			s.prefix, e.Category,
-			e.Timestamp.Year(), e.Timestamp.Month(), e.Timestamp.Day(),
+		prefix := fmt.Sprintf("%s/%s/%d/%02d/%02d",
+			s.prefix, escapeKeySegment(e.Category),
+			e.Timestamp.Year(), int(e.Timestamp.Month()), e.Timestamp.Day(),
 		)
-		partitions[key] = append(partitions[key], e)
+		partitions[prefix] = append(partitions[prefix], e)
 	}
 
-	for key, batch := range partitions {
+	for prefix, batch := range partitions {
 		data, err := compressJSONL(batch)
 		if err != nil {
 			return fmt.Errorf("s3 sink: compress: %w", err)
 		}
+
+		digest := sha256.Sum256(data)
+		key := fmt.Sprintf("%s/events-%s.jsonl.gz", prefix, hex.EncodeToString(digest[:8]))
 
 		if err := s.writer.PutObject(ctx, s.bucket, key, bytes.NewReader(data)); err != nil {
 			return fmt.Errorf("s3 sink: put object %s: %w", key, err)
 		}
 	}
 
+	// Drop only what was uploaded; concurrent writers may have added more.
+	s.mu.Lock()
+	s.buffer = s.buffer[len(events):]
+	s.mu.Unlock()
+
 	return nil
+}
+
+// escapeKeySegment makes a value safe to embed as one S3 key segment, so a
+// category cannot steer the object path with separators or traversal.
+func escapeKeySegment(v string) string {
+	if v == "" {
+		return "unknown"
+	}
+
+	var b strings.Builder
+	b.Grow(len(v))
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+
+	// A segment of only dots would still read as a traversal.
+	out := b.String()
+	if strings.Trim(out, ".") == "" {
+		return "unknown"
+	}
+	return out
 }
 
 // Close flushes any remaining events.

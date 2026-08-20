@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/xraph/grove"
@@ -16,6 +17,7 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
+	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/store"
 	"github.com/xraph/chronicle/stream"
@@ -38,6 +40,10 @@ var (
 	_ retention.Store        = (*Store)(nil)
 	_ compliance.ReportStore = (*Store)(nil)
 )
+
+// hasher re-links events into the chain inside Append's transaction. hash.Chain
+// is stateless, so one package-level value is safe to share.
+var hasher = &hash.Chain{}
 
 // New creates a new grove ORM store with the given database connection.
 func New(db *grove.DB) *Store {
@@ -90,3 +96,47 @@ func groveError(err, notFoundErr error) error {
 
 // now returns the current UTC time.
 func now() time.Time { return time.Now().UTC() }
+
+// busyRetries and busyBackoff bound how long a contended write waits. SQLite
+// permits a single writer and rejects the rest with SQLITE_BUSY immediately
+// unless the connection sets busy_timeout, which is part of the caller's DSN and
+// so not something this package can rely on.
+const (
+	busyRetries = 10
+	busyBackoff = 5 * time.Millisecond
+)
+
+// retryOnBusy runs fn, retrying while SQLite reports the database as locked.
+//
+// Backoff grows linearly, capping total wait at roughly 275ms. A caller's
+// context cancellation takes precedence over further retries.
+func retryOnBusy(ctx context.Context, fn func() error) error {
+	var err error
+	for attempt := range busyRetries {
+		err = fn()
+		if err == nil || !isBusy(err) {
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * busyBackoff):
+		}
+	}
+	return fmt.Errorf("sqlite busy after %d attempts: %w", busyRetries, err)
+}
+
+// isBusy reports whether an error is SQLite's "database is locked" condition.
+//
+// The driver wraps its errors as strings by the time they reach here, so this
+// matches on the message rather than a sentinel.
+func isBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "SQLITE_BUSY") ||
+		strings.Contains(msg, "database table is locked")
+}

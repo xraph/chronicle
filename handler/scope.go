@@ -5,6 +5,7 @@ import (
 
 	"github.com/xraph/forge"
 
+	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/scope"
 )
 
@@ -47,4 +48,26 @@ func requireScope(ctx context.Context) error {
 		return forge.NewHTTPError(401, "missing app scope")
 	}
 	return nil
+}
+
+// retentionScope returns the caller's scope as a retention.Scope, for passing
+// into store queries. Call requireScope first: an empty AppID here would mean
+// "every app".
+func retentionScope(ctx context.Context) retention.Scope {
+	info := scope.FromContext(ctx)
+	return retention.Scope{AppID: info.AppID, TenantID: info.TenantID}
+}
+
+// ownedByCaller reports whether a resource's app and tenant match the caller's
+// scope. An empty TenantID on the resource is treated as belonging to the app,
+// so app-scoped callers can still reach their untenanted records.
+func ownedByCaller(ctx context.Context, appID, tenantID string) bool {
+	info := scope.FromContext(ctx)
+	if info.AppID != "" && appID != info.AppID {
+		return false
+	}
+	if info.TenantID != "" && tenantID != "" && tenantID != info.TenantID {
+		return false
+	}
+	return true
 }

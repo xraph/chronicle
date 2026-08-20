@@ -287,7 +287,19 @@ func (i *ID) UnmarshalBSONValue(t byte, data []byte) error {
 		return nil
 	}
 
-	s := string(data[4 : 4+l-1]) // exclude null terminator
+	// The length prefix comes from the payload, so it cannot be trusted to
+	// describe the payload. Without this check, slicing below panics with an
+	// index out of range on a truncated or malformed document — including one
+	// where the prefix overflows when widened.
+	end := 4 + uint64(l)
+	if end > uint64(len(data)) {
+		return fmt.Errorf(
+			"id: malformed BSON string: length prefix %d exceeds %d remaining bytes",
+			l, len(data)-4,
+		)
+	}
+
+	s := string(data[4 : end-1]) // exclude null terminator
 
 	return i.UnmarshalText([]byte(s))
 }
