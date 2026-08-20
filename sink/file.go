@@ -115,6 +115,9 @@ func (s *FileSink) ensureFile() error {
 	name := fmt.Sprintf("%s-%s-%04d.jsonl", s.prefix, time.Now().UTC().Format("20060102T150405Z"), s.fileCount)
 	path := filepath.Join(s.dir, name)
 
+	// #nosec G304 -- path is filepath.Join of the operator-configured sink
+	// directory and a name this function generates itself from the configured
+	// prefix, a UTC timestamp and a counter. No caller-supplied value reaches it.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
