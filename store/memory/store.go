@@ -872,13 +872,28 @@ func (s *Store) AppendCheckpoint(_ context.Context, cp *checkpoint.Checkpoint) e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// A duplicate (stream, to_seq) is made structurally impossible here rather
-	// than relied on lock discipline elsewhere: two checkpointers racing on one
-	// stream is expected, and the loser of the race must get ErrExists cleanly
-	// instead of silently overwriting or duplicating an entry.
+	// A duplicate (stream, to_seq) OR (stream, from_seq) is made structurally
+	// impossible here rather than relied on lock discipline elsewhere: two
+	// checkpointers racing on one stream is expected, and the loser of the
+	// race must get ErrExists cleanly instead of silently overwriting or
+	// duplicating an entry.
+	//
+	// from_seq matters as much as to_seq, and the SQL backends carry both
+	// constraints for the same reason. to_seq alone only decides a race
+	// between racers that read the same head, and two replicas on a busy
+	// stream routinely do not: each snapshots the stream list at the top of
+	// its own tick, so one can commit 6-10 while the other, whose read
+	// predated it, is still about to commit 6-15. Both would succeed, and the
+	// stream would then report tampered forever, since checkpoints are
+	// append-only and the overlap cannot be removed. Both racers do derive
+	// the same from_seq from the same stale latest checkpoint, which is what
+	// makes this the constraint that catches them.
 	streamIDStr := cp.StreamID.String()
 	for _, existing := range s.checkpoints {
-		if existing.StreamID.String() == streamIDStr && existing.ToSeq == cp.ToSeq {
+		if existing.StreamID.String() != streamIDStr {
+			continue
+		}
+		if existing.ToSeq == cp.ToSeq || existing.FromSeq == cp.FromSeq {
 			return checkpoint.ErrExists
 		}
 	}

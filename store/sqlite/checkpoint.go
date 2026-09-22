@@ -48,11 +48,15 @@ func notFoundOnNoRows(err error) error {
 // is no update or delete, since a checkpoint that could be revised would
 // assert nothing.
 //
-// UNIQUE(stream_id, to_seq) on chronicle_checkpoints is the structural
-// backstop against two checkpointers racing on one stream -- a background
-// ticker and an operator-triggered run can overlap -- so the loser of that
-// race gets checkpoint.ErrExists straight from the database rather than from
-// a read-then-insert check a concurrent writer could still slip past.
+// UNIQUE(stream_id, to_seq) and UNIQUE(stream_id, from_seq) on
+// chronicle_checkpoints are the structural backstop against two
+// checkpointers racing on one stream -- a background ticker, an
+// operator-triggered run, or a second replica's ticker -- so the loser of
+// that race gets checkpoint.ErrExists straight from the database rather than
+// from a read-then-insert check a concurrent writer could still slip past.
+//
+// Both constraints are load-bearing. See migration 007 for why to_seq alone
+// lets two replicas reading different heads write overlapping checkpoints.
 func (s *Store) AppendCheckpoint(ctx context.Context, cp *checkpoint.Checkpoint) error {
 	m := fromCheckpoint(cp)
 	if _, err := s.sdb.NewInsert(m).Exec(ctx); err != nil {

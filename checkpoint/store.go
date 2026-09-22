@@ -19,12 +19,15 @@ var (
 	ErrNotFound = errors.New("checkpoint: not found")
 
 	// ErrExists is returned when a checkpoint already covers a stream's
-	// sequence.
+	// sequence: another one already ends at the same to_seq, or another one
+	// already starts at the same from_seq.
 	//
 	// Two checkpointers racing on one stream is expected: a background ticker
-	// and an operator-triggered run can overlap. Rather than rely on lock
-	// discipline, the store makes a duplicate structurally impossible and the
-	// loser of the race gets this.
+	// and an operator-triggered run can overlap, as can two replicas' tickers.
+	// Rather than rely on lock discipline, which only ever covers one
+	// process, the store makes an overlapping checkpoint structurally
+	// impossible and the loser of the race gets this. It is an ordinary
+	// outcome, not a fault: the scheduler treats it as one.
 	ErrExists = errors.New("checkpoint: already exists for this sequence")
 
 	// ErrUnsupported is returned by backends that cannot store checkpoints

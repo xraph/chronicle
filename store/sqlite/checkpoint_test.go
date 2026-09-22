@@ -83,6 +83,25 @@ func TestSQLiteRejectsADuplicateCheckpointSequence(t *testing.T) {
 	}
 }
 
+// The second half of the same backstop, and the half migration 007 shipped
+// without: two replicas whose stream snapshots differ by a tick derive the
+// same from_seq from the same stale latest checkpoint but claim different
+// heads, so to_seq cannot tell them apart and both overlapping rows land.
+func TestSQLiteRejectsAnOverlappingCheckpointRange(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	streamID := id.NewStreamID()
+	seedStreamFor(t, s, streamID)
+
+	if err := s.AppendCheckpoint(ctx, newCP(streamID, 6, 10, "")); err != nil {
+		t.Fatalf("first AppendCheckpoint: %v", err)
+	}
+	err := s.AppendCheckpoint(ctx, newCP(streamID, 6, 15, ""))
+	if !errors.Is(err, checkpoint.ErrExists) {
+		t.Fatalf("an overlapping checkpoint starting at the same from_seq returned %v, want ErrExists", err)
+	}
+}
+
 func TestSQLiteCheckpointsInRangeOverlaps(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

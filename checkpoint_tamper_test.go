@@ -363,8 +363,8 @@ func TestDeletingEveryCheckpointDropsCoverageNotValidity(t *testing.T) {
 // PurgeEvents-then-AppendBatch plays for events.
 //
 // It matches store/memory's behaviour for the methods verification actually
-// uses: AppendCheckpoint's duplicate-ToSeq rejection and CheckpointsInRange's
-// overlap-and-exclude filter, which is what verifyCheckpoints (and this
+// uses: AppendCheckpoint's duplicate-ToSeq-or-FromSeq rejection and
+// CheckpointsInRange's overlap-and-exclude filter, which is what verifyCheckpoints (and this
 // suite's proof, in TestTruncationBeyondTheLastCheckpointIsNotDetected, that
 // a checkpoint outside the claimed range is never even asked about) both
 // depend on. It is not a full replica: it does not clone on read the way
@@ -381,8 +381,12 @@ func (s *mutableCheckpointStore) AppendCheckpoint(_ context.Context, cp *checkpo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Both halves of store/memory's duplicate check, to_seq and from_seq.
 	for _, existing := range s.list {
-		if existing.StreamID.String() == cp.StreamID.String() && existing.ToSeq == cp.ToSeq {
+		if existing.StreamID.String() != cp.StreamID.String() {
+			continue
+		}
+		if existing.ToSeq == cp.ToSeq || existing.FromSeq == cp.FromSeq {
 			return checkpoint.ErrExists
 		}
 	}

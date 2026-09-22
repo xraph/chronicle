@@ -24,11 +24,18 @@ type fakeStores struct {
 	cps    []*checkpoint.Checkpoint
 }
 
+// AppendCheckpoint models what every real backend enforces structurally:
+// UNIQUE(stream_id, to_seq) AND UNIQUE(stream_id, from_seq). Both, because
+// to_seq alone only arbitrates racers that read the same head -- see
+// TestConcurrentCheckpointersReadingDifferentHeadsProduceOne.
 func (f *fakeStores) AppendCheckpoint(_ context.Context, cp *checkpoint.Checkpoint) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, existing := range f.cps {
-		if existing.StreamID == cp.StreamID && existing.ToSeq == cp.ToSeq {
+		if existing.StreamID != cp.StreamID {
+			continue
+		}
+		if existing.ToSeq == cp.ToSeq || existing.FromSeq == cp.FromSeq {
 			return checkpoint.ErrExists
 		}
 	}
@@ -61,11 +68,9 @@ func (f *fakeStores) ListCheckpoints(context.Context, id.ID, checkpoint.ListOpts
 	return nil, nil
 }
 
-// n is always 10 today; kept as a parameter because every call site reads
-// as "seed 10 events" rather than a magic literal, matching how the tests
-// below narrate the setup they build on.
-//
-//nolint:unparam // n kept general on purpose, see comment above.
+// n is a parameter because every call site reads as "seed this many events"
+// rather than a magic literal, matching how the tests below narrate the
+// setup they build on.
 func seed(f *fakeStores, streamID id.ID, n uint64) checkpoint.StreamHead {
 	for i := uint64(1); i <= n; i++ {
 		f.events = append(f.events, &audit.Event{
@@ -277,4 +282,116 @@ func TestCreatedAtRoundTripsBackendPrecision(t *testing.T) {
 				mongo.CreatedAt, cp.CreatedAt)
 		}
 	})
+}
+
+// staleReadStore holds one checkpointer inside the window between its
+// LatestCheckpoint read and its AppendCheckpoint.
+//
+// That window is the whole problem: CheckpointStream reads the latest
+// checkpoint, derives from_seq from it, signs, and inserts, with no
+// transaction spanning the two and a per-Checkpointer lock that only ever
+// covers one process. Blocking there is what makes the interleaving
+// deterministic instead of hoping the scheduler produces it.
+type staleReadStore struct {
+	*fakeStores
+	readDone chan struct{}
+	resume   chan struct{}
+	once     sync.Once
+}
+
+func (s *staleReadStore) LatestCheckpoint(ctx context.Context, streamID id.ID) (*checkpoint.Checkpoint, error) {
+	cp, err := s.fakeStores.LatestCheckpoint(ctx, streamID)
+	s.once.Do(func() { close(s.readDone) })
+	<-s.resume
+	return cp, err
+}
+
+// TestConcurrentCheckpointersReadingDifferentHeadsProduceOne is the sibling
+// TestConcurrentCheckpointersProduceExactlyOne needed and did not have.
+//
+// That test races four checkpointers that all read the same head, which is
+// the one case UNIQUE(stream_id, to_seq) already decides on its own. Two
+// replicas on a busy stream routinely do not read the same head: each
+// snapshots the stream list at the top of its own tick and then iterates,
+// so their views differ by a tick's length. Replica A commits 6-10 while
+// replica B, whose LatestCheckpoint read predated A's insert, is still about
+// to commit 6-15. Under to_seq alone both succeed, and verification of a
+// chain nobody touched then reports the overlapping checkpoint as a
+// continuity break -- forever, because checkpoints are append-only and the
+// overlap can only be removed by the direct database surgery the feature
+// exists to detect.
+//
+// UNIQUE(stream_id, from_seq) is what decides it: both racers derive the
+// same from_seq from the same stale latest checkpoint, so the loser gets
+// ErrExists, which checkpointAllStreams already treats as an ordinary
+// outcome.
+func TestConcurrentCheckpointersReadingDifferentHeadsProduceOne(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeStores{}
+	streamID := id.NewStreamID()
+	st := seed(f, streamID, 5)
+
+	// The checkpoint both replicas will read as "latest": 1-5.
+	first, err := newCheckpointer(t, f).CheckpointStream(ctx, st)
+	if err != nil {
+		t.Fatalf("first CheckpointStream: %v", err)
+	}
+	if first.FromSeq != 1 || first.ToSeq != 5 {
+		t.Fatalf("first checkpoint covers %d-%d, want 1-5", first.FromSeq, first.ToSeq)
+	}
+
+	stale := &staleReadStore{
+		fakeStores: f,
+		readDone:   make(chan struct{}),
+		resume:     make(chan struct{}),
+	}
+	replicaB := checkpoint.NewCheckpointer(stale, mustSigner(t), nil)
+
+	// Replica B saw the stream at head 15, a tick later than replica A's
+	// snapshot, and reads the latest checkpoint before A commits anything.
+	bErr := make(chan error, 1)
+	go func() {
+		headB := st
+		headB.HeadSeq, headB.HeadHash = 15, "hash-o"
+		_, cpErr := replicaB.CheckpointStream(ctx, headB)
+		bErr <- cpErr
+	}()
+	<-stale.readDone
+
+	// Replica A, on the same stale latest but an older head, commits 6-10.
+	headA := st
+	headA.HeadSeq, headA.HeadHash = 10, "hash-j"
+	second, err := newCheckpointer(t, f).CheckpointStream(ctx, headA)
+	if err != nil {
+		t.Fatalf("replica A CheckpointStream: %v", err)
+	}
+	if second.FromSeq != 6 || second.ToSeq != 10 {
+		t.Fatalf("replica A wrote %d-%d, want 6-10", second.FromSeq, second.ToSeq)
+	}
+
+	close(stale.resume)
+	if bResult := <-bErr; !errors.Is(bResult, checkpoint.ErrExists) {
+		t.Fatalf("replica B's overlapping checkpoint returned %v, want ErrExists. A checkpoint "+
+			"overlapping one already stored cannot be withdrawn, and it makes an untouched chain "+
+			"report tampered from then on", bResult)
+	}
+
+	if len(f.cps) != 2 {
+		t.Fatalf("%d checkpoints stored, want 2 (1-5 and 6-10): %+v", len(f.cps), f.cps)
+	}
+	for i, a := range f.cps {
+		for _, b := range f.cps[i+1:] {
+			if a.FromSeq <= b.ToSeq && b.FromSeq <= a.ToSeq {
+				t.Errorf("checkpoints %d-%d and %d-%d overlap", a.FromSeq, a.ToSeq, b.FromSeq, b.ToSeq)
+			}
+		}
+	}
+}
+
+// mustSigner returns the same signer newCheckpointer builds, for the one
+// test that needs to hand a Checkpointer a store of its own.
+func mustSigner(t *testing.T) checkpoint.Signer {
+	t.Helper()
+	signer, _ := newSigner(t, false) // from signer_test.go, same package
+	return signer
 }

@@ -73,6 +73,37 @@ func TestAppendCheckpointRejectsADuplicateToSeq(t *testing.T) {
 	}
 }
 
+// The constraint that catches two replicas reading different heads: they
+// derive the same from_seq from the same stale latest checkpoint but claim
+// different heads, so their to_seq values differ and only from_seq can tell
+// them apart. Without this, both land and the two overlap permanently.
+func TestAppendCheckpointRejectsADuplicateFromSeq(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	streamID := id.NewStreamID()
+
+	if err := s.AppendCheckpoint(ctx, newCP(streamID, 6, 10, "")); err != nil {
+		t.Fatalf("first AppendCheckpoint: %v", err)
+	}
+	err := s.AppendCheckpoint(ctx, newCP(streamID, 6, 15, ""))
+	if !errors.Is(err, checkpoint.ErrExists) {
+		t.Fatalf("an overlapping checkpoint starting at the same from_seq returned %v, want ErrExists", err)
+	}
+}
+
+// A different stream starting at the same sequence is not a duplicate.
+func TestAppendCheckpointScopesTheFromSeqCheckToItsStream(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+
+	if err := s.AppendCheckpoint(ctx, newCP(id.NewStreamID(), 1, 10, "")); err != nil {
+		t.Fatalf("first AppendCheckpoint: %v", err)
+	}
+	if err := s.AppendCheckpoint(ctx, newCP(id.NewStreamID(), 1, 10, "")); err != nil {
+		t.Fatalf("another stream's first checkpoint was rejected: %v", err)
+	}
+}
+
 func TestLatestCheckpointReturnsTheHighestToSeq(t *testing.T) {
 	ctx := context.Background()
 	s := New()

@@ -15,10 +15,11 @@ import (
 // is no update or delete, since a checkpoint that could be revised would
 // assert nothing.
 //
-// The unique index on (stream_id, to_seq) -- created alongside the
-// collection in migrations.go -- is the structural backstop against two
-// checkpointers racing on one stream: a background ticker and an
-// operator-triggered run can overlap, so the loser of that race gets
+// The unique indexes on (stream_id, to_seq) and (stream_id, from_seq) --
+// created alongside the collection in migrations.go, see checkpointIndexes
+// for why both -- are the structural backstop against two checkpointers
+// racing on one stream: a background ticker, an operator-triggered run, or a
+// second replica's ticker, so the loser of that race gets
 // checkpoint.ErrExists straight from the database rather than from a
 // read-then-insert check a concurrent writer could still slip past.
 func (s *Store) AppendCheckpoint(ctx context.Context, cp *checkpoint.Checkpoint) error {

@@ -345,7 +345,18 @@ CREATE TABLE IF NOT EXISTS chronicle_checkpoints (
     signed_payload  TEXT NOT NULL,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
 
-    UNIQUE(stream_id, to_seq)
+    -- Two constraints, not one. UNIQUE(stream_id, to_seq) only decides a
+    -- race between checkpointers that read the same head, and two replicas
+    -- on a busy stream routinely do not: each snapshots the stream list at
+    -- the top of its own tick, so replica A can commit 6-10 while replica
+    -- B, whose read predated it, is still about to commit 6-15. Both
+    -- succeed, and the stream then reports tampered forever, because
+    -- checkpoints are append-only and the overlap cannot be removed.
+    -- UNIQUE(stream_id, from_seq) is what stops it: both racers derive the
+    -- same from_seq from the same stale latest checkpoint, so the loser
+    -- fails cleanly with checkpoint.ErrExists.
+    UNIQUE(stream_id, to_seq),
+    UNIQUE(stream_id, from_seq)
 );
 
 CREATE INDEX IF NOT EXISTS idx_chronicle_checkpoints_stream

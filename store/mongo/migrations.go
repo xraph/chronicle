@@ -191,12 +191,7 @@ func init() {
 					return err
 				}
 
-				return mexec.CreateIndexes(ctx, colCheckpoints, []mongo.IndexModel{
-					{
-						Keys:    bson.D{{Key: "stream_id", Value: 1}, {Key: "to_seq", Value: 1}},
-						Options: options.Index().SetUnique(true),
-					},
-				})
+				return mexec.CreateIndexes(ctx, colCheckpoints, checkpointIndexes())
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
 				mexec, ok := exec.(*mongomigrate.Executor)
@@ -243,11 +238,34 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 		colReports: {
 			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "tenant_id", Value: 1}, {Key: "created_at", Value: -1}}},
 		},
-		colCheckpoints: {
-			{
-				Keys:    bson.D{{Key: "stream_id", Value: 1}, {Key: "to_seq", Value: 1}},
-				Options: options.Index().SetUnique(true),
-			},
+		colCheckpoints: checkpointIndexes(),
+	}
+}
+
+// checkpointIndexes returns the unique indexes that make an overlapping
+// checkpoint structurally impossible.
+//
+// Two, not one. (stream_id, to_seq) only decides a race between
+// checkpointers that read the same head, and two replicas on a busy stream
+// routinely do not: each snapshots the stream list at the top of its own
+// tick, so replica A can commit 6-10 while replica B, whose read predated
+// it, is still about to commit 6-15. Both succeed, and the stream then
+// reports tampered forever, because checkpoints are append-only and the
+// overlap cannot be removed. (stream_id, from_seq) is what stops it: both
+// racers derive the same from_seq from the same stale latest checkpoint, so
+// the loser fails cleanly with checkpoint.ErrExists.
+//
+// Defined once and used by both the migration and migrationIndexes, so the
+// two cannot drift apart.
+func checkpointIndexes() []mongo.IndexModel {
+	return []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "stream_id", Value: 1}, {Key: "to_seq", Value: 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys:    bson.D{{Key: "stream_id", Value: 1}, {Key: "from_seq", Value: 1}},
+			Options: options.Index().SetUnique(true),
 		},
 	}
 }
