@@ -74,4 +74,33 @@ var (
 			"so it re-links under the configured chain, or drop WithStore and let " +
 			"chronicle build the store itself with the chain already wired in",
 	)
+
+	// ErrCheckpointSignerRequired is returned when checkpoints.enabled is true
+	// and no ed25519 signing key is configured or supplied.
+	//
+	// A checkpoint without a signature asserts nothing: anyone who can write to
+	// the store could write a fabricated one claiming any hash they like. So a
+	// deployment that turns checkpointing on without naming a key source
+	// refuses to start rather than silently taking none, or worse, an unsigned
+	// artifact that looks authoritative.
+	ErrCheckpointSignerRequired = errors.New(
+		"chronicle: checkpoints.enabled is true but no signing key is configured; " +
+			"set checkpoints.signer.provider and checkpoints.signer.path, or pass " +
+			"extension.WithKeyProvider",
+	)
+
+	// ErrCheckpointsUnsupportedByStore is returned when checkpoints.enabled is
+	// true and the resolved store cannot persist checkpoints durably enough to
+	// be a root of trust.
+	//
+	// store/redis is the concrete case today: it is positioned as a
+	// read-through cache layer, and a checkpoint that can be evicted proves
+	// nothing. Starting anyway and simply taking no checkpoints would be
+	// exactly the silent gap signed checkpoints exist to close, so the
+	// extension refuses to start instead.
+	ErrCheckpointsUnsupportedByStore = errors.New(
+		"chronicle: checkpoints.enabled is true but the resolved store does not " +
+			"support checkpoints; use a backend that can persist them durably " +
+			"(pg, sqlite, mongo, or memory), or set checkpoints.enabled: false",
+	)
 )

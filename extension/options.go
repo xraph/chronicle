@@ -161,6 +161,20 @@ func WithKeyProvider(p keys.Provider) Option {
 	return func(e *Extension) { e.keyProvider = p }
 }
 
+// WithCheckpoints enables periodic signed checkpoints over each stream's
+// chain.
+//
+// A checkpoint is a signed statement about where a stream's chain stood; it
+// is what makes a later rewrite of already-recorded events provable, because
+// the assertion cannot be restated without the signing key. Enabling this
+// with no signing key source -- neither cfg.Signer here nor [WithKeyProvider]
+// -- fails Register with [ErrCheckpointSignerRequired]. Enabling it against a
+// store that cannot persist checkpoints durably (store/redis, deliberately)
+// fails Register with [ErrCheckpointsUnsupportedByStore].
+func WithCheckpoints(cfg CheckpointConfig) Option {
+	return func(e *Extension) { e.config.Checkpoints = cfg }
+}
+
 // WithGroveKV sets the name of the grove/kv.Store to resolve from the DI container.
 // The extension will construct a Redis-backed Chronicle store from the KV store.
 // Pass an empty string to use the default (unnamed) grove/kv.Store.

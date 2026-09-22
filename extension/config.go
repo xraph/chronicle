@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
@@ -50,6 +51,13 @@ type Config struct {
 	// TamperEvidence selects how the hash chain resists rewriting: plain
 	// (default) or HMAC-keyed. See [TamperEvidenceConfig].
 	TamperEvidence TamperEvidenceConfig `json:"tamper_evidence" mapstructure:"tamper_evidence" yaml:"tamper_evidence"`
+
+	// Checkpoints controls periodic signed checkpoints over each stream's
+	// chain. See [CheckpointConfig]. Leaving this unset (the default) records
+	// none: nothing about a keyed digest replaces the need for a checkpoint,
+	// since an attacker with write access to the store can rewrite both the
+	// event and its stream's pin.
+	Checkpoints CheckpointConfig `json:"checkpoints" mapstructure:"checkpoints" yaml:"checkpoints"`
 
 	// DashboardMutations permits the dashboard's write actions: creating and
 	// deleting retention policies, running enforcement, and generating reports.
@@ -142,6 +150,54 @@ func (c TamperEvidenceConfig) Validate() error {
 	default:
 		return fmt.Errorf("chronicle: unknown tamper_evidence.digest %q; want plain or hmac", c.Digest)
 	}
+}
+
+// CheckpointConfig controls periodic signed checkpoints.
+//
+// A checkpoint is a signed statement about where a stream's chain stood.
+// Keying the digest stops per-event forgery; a checkpoint is what makes a
+// later rewrite of already-recorded events provable, because the assertion
+// cannot be restated without the signing key.
+type CheckpointConfig struct {
+	// Enabled turns on periodic checkpointing.
+	Enabled bool `json:"enabled" mapstructure:"enabled" yaml:"enabled"`
+
+	// EveryEvents takes a checkpoint once a stream has gained this many events.
+	EveryEvents int `json:"every_events" mapstructure:"every_events" yaml:"every_events"`
+
+	// EveryInterval takes one at least this often, whatever the volume.
+	//
+	// The interval matters more than it looks: the window between checkpoints
+	// is exactly the span an attacker can still rewrite, so a quiet stream that
+	// never reaches EveryEvents would otherwise sit unprotected indefinitely.
+	EveryInterval time.Duration `json:"every_interval" mapstructure:"every_interval" yaml:"every_interval"`
+
+	// Signer configures where the ed25519 signing key comes from.
+	Signer KeyConfig `json:"signer" mapstructure:"signer" yaml:"signer"`
+}
+
+// Validate checks that enabled checkpointing has somewhere to get a key.
+//
+// hasSigner is a runtime fact the config alone cannot see: a keys.Provider
+// supplied programmatically via [WithKeyProvider] satisfies checkpoints.signer
+// the same way it satisfies tamper_evidence.keys, but nothing in Signer's
+// fields would show that. A no-argument Validate would wrongly reject that
+// documented path; see AuthConfig.Validate(routesEnabled bool) for the same
+// shape applied to a different runtime fact.
+func (c CheckpointConfig) Validate(hasSigner bool) error {
+	if !c.Enabled {
+		return nil
+	}
+	if !hasSigner && c.Signer.Provider == "" && c.Signer.Path == "" {
+		return ErrCheckpointSignerRequired
+	}
+	if c.Signer.Provider == "file" && c.Signer.Path == "" {
+		return errors.New("chronicle: checkpoints.signer.provider is file but no path was given")
+	}
+	if c.EveryEvents < 0 {
+		return fmt.Errorf("chronicle: checkpoints.every_events is %d; it cannot be negative", c.EveryEvents)
+	}
+	return nil
 }
 
 // Configured reports whether an auth provider was named.

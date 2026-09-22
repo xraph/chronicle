@@ -22,12 +22,14 @@ import (
 	"github.com/xraph/vessel"
 
 	"github.com/xraph/chronicle"
+	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/crypto"
 	chronicledash "github.com/xraph/chronicle/dashboard"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/handler"
 	"github.com/xraph/chronicle/hash"
+	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/sink"
@@ -38,6 +40,7 @@ import (
 	redisstore "github.com/xraph/chronicle/store/redis"
 	"github.com/xraph/chronicle/store/sealedstore"
 	sqlitestore "github.com/xraph/chronicle/store/sqlite"
+	"github.com/xraph/chronicle/stream"
 )
 
 // Extension metadata.
@@ -86,6 +89,13 @@ type Extension struct {
 	// configured scheme instead of quietly downgrading to plain) and to
 	// Chronicle (via WithDigestScheme/WithKeyProvider). See buildHashChain.
 	hashChain *hash.Chain
+
+	// checkpointer takes signed checkpoints. Built in init, once Checkpoints
+	// is validated and the resolved store is confirmed to support them; nil
+	// when Checkpoints.Enabled is false, which is what leaves
+	// handler.Dependencies.Checkpointer nil for an unconfigured deployment and
+	// keeps Start from launching runCheckpointScheduler.
+	checkpointer *checkpoint.Checkpointer
 
 	cancel context.CancelFunc
 }
@@ -236,6 +246,19 @@ func (e *Extension) init(fapp forge.App) error {
 	}
 	e.store = s
 
+	// Checkpoints: validate against whatever signing key material is
+	// available, probe s (the store as resolved, before any crypto-erasure
+	// wrapping below) for checkpoint support, and build the Checkpointer the
+	// admin API and scheduler will use. Done on s rather than the possibly
+	// sealedstore-wrapped value assigned to e.store further down so a refusal
+	// names the real backend type; sealedstore does not override any
+	// checkpoint method, so the two are equivalent for everything else.
+	checkpointer, checkpointStore, err := e.buildCheckpointer(s)
+	if err != nil {
+		return err
+	}
+	e.checkpointer = checkpointer
+
 	// Crypto-erasure: build the sealer, then wrap the store so every consumer
 	// reads decrypted events. Encryption itself happens in Chronicle.Record,
 	// before the hash is computed over the stored bytes.
@@ -314,18 +337,20 @@ func (e *Extension) init(fapp forge.App) error {
 
 	// Create the API handler with Forge router.
 	e.api = handler.New(handler.Dependencies{
-		AuditStore:     s,
-		VerifyStore:    s,
-		StreamStore:    s,
-		ErasureStore:   s,
-		Erasure:        e.erasureService,
-		RetentionStore: s,
-		ReportStore:    s,
-		Compliance:     e.engine,
-		Retention:      e.enforcer,
-		Logger:         logger,
-		Guards:         guards,
-		HashChain:      e.hashChain,
+		AuditStore:      s,
+		VerifyStore:     s,
+		StreamStore:     s,
+		ErasureStore:    s,
+		Erasure:         e.erasureService,
+		RetentionStore:  s,
+		ReportStore:     s,
+		Compliance:      e.engine,
+		Retention:       e.enforcer,
+		Logger:          logger,
+		Guards:          guards,
+		HashChain:       e.hashChain,
+		CheckpointStore: checkpointStore,
+		Checkpointer:    e.checkpointer,
 	}, fapp.Router())
 
 	// Register HTTP routes unless disabled.
@@ -345,8 +370,8 @@ func (e *Extension) init(fapp forge.App) error {
 	return nil
 }
 
-// Start begins background processing (retention scheduler) and runs
-// migrations unless disabled.
+// Start begins background processing (retention and checkpoint schedulers)
+// and runs migrations unless disabled.
 func (e *Extension) Start(ctx context.Context) error {
 	if e.chronicle == nil {
 		return errors.New("chronicle: extension not initialized")
@@ -365,6 +390,13 @@ func (e *Extension) Start(ctx context.Context) error {
 	// Start retention scheduler if configured.
 	if e.config.RetentionInterval > 0 {
 		go e.runRetentionScheduler(ctx)
+	}
+
+	// Start checkpoint scheduler if configured. e.checkpointer is only
+	// non-nil when Checkpoints.Enabled is true (see buildCheckpointer), so
+	// this also guards against a zero EveryInterval reaching time.NewTicker.
+	if e.config.Checkpoints.Enabled && e.checkpointer != nil {
+		go e.runCheckpointScheduler(ctx)
 	}
 
 	e.MarkStarted()
@@ -477,6 +509,68 @@ func (e *Extension) runRetentionScheduler(ctx context.Context) {
 	}
 }
 
+// runCheckpointScheduler takes a signed checkpoint over every stream once per
+// Checkpoints.EveryInterval. It follows runRetentionScheduler's shape
+// exactly, including its ctx.Done() handling.
+//
+// EveryInterval is the only trigger implemented; EveryEvents is part of the
+// config shape (validated by CheckpointConfig.Validate) but nothing here
+// watches per-stream event counts between ticks. A stream that crosses
+// EveryEvents well inside one interval is still only checkpointed on the next
+// tick, not the moment it crosses the threshold -- it remains covered no
+// later than EveryInterval after any burst, which is the guarantee the
+// interval trigger exists to make.
+func (e *Extension) runCheckpointScheduler(ctx context.Context) {
+	ticker := time.NewTicker(e.config.Checkpoints.EveryInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.checkpointAllStreams(ctx)
+		}
+	}
+}
+
+// checkpointAllStreams lists every stream and takes a checkpoint over each.
+//
+// ErrNothingToCheckpoint (a quiet stream) and ErrExists (lost a race with
+// another checkpointer -- another process's scheduler tick, or an
+// operator-triggered POST /v1/checkpoints landing first) are both ordinary
+// outcomes, not faults, and are skipped silently. Anything else is logged and
+// the loop moves on to the next stream rather than aborting the whole tick
+// over one failure.
+func (e *Extension) checkpointAllStreams(ctx context.Context) {
+	streams, err := e.store.ListStreams(ctx, stream.ListOpts{})
+	if err != nil {
+		e.Logger().Error("checkpoint scheduler: list streams failed",
+			forge.F("error", err.Error()),
+		)
+		return
+	}
+
+	for _, st := range streams {
+		_, cpErr := e.checkpointer.CheckpointStream(ctx, checkpoint.StreamHead{
+			ID:       st.ID,
+			AppID:    st.AppID,
+			TenantID: st.TenantID,
+			HeadSeq:  st.HeadSeq,
+			HeadHash: st.HeadHash,
+		})
+		switch {
+		case cpErr == nil, errors.Is(cpErr, checkpoint.ErrNothingToCheckpoint), errors.Is(cpErr, checkpoint.ErrExists):
+			// Taken, quiet, or lost a race: all ordinary, not faults.
+		default:
+			e.Logger().Error("checkpoint scheduler: checkpoint failed",
+				forge.F("stream_id", st.ID.String()),
+				forge.F("error", cpErr.Error()),
+			)
+		}
+	}
+}
+
 // --- Config Loading (mirrors grove/shield extension pattern) ---
 
 // loadConfiguration loads config from YAML files or programmatic sources.
@@ -566,6 +660,17 @@ func (e *Extension) mergeWithDefaults(cfg Config) Config {
 	if cfg.RetentionInterval == 0 {
 		cfg.RetentionInterval = defaults.RetentionInterval
 	}
+	// Defaults below are gated on Enabled: a deployment with no checkpoints
+	// block (or one that left it off) must keep recording none, not have an
+	// interval and event threshold materialize under it.
+	if cfg.Checkpoints.Enabled {
+		if cfg.Checkpoints.EveryEvents == 0 {
+			cfg.Checkpoints.EveryEvents = 10000
+		}
+		if cfg.Checkpoints.EveryInterval == 0 {
+			cfg.Checkpoints.EveryInterval = time.Hour
+		}
+	}
 	return cfg
 }
 
@@ -631,6 +736,27 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	}
 	if yamlConfig.TamperEvidence.Keys.Path == "" && programmaticConfig.TamperEvidence.Keys.Path != "" {
 		yamlConfig.TamperEvidence.Keys.Path = programmaticConfig.TamperEvidence.Keys.Path
+	}
+
+	// Checkpoints: same rule as TamperEvidence, field by field, so a YAML
+	// block that only sets the interval still leaves Enabled and the signer
+	// to reach here from WithCheckpoints, and so does the reverse -- a YAML
+	// block that turns checkpoints on while the signing key comes from a
+	// KMS-backed WithKeyProvider rather than checkpoints.signer.
+	if !yamlConfig.Checkpoints.Enabled && programmaticConfig.Checkpoints.Enabled {
+		yamlConfig.Checkpoints.Enabled = true
+	}
+	if yamlConfig.Checkpoints.EveryEvents == 0 && programmaticConfig.Checkpoints.EveryEvents != 0 {
+		yamlConfig.Checkpoints.EveryEvents = programmaticConfig.Checkpoints.EveryEvents
+	}
+	if yamlConfig.Checkpoints.EveryInterval == 0 && programmaticConfig.Checkpoints.EveryInterval != 0 {
+		yamlConfig.Checkpoints.EveryInterval = programmaticConfig.Checkpoints.EveryInterval
+	}
+	if yamlConfig.Checkpoints.Signer.Provider == "" && programmaticConfig.Checkpoints.Signer.Provider != "" {
+		yamlConfig.Checkpoints.Signer.Provider = programmaticConfig.Checkpoints.Signer.Provider
+	}
+	if yamlConfig.Checkpoints.Signer.Path == "" && programmaticConfig.Checkpoints.Signer.Path != "" {
+		yamlConfig.Checkpoints.Signer.Path = programmaticConfig.Checkpoints.Signer.Path
 	}
 
 	// Auth: same rule again. Dropping these silently is how an admin API that
@@ -754,4 +880,64 @@ func (e *Extension) buildHashChain() (*hash.Chain, error) {
 		return nil, fmt.Errorf("chronicle: %w", err)
 	}
 	return chain, nil
+}
+
+// buildCheckpointSigner resolves a keys.Provider for checkpoint signing --
+// from config or [WithKeyProvider], mirroring buildHashChain -- and returns
+// an Ed25519Signer.
+//
+// The same e.keyProvider WithKeyProvider sets for tamper_evidence doubles as
+// the checkpoint signing key source: keys.Provider is parameterised by Use,
+// so a single provider (a keyset file or a KMS-backed implementation) can
+// vend both the hmac digest key and the ed25519 checkpoint key without the
+// deployment naming two separate sources. Callers must only invoke this when
+// Checkpoints.Enabled is true.
+func (e *Extension) buildCheckpointSigner() (checkpoint.Signer, error) {
+	if err := e.config.Checkpoints.Validate(e.keyProvider != nil); err != nil {
+		return nil, err
+	}
+
+	provider := e.keyProvider
+	if provider == nil && e.config.Checkpoints.Signer.Provider == "file" {
+		p, err := keys.NewFileProvider(e.config.Checkpoints.Signer.Path)
+		if err != nil {
+			return nil, err
+		}
+		provider = p
+	}
+	return checkpoint.NewEd25519Signer(provider), nil
+}
+
+// buildCheckpointer validates checkpoints.* against whatever signing key
+// material is available, probes s for checkpoint support, and constructs the
+// Checkpointer. It returns (nil, nil, nil) when Checkpoints.Enabled is false,
+// which is what leaves handler.Dependencies' CheckpointStore and Checkpointer
+// nil for a deployment that never turned checkpoints on -- the routes then
+// report 503 rather than mounting a write path with nothing behind it, and
+// Start never launches runCheckpointScheduler.
+//
+// The probe matters because store/redis (deliberately: it is a read-through
+// cache, the wrong home for a root of trust) returns checkpoint.ErrUnsupported
+// from every checkpoint method. Running with checkpoints.enabled: true
+// against such a backend would otherwise start clean and record nothing --
+// exactly the silent gap signed checkpoints exist to close. s already
+// satisfies checkpoint.Store (store.Store embeds it), so no type assertion is
+// needed to make the call; LatestCheckpoint against a zero stream ID is a
+// cheap, side-effect-free way to ask a real backend "have you heard of
+// checkpoints at all" without needing any checkpoint to already exist.
+func (e *Extension) buildCheckpointer(s store.Store) (*checkpoint.Checkpointer, checkpoint.Store, error) {
+	if !e.config.Checkpoints.Enabled {
+		return nil, nil, nil
+	}
+
+	signer, err := e.buildCheckpointSigner()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if _, probeErr := s.LatestCheckpoint(context.Background(), id.Nil); probeErr != nil && errors.Is(probeErr, checkpoint.ErrUnsupported) {
+		return nil, nil, fmt.Errorf("%w (store type %T)", ErrCheckpointsUnsupportedByStore, s)
+	}
+
+	return checkpoint.NewCheckpointer(s, s, signer, e.Logger()), s, nil
 }
