@@ -360,18 +360,39 @@ c, _ := chronicle.New(
 
 Set `digest: hmac` without a key source and Chronicle refuses to start. You
 configured a keyed chain, so writing unkeyed digests while you believed
-otherwise is the worse failure.
+otherwise is the worse failure. A keyset that parses but has no active `hmac`
+key in it, because the `use` is misspelled or the only entry is `"active":
+false`, is caught at startup as well. Otherwise the process boots green and then
+fails on every event you record.
 
 The keyset is a JSON file holding every key you have used, with one marked
 active per use. Rotating means adding a key and moving the active flag. Retired
 keys stay, because events written under them still have to verify, and
 `Provider.ByID` is what resolves them.
 
+Rotating is not enough when a key leaks. Whoever holds it can rewrite every
+event, label each row with that key's ID, recompute, and get a clean report,
+because the digests genuinely check out. Set `"revoked": true` on the entry and
+`ByID` refuses to resolve it at all, so verification errors instead of passing.
+Leave the material in the file when you do, so a row naming that key is reported
+as revoked, not as an ID nobody recognises. It cuts both ways. Events you signed
+honestly with that key stop verifying too, because nobody can tell them apart
+from the forged ones. That stretch of the log no longer proves anything, and
+saying so beats a green tick that does not mean what it looks like.
+
 **What keying buys you.** An event's digest can no longer be produced from the
 stored row alone. Each event records the scheme that wrote it and each stream
 records the scheme it is pinned to from which sequence, so an event claiming a
 weaker scheme than its stream promises is reported as tampering rather than
 read as history.
+
+Turn `hmac` on for a database that already holds events and the pin moves on its
+own. The first time you record into a stream, Chronicle advances that stream to
+the keyed scheme from the next sequence, and writes the pin before the event.
+Everything below the new boundary keeps verifying under the scheme it was
+written with. Chronicle only ever moves a pin up. Point a plain-configured
+process at a stream already pinned to `hmac` and it refuses to record, because a
+pin that drops on its own looks exactly like an attacker lowering it.
 
 **What it does not buy you.** Someone who can write to your database can still
 rewrite every event to the unkeyed scheme and rewrite the stream's pin to
@@ -382,9 +403,12 @@ too. Closing it needs a signature held somewhere Chronicle cannot reach, which
 is what signed checkpoints and external anchoring are for. That work is
 specified in `specs/2026-09-22-tamper-evidence-design.md` and is not built yet.
 
-So read keying as raising the cost of the attack, not ending it. It stops
-per-event forgery and partial downgrades outright, and it forces anyone else
-into a wholesale rewrite of two tables.
+So read keying as narrowing who can carry the attack out, not ending it. It
+defends against someone who can write `chronicle_events` but not
+`chronicle_streams`, and who holds no key your provider has ever known. Both
+halves have to hold. Reach the stream row too and the pin moves with the events,
+which is the case above. Get hold of a key and every digest recomputes cleanly,
+which is what revoking it is for.
 
 ### Crypto-erasure
 
