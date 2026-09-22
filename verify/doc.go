@@ -23,19 +23,26 @@
 // [Input] defines the verification request:
 //
 //   - StreamID  — the stream to verify
-//   - FromSeq   — first sequence number to check (0 = start)
-//   - ToSeq     — last sequence number to check (0 = current head)
+//   - FromSeq   — first sequence number to check (0 = genesis)
+//   - ToSeq     — last sequence number to check (0 = the stream head)
 //   - AppID     — required for scope enforcement
 //   - TenantID  — required for scope enforcement
+//   - HeadSeq, HeadHash — the stream's recorded head, so a truncated tail is
+//     detectable rather than silently verifying whatever range is asked for
 //
 // [Report] is returned by the verifier:
 //
-//   - Valid      — true if the full range has no gaps and no tampered hashes
+//   - Valid      — true if the full range has no gaps, no tampered hashes,
+//     no downgrades, and (when checked) the tail matches the recorded head
 //   - Verified   — count of events successfully checked
 //   - Gaps       — sequence numbers that are absent from the store
 //   - Tampered   — sequence numbers whose stored hash differs from recomputed
 //   - FirstEvent — sequence of the first checked event
 //   - LastEvent  — sequence of the last checked event
+//   - Partial    — true when the caller bounded the range rather than
+//     verifying genesis to head
+//   - HeadMatch  — whether the verified tail's hash equals the recorded head
+//   - Coverage   — the assurance [Level] over each span of the verified range
 //
 // # Store
 //

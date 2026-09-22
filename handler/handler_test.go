@@ -760,6 +760,74 @@ func TestVerifyChainAcceptsOwnStream(t *testing.T) {
 	}
 }
 
+// TestVerifyChainDefaultsToGenesisThroughHead pins the behaviour this task
+// changes: POST /v1/verify used to reject a request with no to_seq outright
+// ("to_seq must be greater than 0"). Omitting the range now means "verify
+// genesis to head", and the report says so: not Partial, and HeadMatch true
+// against the stream's own recorded head.
+func TestVerifyChainDefaultsToGenesisThroughHead(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := context.Background()
+
+	st := &stream.Stream{
+		ID:       id.NewStreamID(),
+		AppID:    testAppID,
+		TenantID: testTenantID,
+	}
+	if err := ts.store.CreateStream(ctx, st); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	event := &audit.Event{
+		ID:        id.NewAuditID(),
+		StreamID:  st.ID,
+		Sequence:  1,
+		Timestamp: time.Now().UTC(),
+		AppID:     testAppID,
+		TenantID:  testTenantID,
+		Action:    "login",
+		Resource:  "session",
+		Category:  "auth",
+	}
+	var plain hash.Chain
+	digest, _, err := plain.Compute(ctx, "", event)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	event.Hash, event.HashScheme = digest, string(hash.SchemePlain)
+
+	if err := ts.store.Append(ctx, event); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := ts.store.UpdateStreamHead(ctx, st.ID, event.Hash, event.Sequence); err != nil {
+		t.Fatalf("UpdateStreamHead: %v", err)
+	}
+
+	rec := ts.do(t, http.MethodPost, "/v1/verify", map[string]any{
+		"stream_id": st.ID.String(),
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	var report verify.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("report = %+v, want Valid", report)
+	}
+	if report.Partial {
+		t.Error("a request with no from_seq/to_seq should not be Partial")
+	}
+	if !report.HeadMatch {
+		t.Error("HeadMatch is false even though the verified tail is the stream's recorded head")
+	}
+	if report.Verified != 1 {
+		t.Errorf("Verified = %d, want 1", report.Verified)
+	}
+}
+
 // TestVerifyChainDetectsSchemeDowngrade pins that POST /v1/verify actually
 // uses the stream's pin. A pin the handler never builds cannot expose a
 // downgrade: hash.Chain.VerifyWithPin only flags one when the event's

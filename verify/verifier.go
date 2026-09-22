@@ -40,8 +40,22 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 		Valid: true,
 	}
 
+	// FromSeq 0 means genesis and ToSeq 0 means the stream head, so the default
+	// is to verify the whole chain. A caller that wants less says so, and gets
+	// Partial set.
+	fromSeq := input.FromSeq
+	if fromSeq == 0 {
+		fromSeq = 1
+	}
+	toSeq := input.ToSeq
+	if toSeq == 0 {
+		toSeq = input.HeadSeq
+	}
+	report.Partial = fromSeq > 1 || (input.HeadSeq > 0 && toSeq < input.HeadSeq)
+	report.HeadSeq = input.HeadSeq
+
 	// Detect gaps in the sequence range.
-	gaps, err := v.store.Gaps(ctx, input.StreamID, input.FromSeq, input.ToSeq)
+	gaps, err := v.store.Gaps(ctx, input.StreamID, fromSeq, toSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +65,7 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 	}
 
 	// Get the events in the range.
-	events, err := v.store.EventRange(ctx, input.StreamID, input.FromSeq, input.ToSeq)
+	events, err := v.store.EventRange(ctx, input.StreamID, fromSeq, toSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +118,19 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 
 		report.Verified++
 	}
+
+	// Anchor the tail. A chain whose last verified hash is not the stream's
+	// head has had events removed from the end, which no amount of internal
+	// linkage can reveal.
+	if input.HeadHash != "" && !report.Partial {
+		last := events[len(events)-1]
+		report.HeadMatch = last.Hash == input.HeadHash && last.Sequence == input.HeadSeq
+		if !report.HeadMatch {
+			report.Valid = false
+		}
+	}
+
+	report.Coverage = gradeCoverage(input, fromSeq, toSeq)
 
 	return report, nil
 }

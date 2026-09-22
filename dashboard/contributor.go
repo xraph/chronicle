@@ -270,6 +270,8 @@ func (c *Contributor) renderVerification(ctx context.Context, params contributor
 			FromSeq:  fromSeq,
 			ToSeq:    toSeq,
 			Pin:      hash.Pin{Scheme: hash.Scheme(st.Scheme), Since: st.SchemeSince},
+			HeadSeq:  st.HeadSeq,
+			HeadHash: st.HeadHash,
 		})
 		if err != nil {
 			data.Error = fmt.Sprintf("Verification failed: %v", err)

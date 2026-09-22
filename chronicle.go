@@ -413,9 +413,31 @@ func (c *Chronicle) VerifyEvent(ctx context.Context, eventID id.ID) (bool, error
 }
 
 // VerifyChain verifies the integrity of a hash chain for a stream.
+//
+// A caller that supplies AppID (the scope GetStreamByScope needs) gets
+// HeadSeq, HeadHash and Pin filled in from the actual stream row for whichever
+// of those it left zero, so it gets head anchoring and pin-aware downgrade
+// detection without having to resolve the stream itself. A caller with only a
+// StreamID in hand -- no scope, no stream row -- gets the old, narrower
+// behaviour: no head anchoring, no downgrade detection, matching Input.Pin's
+// documented contract for callers with no stream in hand.
 func (c *Chronicle) VerifyChain(ctx context.Context, input *verify.Input) (*verify.Report, error) {
 	if c.store == nil {
 		return nil, ErrNoStore
+	}
+
+	if input.AppID != "" && (input.HeadSeq == 0 || input.Pin == (hash.Pin{})) {
+		s, err := c.store.GetStreamByScope(ctx, input.AppID, input.TenantID)
+		if err != nil {
+			return nil, fmt.Errorf("chronicle: resolve stream for verification: %w", err)
+		}
+		if input.HeadSeq == 0 {
+			input.HeadSeq = s.HeadSeq
+			input.HeadHash = s.HeadHash
+		}
+		if input.Pin == (hash.Pin{}) {
+			input.Pin = hash.Pin{Scheme: hash.Scheme(s.Scheme), Since: s.SchemeSince}
+		}
 	}
 
 	verifier := verify.NewVerifierWithChain(c.store, c.hasher)

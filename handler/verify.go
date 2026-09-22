@@ -23,9 +23,6 @@ func (a *API) verifyChain(ctx forge.Context, req *VerifyChainRequest) (*verify.R
 	if req.StreamID == "" {
 		return nil, forge.BadRequest("stream_id is required")
 	}
-	if req.ToSeq == 0 {
-		return nil, forge.BadRequest("to_seq must be greater than 0")
-	}
 
 	streamID, err := parseStreamID(req.StreamID)
 	if err != nil {
@@ -63,6 +60,8 @@ func (a *API) verifyChain(ctx forge.Context, req *VerifyChainRequest) (*verify.R
 		FromSeq:  req.FromSeq,
 		ToSeq:    req.ToSeq,
 		Pin:      hash.Pin{Scheme: hash.Scheme(st.Scheme), Since: st.SchemeSince},
+		HeadSeq:  st.HeadSeq,
+		HeadHash: st.HeadHash,
 	}
 
 	verifier := verify.NewVerifierWithChain(a.deps.VerifyStore, a.deps.HashChain)
