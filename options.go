@@ -5,6 +5,7 @@ import (
 
 	log "github.com/xraph/go-utils/log"
 
+	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/keys"
 )
@@ -98,6 +99,29 @@ func WithDigestScheme(s hash.Scheme) Option {
 func WithKeyProvider(p keys.Provider) Option {
 	return func(c *Chronicle) error {
 		c.keys = p
+		return nil
+	}
+}
+
+// WithCheckpointSigner supplies the signer VerifyChain checks signed
+// checkpoints under. Pass the same signer the Checkpointer writes with.
+//
+// It is a separate option rather than something derived from
+// [WithKeyProvider] because the two key sources are genuinely independent.
+// A deployment can checkpoint a plain, unkeyed chain, which has no key
+// provider at all; another can digest with HMAC from one keyset and sign
+// checkpoints from a different one. Deriving the signer from the digest's
+// provider got both of those wrong: the first never checked a checkpoint,
+// and the second failed every verification with "key not found" because the
+// signature had been made under a key the digest's provider had never heard
+// of.
+//
+// Leave it unset and verification behaves exactly as it did before
+// checkpoints existed: no checkpoint is fetched, and coverage tops out at
+// keyed.
+func WithCheckpointSigner(s checkpoint.Signer) Option {
+	return func(c *Chronicle) error {
+		c.checkpointSigner = s
 		return nil
 	}
 }

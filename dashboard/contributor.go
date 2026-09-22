@@ -13,6 +13,7 @@ import (
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/dashboard/pages"
 	"github.com/xraph/chronicle/dashboard/widgets"
@@ -51,6 +52,17 @@ type Config struct {
 	// plain deployment, but an HMAC one needs its keyed chain here or the
 	// verify page cannot check anything at all.
 	HashChain *hash.Chain
+
+	// CheckpointStore and CheckpointSigner are what let the verify page
+	// report signed checkpoints. Both have to be set, since a checkpoint
+	// nobody can check the signature of proves nothing; the extension sets
+	// them as a pair whenever checkpointing is enabled.
+	//
+	// Leave them nil and the page's checkpoint block stays empty and its
+	// coverage ladder tops out at keyed, which is correct for a deployment
+	// that takes no checkpoints.
+	CheckpointStore  checkpoint.Store
+	CheckpointSigner checkpoint.Signer
 }
 
 // Contributor implements the dashboard LocalContributor interface for the
@@ -216,6 +228,22 @@ func (c *Contributor) renderEventDetail(ctx context.Context, params contributor.
 	return pages.EventDetailPage(event), nil
 }
 
+// newVerifier builds the verifier the verify page runs, checking signed
+// checkpoints when this deployment configured both a store to hold them and
+// a signer to check them under.
+//
+// It mirrors handler's own newVerifier deliberately: the page and the admin
+// API answer the same question and must not disagree about what evidence
+// they consulted. Without both, the page reports no checkpoints and its
+// coverage ladder tops out at keyed.
+func (c *Contributor) newVerifier() *verify.Verifier {
+	if c.config.CheckpointStore == nil || c.config.CheckpointSigner == nil {
+		return verify.NewVerifierWithChain(c.store, c.config.HashChain)
+	}
+	return verify.NewVerifierWithCheckpoints(
+		c.store, c.config.HashChain, c.config.CheckpointStore, c.config.CheckpointSigner)
+}
+
 func (c *Contributor) renderVerification(ctx context.Context, params contributor.Params) (templ.Component, error) {
 	data := pages.VerifyPageData{
 		StreamID: params.QueryParams["stream_id"],
@@ -264,8 +292,7 @@ func (c *Contributor) renderVerification(ctx context.Context, params contributor
 			return pages.VerifyPage(data), nil
 		}
 
-		verifier := verify.NewVerifierWithChain(c.store, c.config.HashChain)
-		report, err := verifier.VerifyChain(ctx, &verify.Input{
+		report, err := c.newVerifier().VerifyChain(ctx, &verify.Input{
 			StreamID: streamID,
 			FromSeq:  fromSeq,
 			ToSeq:    toSeq,

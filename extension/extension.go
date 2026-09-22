@@ -97,6 +97,14 @@ type Extension struct {
 	// keeps Start from launching runCheckpointScheduler.
 	checkpointer *checkpoint.Checkpointer
 
+	// checkpointSigner is the signer that Checkpointer writes with, kept so
+	// the read side can check what the write side signed. It goes to three
+	// places, all of them independent of the digest scheme: Chronicle's own
+	// VerifyChain, the admin API's POST /v1/verify, and the dashboard's
+	// verify page. Nil whenever checkpointer is nil, and the three consumers
+	// all fall back to plain chain verification on nil.
+	checkpointSigner checkpoint.Signer
+
 	cancel context.CancelFunc
 }
 
@@ -253,11 +261,11 @@ func (e *Extension) init(fapp forge.App) error {
 	// sealedstore-wrapped value assigned to e.store further down so a refusal
 	// names the real backend type; sealedstore does not override any
 	// checkpoint method, so the two are equivalent for everything else.
-	checkpointer, checkpointStore, err := e.buildCheckpointer(s)
+	checkpointer, checkpointStore, checkpointSigner, err := e.buildCheckpointer(s)
 	if err != nil {
 		return err
 	}
-	e.checkpointer = checkpointer
+	e.checkpointer, e.checkpointSigner = checkpointer, checkpointSigner
 
 	// Crypto-erasure: build the sealer, then wrap the store so every consumer
 	// reads decrypted events. Encryption itself happens in Chronicle.Record,
@@ -306,6 +314,15 @@ func (e *Extension) init(fapp forge.App) error {
 			chronicle.WithKeyProvider(e.keyProvider),
 		)
 	}
+	// Checkpoint verification is wired independently of the digest scheme.
+	// Checkpointing a plain chain is a coherent choice -- the signature is
+	// what makes a later rewrite provable, whether or not the digest under
+	// it was keyed -- and a keyed chain may sign its checkpoints from an
+	// entirely different keyset. Gate this on the digest and both of those
+	// deployments verify without ever fetching the checkpoint they took.
+	if e.checkpointSigner != nil {
+		chronicleOpts = append(chronicleOpts, chronicle.WithCheckpointSigner(e.checkpointSigner))
+	}
 
 	// Create Chronicle.
 	c, err := chronicle.New(chronicleOpts...)
@@ -337,20 +354,21 @@ func (e *Extension) init(fapp forge.App) error {
 
 	// Create the API handler with Forge router.
 	e.api = handler.New(handler.Dependencies{
-		AuditStore:      s,
-		VerifyStore:     s,
-		StreamStore:     s,
-		ErasureStore:    s,
-		Erasure:         e.erasureService,
-		RetentionStore:  s,
-		ReportStore:     s,
-		Compliance:      e.engine,
-		Retention:       e.enforcer,
-		Logger:          logger,
-		Guards:          guards,
-		HashChain:       e.hashChain,
-		CheckpointStore: checkpointStore,
-		Checkpointer:    e.checkpointer,
+		AuditStore:       s,
+		VerifyStore:      s,
+		StreamStore:      s,
+		ErasureStore:     s,
+		Erasure:          e.erasureService,
+		RetentionStore:   s,
+		ReportStore:      s,
+		Compliance:       e.engine,
+		Retention:        e.enforcer,
+		Logger:           logger,
+		Guards:           guards,
+		HashChain:        e.hashChain,
+		CheckpointStore:  checkpointStore,
+		Checkpointer:     e.checkpointer,
+		CheckpointSigner: e.checkpointSigner,
 	}, fapp.Router())
 
 	// Register HTTP routes unless disabled.
@@ -479,6 +497,8 @@ func (e *Extension) DashboardContributor() contributor.LocalContributor {
 			BasePath:            e.config.BasePath,
 			AllowMutations:      e.config.DashboardMutations,
 			HashChain:           e.hashChain,
+			CheckpointStore:     e.checkpointStore(),
+			CheckpointSigner:    e.checkpointSigner,
 		},
 	)
 }
@@ -1054,11 +1074,17 @@ func (e *Extension) buildCheckpointSigner() (checkpoint.Signer, error) {
 
 // buildCheckpointer validates checkpoints.* against whatever signing key
 // material is available, probes s for checkpoint support, and constructs the
-// Checkpointer. It returns (nil, nil, nil) when Checkpoints.Enabled is false,
-// which is what leaves handler.Dependencies' CheckpointStore and Checkpointer
+// Checkpointer, the store, and the signer that go with it. All three come
+// back nil when Checkpoints.Enabled is false, which is what leaves
+// handler.Dependencies' CheckpointStore, Checkpointer and CheckpointSigner
 // nil for a deployment that never turned checkpoints on -- the routes then
-// report 503 rather than mounting a write path with nothing behind it, and
-// Start never launches runCheckpointScheduler.
+// report 503 rather than mounting a write path with nothing behind it, the
+// verify route and the dashboard behave exactly as they did before
+// checkpoints existed, and Start never launches runCheckpointScheduler.
+//
+// The signer is returned rather than rebuilt by each reader because the read
+// side has to check what the write side actually signed. Rebuilding it from
+// the digest's key provider is the bug this return value exists to prevent.
 //
 // The probe matters because store/redis (deliberately: it is a read-through
 // cache, the wrong home for a root of trust) returns checkpoint.ErrUnsupported
@@ -1069,19 +1095,33 @@ func (e *Extension) buildCheckpointSigner() (checkpoint.Signer, error) {
 // needed to make the call; LatestCheckpoint against a zero stream ID is a
 // cheap, side-effect-free way to ask a real backend "have you heard of
 // checkpoints at all" without needing any checkpoint to already exist.
-func (e *Extension) buildCheckpointer(s store.Store) (*checkpoint.Checkpointer, checkpoint.Store, error) {
+func (e *Extension) buildCheckpointer(s store.Store) (*checkpoint.Checkpointer, checkpoint.Store, checkpoint.Signer, error) {
 	if !e.config.Checkpoints.Enabled {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	signer, err := e.buildCheckpointSigner()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	if _, probeErr := s.LatestCheckpoint(context.Background(), id.Nil); probeErr != nil && errors.Is(probeErr, checkpoint.ErrUnsupported) {
-		return nil, nil, fmt.Errorf("%w (store type %T)", ErrCheckpointsUnsupportedByStore, s)
+		return nil, nil, nil, fmt.Errorf("%w (store type %T)", ErrCheckpointsUnsupportedByStore, s)
 	}
 
-	return checkpoint.NewCheckpointer(s, signer, e.Logger()), s, nil
+	return checkpoint.NewCheckpointer(s, signer, e.Logger()), s, signer, nil
+}
+
+// checkpointStore returns the store the dashboard should read checkpoints
+// from, or nil when this deployment takes none.
+//
+// It is derived from e.checkpointSigner rather than kept as a fourth field:
+// buildCheckpointer only ever returns the store alongside a signer, so the
+// two are set and cleared together, and a deployment with no signer must not
+// hand the dashboard a store whose rows nothing can authenticate.
+func (e *Extension) checkpointStore() checkpoint.Store {
+	if e.checkpointSigner == nil || e.store == nil {
+		return nil
+	}
+	return e.store
 }

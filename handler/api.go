@@ -55,6 +55,17 @@ type Dependencies struct {
 	// API, just not that one write route.
 	Checkpointer *checkpoint.Checkpointer
 
+	// CheckpointSigner is what POST /v1/verify checks a covering
+	// checkpoint's signature under. It has to be supplied alongside
+	// CheckpointStore for the verify route to report checkpoints at all: a
+	// store without a signer proves nothing, since anyone who can write the
+	// checkpoint row could write a fabricated one.
+	//
+	// Optional, like the two above. Leave it nil and verification behaves
+	// exactly as it did before checkpoints existed, with coverage topping
+	// out at keyed.
+	CheckpointSigner checkpoint.Signer
+
 	// HashChain is the chain verification recomputes digests under. A
 	// nil value here defaults to a zero-value, unkeyed chain, which is what
 	// every deployment gets unless tamper_evidence.digest is "hmac". An HMAC

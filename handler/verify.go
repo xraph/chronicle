@@ -13,6 +13,25 @@ import (
 	"github.com/xraph/chronicle/verify"
 )
 
+// newVerifier builds the verifier POST /v1/verify runs, checking signed
+// checkpoints when this deployment configured both a store to hold them and
+// a signer to check them under, and falling back to plain chain verification
+// when it did not.
+//
+// Both have to be present. A checkpoint store on its own gives a verifier
+// rows it cannot authenticate, and the extension only ever sets the pair
+// together, so the guard is a real "checkpoints are configured here" test
+// rather than defensive noise. Without them this route reports no
+// checkpoints and its coverage ladder tops out at keyed, which is what every
+// deployment that has not turned checkpointing on should see.
+func (a *API) newVerifier() *verify.Verifier {
+	if a.deps.CheckpointStore == nil || a.deps.CheckpointSigner == nil {
+		return verify.NewVerifierWithChain(a.deps.VerifyStore, a.deps.HashChain)
+	}
+	return verify.NewVerifierWithCheckpoints(
+		a.deps.VerifyStore, a.deps.HashChain, a.deps.CheckpointStore, a.deps.CheckpointSigner)
+}
+
 // verifyChain handles POST /v1/verify.
 func (a *API) verifyChain(ctx forge.Context, req *VerifyChainRequest) (*verify.Report, error) {
 	c := scopedContext(ctx)
@@ -64,8 +83,7 @@ func (a *API) verifyChain(ctx forge.Context, req *VerifyChainRequest) (*verify.R
 		HeadHash: st.HeadHash,
 	}
 
-	verifier := verify.NewVerifierWithChain(a.deps.VerifyStore, a.deps.HashChain)
-	report, err := verifier.VerifyChain(c, input)
+	report, err := a.newVerifier().VerifyChain(c, input)
 	if err != nil {
 		a.deps.Logger.Error("failed to verify chain", log.String("stream_id", req.StreamID), log.Error(err))
 		return nil, fmt.Errorf("verify chain: %w", err)
