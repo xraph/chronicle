@@ -184,6 +184,14 @@ func TestExtensionAcceptsKeyProviderSuppliedDirectly(t *testing.T) {
 	}
 }
 
+// opaqueStore is a store type chronicle has never heard of, with no SetHasher.
+// Embedding memory.Store gives it the full interface without making it one of
+// the types Register recognises, which is exactly the position a third-party
+// backend is in.
+type opaqueStore struct {
+	*memory.Store
+}
+
 // TestWithStoreRefusesHMACWhenStoreCannotReceiveTheChain is FINDING 1's
 // negative case: extension.WithStore bypasses buildStoreFromGroveDB, which is
 // the only place a pg/sqlite store otherwise gets WithHasher. A store that
@@ -191,9 +199,15 @@ func TestExtensionAcceptsKeyProviderSuppliedDirectly(t *testing.T) {
 // be allowed to start under an HMAC config: it would keep re-linking every
 // event under its own default plain chain while Chronicle writes HMAC
 // digests, silently, since the writes still succeed.
+//
+// The store has to be an unfamiliar type, not just one without SetHasher.
+// Chronicle's own mongo, redis and memory backends have no SetHasher either
+// and never needed one, because they persist the digest Chronicle computed;
+// refusing those produced an error whose instructions could not be followed.
+// See TestWithStoreAcceptsBackendsThatDoNotRecompute.
 func TestWithStoreRefusesHMACWhenStoreCannotReceiveTheChain(t *testing.T) {
 	ext := extension.New(
-		extension.WithStore(memory.New()), // does not implement SetHasher
+		extension.WithStore(&opaqueStore{Store: memory.New()}),
 		extension.WithUnauthenticatedAPI(),
 		extension.WithDigestScheme("hmac"),
 		extension.WithKeyProvider(stubKeyProvider{key: make([]byte, 32), activeID: "k1"}),
@@ -205,6 +219,70 @@ func TestWithStoreRefusesHMACWhenStoreCannotReceiveTheChain(t *testing.T) {
 	}
 	if !errors.Is(err, extension.ErrStoreCannotReceiveHasher) {
 		t.Fatalf("error = %v, want ErrStoreCannotReceiveHasher", err)
+	}
+}
+
+// TestWithStoreAcceptsBackendsThatDoNotRecompute is the regression test for a
+// refusal nobody could act on.
+//
+// The refusal above was gated only on the absence of SetHasher, so it also
+// caught mongo and redis. Neither recomputes the digest on write, so neither
+// ever needed a hasher, and neither has a WithHasher option. The error told the
+// operator to build the store with WithHasher(chain) themselves, which is
+// impossible on both: WithStore plus digest: hmac plus either backend was an
+// unrecoverable configuration.
+//
+// Memory is in the same position and is the one this test can drive without a
+// live server, so it stands in for all three; the type switch lists them
+// together.
+func TestWithStoreAcceptsBackendsThatDoNotRecompute(t *testing.T) {
+	ext := extension.New(
+		extension.WithStore(memory.New()),
+		extension.WithUnauthenticatedAPI(),
+		extension.WithDigestScheme("hmac"),
+		extension.WithKeyProvider(stubKeyProvider{key: make([]byte, 32), activeID: "k1"}),
+	)
+
+	if err := ext.Register(forge.New(forge.WithAppName("t"))); err != nil {
+		t.Fatalf("Register refused a backend that does not recompute digests: %v", err)
+	}
+}
+
+// And the digest it writes really is keyed, which is the thing the refusal was
+// protecting in the first place. Accepting the store is only correct if the
+// keyed digest survives the round trip through it.
+func TestAcceptedNonRecomputingStoreStillWritesKeyedDigests(t *testing.T) {
+	mem := memory.New()
+	ext := extension.New(
+		extension.WithStore(mem),
+		extension.WithUnauthenticatedAPI(),
+		extension.WithDigestScheme("hmac"),
+		extension.WithKeyProvider(stubKeyProvider{key: make([]byte, 32), activeID: "k1"}),
+	)
+	if err := ext.Register(forge.New(forge.WithAppName("t"))); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	ctx := context.Background()
+	event := &audit.Event{
+		AppID:    "app1",
+		Action:   "login",
+		Resource: "session",
+		Category: "auth",
+	}
+	if err := ext.Chronicle().Record(ctx, event); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	got, err := mem.Get(ctx, event.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.HashScheme != string(hash.SchemeHMAC) {
+		t.Errorf("HashScheme = %q, want %q", got.HashScheme, hash.SchemeHMAC)
+	}
+	if got.HashKeyID != "k1" {
+		t.Errorf("HashKeyID = %q, want k1", got.HashKeyID)
 	}
 }
 

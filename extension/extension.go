@@ -32,6 +32,7 @@ import (
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/sink"
 	"github.com/xraph/chronicle/store"
+	memorystore "github.com/xraph/chronicle/store/memory"
 	mongostore "github.com/xraph/chronicle/store/mongo"
 	pgstore "github.com/xraph/chronicle/store/postgres"
 	redisstore "github.com/xraph/chronicle/store/redis"
@@ -166,20 +167,10 @@ func (e *Extension) Register(fapp forge.App) error {
 	}
 
 	// An operator-supplied store bypassed buildStoreFromGroveDB, so under an
-	// HMAC config it is still sitting on whatever hasher it was built with --
-	// its own zero-value plain chain for pgstore/sqlitestore, since WithStore
-	// gives the extension no chance to pass WithHasher at construction. That
-	// store would silently re-link every event under an unkeyed digest while
-	// Chronicle writes HMAC ones, which is exactly the bug WithHasher exists
-	// to close, reachable through this one documented option. If the store
-	// can take the chain after construction, give it the same one the store
-	// and Chronicle below share; if it can't, refuse rather than start a
-	// deployment that believes it is keyed and isn't.
+	// HMAC config it is still sitting on whatever hasher it was built with.
 	if operatorStore != nil && e.config.TamperEvidence.Digest == "hmac" {
-		if hasherStore, ok := e.opts.store.(interface{ SetHasher(*hash.Chain) }); ok {
-			hasherStore.SetHasher(e.hashChain)
-		} else {
-			return ErrStoreCannotReceiveHasher
+		if err := e.shareChainWithStore(); err != nil {
+			return err
 		}
 	}
 
@@ -195,6 +186,45 @@ func (e *Extension) Register(fapp forge.App) error {
 	}
 
 	return nil
+}
+
+// shareChainWithStore gives an operator-supplied store the same hash chain
+// Chronicle will write with, or refuses if the store needs one and cannot take
+// it.
+//
+// The problem it solves is real but narrow. pg and sqlite re-derive the sequence
+// and prev_hash inside their own Append transaction, and the sequence is part of
+// the hashed content, so they recompute the digest themselves. Built through
+// buildStoreFromGroveDB they get the configured chain via WithHasher. Handed in
+// through WithStore they do not, and would silently re-link every event under a
+// plain chain while Chronicle wrote keyed ones, with every write still
+// succeeding.
+//
+// Mongo, redis and memory persist whatever digest Chronicle computed. They have
+// no hasher because they never needed one, and no WithHasher option either, so
+// refusing them used to leave the operator with an error whose instructions
+// could not be followed on any backend that produced it.
+//
+// The split is by backend rather than by capability because there is no
+// capability to test: "I recompute the digest on write" is not observable from
+// outside, and adding a marker method would only be answered by the same
+// in-tree types listed here. So the list is explicit, and the default is to
+// refuse. An unfamiliar store might well recompute, and a wrong guess in that
+// direction produces exactly the silent unkeyed chain this whole branch exists
+// to prevent. Give such a store a SetHasher(*hash.Chain) method and it is
+// accepted on the first branch.
+func (e *Extension) shareChainWithStore() error {
+	switch s := e.opts.store.(type) {
+	case interface{ SetHasher(*hash.Chain) }:
+		s.SetHasher(e.hashChain)
+		return nil
+
+	case *memorystore.Store, *mongostore.Store, *redisstore.Store:
+		return nil
+
+	default:
+		return fmt.Errorf("%w (store type %T)", ErrStoreCannotReceiveHasher, e.opts.store)
+	}
 }
 
 // init builds the Chronicle instance and all sub-components.

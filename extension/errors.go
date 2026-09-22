@@ -53,19 +53,25 @@ var (
 	)
 
 	// ErrStoreCannotReceiveHasher is returned when tamper_evidence.digest is
-	// hmac and the store passed to WithStore has no way to be given the
-	// resulting chain after construction.
+	// hmac and the store passed to WithStore is of a type chronicle does not
+	// recognise and cannot be given the chain after construction.
 	//
 	// WithStore bypasses buildStoreFromGroveDB, which is the only place a
-	// pg/sqlite store otherwise gets WithHasher. Left alone, such a store
-	// keeps re-linking every event under its own default plain chain while
-	// Chronicle writes HMAC digests -- silently, since the writes still
-	// succeed -- which is exactly the downgrade WithHasher exists to close,
-	// reached through a documented, public option.
+	// pg/sqlite store otherwise gets WithHasher. A store that recomputes the
+	// digest inside its own Append and never receives the configured chain
+	// keeps re-linking every event under a default plain chain while Chronicle
+	// writes HMAC digests -- silently, since the writes still succeed.
+	//
+	// Chronicle's own mongo, redis and memory backends do not recompute, so
+	// they are accepted as they are; they were never the problem and have no
+	// WithHasher option to point anyone at. Any other type is refused, because
+	// whether it recomputes cannot be determined from outside and guessing
+	// wrong produces the silent unkeyed chain above.
 	ErrStoreCannotReceiveHasher = errors.New(
 		"chronicle: tamper_evidence.digest is hmac but the store passed to WithStore " +
-			"cannot be given the chain after construction; build it with WithHasher(chain) " +
-			"yourself before calling WithStore, or drop WithStore and let chronicle build " +
-			"the pg/sqlite store with the chain already wired in",
+			"is not a store chronicle can hand the keyed chain to; give it a " +
+			"SetHasher(*hash.Chain) method (chronicle's pg and sqlite stores have one) " +
+			"so it re-links under the configured chain, or drop WithStore and let " +
+			"chronicle build the store itself with the chain already wired in",
 	)
 )

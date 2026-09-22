@@ -16,13 +16,16 @@ type Option func(*Extension)
 //
 // Bypasses the extension's own store construction (WithGroveDatabase /
 // WithGroveKV / auto-discovery), so under tamper_evidence.digest: hmac,
-// Register needs to give this store the configured chain itself: it does so
-// via an optional SetHasher(*hash.Chain) method, which both pgstore.Store
-// and sqlitestore.Store implement. A store of another type that recomputes
-// digests on write and does not implement that method will fail Register
-// with [ErrStoreCannotReceiveHasher] rather than silently keep writing under
-// its own default plain chain; build it with that backend's own WithHasher
-// option before passing it here if it has one.
+// Register needs to give this store the configured chain itself. It does so
+// via an optional SetHasher(*hash.Chain) method, which both pgstore.Store and
+// sqlitestore.Store implement because both recompute the digest inside Append.
+//
+// Chronicle's mongo, redis and memory stores persist the digest Chronicle
+// computed and never recompute, so they are accepted without one. Any other
+// type fails Register with [ErrStoreCannotReceiveHasher], because whether it
+// recomputes cannot be determined from outside and guessing wrong is how a
+// deployment ends up believing its chain is keyed while the store quietly
+// re-links it unkeyed. Give such a store a SetHasher(*hash.Chain) method.
 func WithStore(s store.Store) Option {
 	return func(e *Extension) { e.opts.store = s }
 }
