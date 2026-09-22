@@ -24,13 +24,14 @@ type Prefix string
 
 // Prefix constants for all Chronicle entity types.
 const (
-	PrefixAudit   Prefix = "audit"
-	PrefixStream  Prefix = "stream"
-	PrefixErasure Prefix = "erasure"
-	PrefixReport  Prefix = "report"
-	PrefixPolicy  Prefix = "retpol"
-	PrefixArchive Prefix = "archive"
-	PrefixPlugin  Prefix = "plugin"
+	PrefixAudit      Prefix = "audit"
+	PrefixStream     Prefix = "stream"
+	PrefixErasure    Prefix = "erasure"
+	PrefixReport     Prefix = "report"
+	PrefixPolicy     Prefix = "retpol"
+	PrefixArchive    Prefix = "archive"
+	PrefixPlugin     Prefix = "plugin"
+	PrefixCheckpoint Prefix = "ckpt"
 )
 
 // ID is the primary identifier type for all Chronicle entities.
@@ -132,6 +133,9 @@ type ArchiveID = ID
 // PluginID is a type-safe identifier for plugins (prefix: "plugin").
 type PluginID = ID
 
+// CheckpointID is a type-safe identifier for checkpoints (prefix: "ckpt").
+type CheckpointID = ID
+
 // AnyID is a type alias that accepts any valid prefix.
 type AnyID = ID
 
@@ -160,6 +164,9 @@ func NewArchiveID() ID { return New(PrefixArchive) }
 // NewPluginID generates a new unique plugin ID.
 func NewPluginID() ID { return New(PrefixPlugin) }
 
+// NewCheckpointID generates a new unique checkpoint ID.
+func NewCheckpointID() ID { return New(PrefixCheckpoint) }
+
 // ──────────────────────────────────────────────────
 // Convenience parsers
 // ──────────────────────────────────────────────────
@@ -184,6 +191,9 @@ func ParseArchiveID(s string) (ID, error) { return ParseWithPrefix(s, PrefixArch
 
 // ParsePluginID parses a string and validates the "plugin" prefix.
 func ParsePluginID(s string) (ID, error) { return ParseWithPrefix(s, PrefixPlugin) }
+
+// ParseCheckpointID parses a string and validates the "ckpt" prefix.
+func ParseCheckpointID(s string) (ID, error) { return ParseWithPrefix(s, PrefixCheckpoint) }
 
 // ParseAny parses a string into an ID without type checking the prefix.
 func ParseAny(s string) (ID, error) { return Parse(s) }

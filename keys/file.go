@@ -90,6 +90,11 @@ func NewFileProvider(path string) (*FileProvider, error) {
 				"keys: key %q is %d bytes; a %s key must be %d",
 				entry.ID, len(material), UseHMAC, HMACKeySize)
 		}
+		if entry.Use == UseCheckpointSig && len(material) != Ed25519KeySize {
+			return nil, fmt.Errorf(
+				"keys: key %q is %d bytes; a %s key must be %d",
+				entry.ID, len(material), UseCheckpointSig, Ed25519KeySize)
+		}
 
 		if entry.Active && entry.Revoked {
 			return nil, fmt.Errorf(

@@ -51,6 +51,11 @@ const (
 // HMACKeySize is the required length of a UseHMAC key.
 const HMACKeySize = 32
 
+// Ed25519KeySize is the required length of a UseCheckpointSig key. It is the
+// full ed25519 private key, which carries its own public half in the trailing
+// 32 bytes, so a verifier needs nothing else to check a signature.
+const Ed25519KeySize = 64
+
 // Sentinel errors.
 var (
 	// ErrKeyNotFound is returned when no key carries the requested ID.
