@@ -101,12 +101,24 @@ func backfillFixture(t *testing.T, headSeq int, eventSeqs []int) *stream.Stream 
 	if len(all) == 0 {
 		t.Fatal("no migrations registered")
 	}
-	last := all[len(all)-1]
-	if last.Name != "record_hash_scheme" {
-		t.Fatalf("expected the newest migration to be record_hash_scheme, got %q; update this test's split point", last.Name)
-	}
 
-	for _, m := range all[:len(all)-1] {
+	// This fixture targets migration 006's backfill clause specifically, not
+	// whatever migration happens to be newest. Locating it by name keeps this
+	// test correct as later migrations (e.g. 007's checkpoints table) are
+	// appended after it, rather than silently changing what "last" means here.
+	target := -1
+	for i, m := range all {
+		if m.Name == "record_hash_scheme" {
+			target = i
+			break
+		}
+	}
+	if target == -1 {
+		t.Fatal("migration record_hash_scheme not found; update this test's split point")
+	}
+	last := all[target]
+
+	for _, m := range all[:target] {
 		if upErr := m.Up(ctx, executor); upErr != nil {
 			t.Fatalf("migration %s: %v", m.Name, upErr)
 		}

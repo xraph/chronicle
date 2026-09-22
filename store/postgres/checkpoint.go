@@ -2,43 +2,139 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/id"
 )
 
-// TODO(checkpoints): Task 3 replaces this stub with a real implementation.
+// pgUniqueViolation is the SQLSTATE Postgres reports for a UNIQUE constraint
+// violation.
+// https://www.postgresql.org/docs/current/errcodes-appendix.html
+const pgUniqueViolation = "23505"
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint
+// violation.
 //
-// This backend does not yet store checkpoints. Embedding checkpoint.Store in
-// the composite store.Store means every backend must satisfy it to keep the
-// module building, so until the real implementation lands, every method
-// reports ErrUnsupported rather than silently discarding a checkpoint.
-
-// AppendCheckpoint is not yet implemented for this backend.
-func (s *Store) AppendCheckpoint(_ context.Context, _ *checkpoint.Checkpoint) error {
-	return checkpoint.ErrUnsupported
+// groveError alone is the wrong tool here: a uniqueness violation is a
+// different error than a missing row, and reaches this package as a typed
+// *pgconn.PgError rather than pgx.ErrNoRows, wrapped by pgdriver's Exec in an
+// additional "pgdriver: exec: " prefix that errors.As sees through.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
 }
 
-// LatestCheckpoint is not yet implemented for this backend.
-func (s *Store) LatestCheckpoint(_ context.Context, _ id.ID) (*checkpoint.Checkpoint, error) {
-	return nil, checkpoint.ErrUnsupported
+// AppendCheckpoint persists a checkpoint. Checkpoints are append-only: there
+// is no update or delete, since a checkpoint that could be revised would
+// assert nothing.
+//
+// UNIQUE(stream_id, to_seq) on chronicle_checkpoints is the structural
+// backstop against two checkpointers racing on one stream -- a background
+// ticker and an operator-triggered run can overlap -- so the loser of that
+// race gets checkpoint.ErrExists straight from the database rather than from
+// a read-then-insert check a concurrent writer could still slip past.
+func (s *Store) AppendCheckpoint(ctx context.Context, cp *checkpoint.Checkpoint) error {
+	m := fromCheckpoint(cp)
+	if _, err := s.pg.NewInsert(m).Exec(ctx); err != nil {
+		if isUniqueViolation(err) {
+			return checkpoint.ErrExists
+		}
+		return fmt.Errorf("insert checkpoint %s: %w", cp.ID, err)
+	}
+	return nil
 }
 
-// CheckpointsInRange is not yet implemented for this backend.
+// LatestCheckpoint returns the checkpoint with the highest ToSeq for a
+// stream.
+func (s *Store) LatestCheckpoint(ctx context.Context, streamID id.ID) (*checkpoint.Checkpoint, error) {
+	m := new(CheckpointModel)
+	err := s.pg.NewSelect(m).
+		Where("stream_id = ?", streamID.String()).
+		OrderExpr("cp.to_seq DESC").
+		Limit(1).
+		Scan(ctx)
+	if err != nil {
+		return nil, groveError(err, checkpoint.ErrNotFound)
+	}
+
+	out, err := toCheckpoint(m)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert checkpoint model: %w", err)
+	}
+	return out, nil
+}
+
+// CheckpointsInRange returns every checkpoint whose range overlaps
+// [fromSeq, toSeq], ascending by ToSeq.
+//
+// Overlap rather than containment: a caller verifying sequences 150 to 160
+// still needs the checkpoint covering 101 to 200, because that is the one
+// whose signed assertion those events fall under. Containment would return
+// nothing for a range that sits inside a wider checkpoint.
 func (s *Store) CheckpointsInRange(
-	_ context.Context, _ id.ID, _, _ uint64,
+	ctx context.Context, streamID id.ID, fromSeq, toSeq uint64,
 ) ([]*checkpoint.Checkpoint, error) {
-	return nil, checkpoint.ErrUnsupported
+	var models []CheckpointModel
+	err := s.pg.NewSelect(&models).
+		Where("stream_id = ?", streamID.String()).
+		Where("from_seq <= ?", safeInt64(toSeq)).
+		Where("to_seq >= ?", safeInt64(fromSeq)).
+		OrderExpr("cp.to_seq ASC").
+		Scan(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return toCheckpointSlice(models)
 }
 
-// GetCheckpoint is not yet implemented for this backend.
-func (s *Store) GetCheckpoint(_ context.Context, _ id.ID) (*checkpoint.Checkpoint, error) {
-	return nil, checkpoint.ErrUnsupported
+// GetCheckpoint returns one checkpoint by ID.
+func (s *Store) GetCheckpoint(ctx context.Context, checkpointID id.ID) (*checkpoint.Checkpoint, error) {
+	m := new(CheckpointModel)
+	err := s.pg.NewSelect(m).Where("id = ?", checkpointID.String()).Scan(ctx)
+	if err != nil {
+		return nil, groveError(err, checkpoint.ErrNotFound)
+	}
+
+	out, err := toCheckpoint(m)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert checkpoint model: %w", err)
+	}
+	return out, nil
 }
 
-// ListCheckpoints is not yet implemented for this backend.
+// ListCheckpoints returns a stream's checkpoints, newest first.
 func (s *Store) ListCheckpoints(
-	_ context.Context, _ id.ID, _ checkpoint.ListOpts,
+	ctx context.Context, streamID id.ID, opts checkpoint.ListOpts,
 ) ([]*checkpoint.Checkpoint, error) {
-	return nil, checkpoint.ErrUnsupported
+	var models []CheckpointModel
+	err := s.pg.NewSelect(&models).
+		Where("stream_id = ?", streamID.String()).
+		OrderExpr("cp.to_seq DESC").
+		Limit(opts.Limit).
+		Offset(opts.Offset).
+		Scan(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return toCheckpointSlice(models)
+}
+
+// toCheckpointSlice converts a slice of CheckpointModel to a slice of
+// checkpoint.Checkpoint.
+func toCheckpointSlice(models []CheckpointModel) ([]*checkpoint.Checkpoint, error) {
+	out := make([]*checkpoint.Checkpoint, 0, len(models))
+	for i := range models {
+		cp, err := toCheckpoint(&models[i])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, cp)
+	}
+	return out, nil
 }

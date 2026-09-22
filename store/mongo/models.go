@@ -9,6 +9,7 @@ import (
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/id"
@@ -430,4 +431,83 @@ func fromReport(r *compliance.Report) (*ReportModel, error) {
 		GeneratedBy: r.GeneratedBy,
 		CreatedAt:   r.CreatedAt,
 	}, nil
+}
+
+// ──────────────────────────────────────────────────
+// CheckpointModel
+// ──────────────────────────────────────────────────
+
+// CheckpointModel is the grove ORM model for the chronicle_checkpoints collection.
+type CheckpointModel struct {
+	grove.BaseModel `grove:"table:chronicle_checkpoints"`
+
+	ID             string    `grove:"id,pk"             bson:"_id"`
+	StreamID       string    `grove:"stream_id"         bson:"stream_id"`
+	AppID          string    `grove:"app_id"            bson:"app_id"`
+	TenantID       string    `grove:"tenant_id"         bson:"tenant_id"`
+	FromSeq        uint64    `grove:"from_seq"          bson:"from_seq"`
+	ToSeq          uint64    `grove:"to_seq"            bson:"to_seq"`
+	FromHash       string    `grove:"from_hash"         bson:"from_hash"`
+	ToHash         string    `grove:"to_hash"           bson:"to_hash"`
+	EventCount     int64     `grove:"event_count"       bson:"event_count"`
+	PrevCheckpoint string    `grove:"prev_checkpoint"   bson:"prev_checkpoint,omitempty"`
+	Algorithm      string    `grove:"algorithm"         bson:"algorithm"`
+	SignKeyID      string    `grove:"sign_key_id"       bson:"sign_key_id"`
+	Signature      []byte    `grove:"signature"         bson:"signature"`
+	SignedPayload  string    `grove:"signed_payload"    bson:"signed_payload"`
+	CreatedAt      time.Time `grove:"created_at"        bson:"created_at"`
+}
+
+func toCheckpoint(m *CheckpointModel) (*checkpoint.Checkpoint, error) {
+	checkpointID, err := id.ParseCheckpointID(m.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse checkpoint id %q: %w", m.ID, err)
+	}
+
+	streamID, err := id.ParseStreamID(m.StreamID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse stream id %q: %w", m.StreamID, err)
+	}
+
+	return &checkpoint.Checkpoint{
+		ID:             checkpointID,
+		StreamID:       streamID,
+		AppID:          m.AppID,
+		TenantID:       m.TenantID,
+		FromSeq:        m.FromSeq,
+		ToSeq:          m.ToSeq,
+		FromHash:       m.FromHash,
+		ToHash:         m.ToHash,
+		EventCount:     m.EventCount,
+		PrevCheckpoint: m.PrevCheckpoint,
+		Algorithm:      m.Algorithm,
+		SignKeyID:      m.SignKeyID,
+		Signature:      m.Signature,
+		SignedPayload:  m.SignedPayload,
+		CreatedAt:      m.CreatedAt,
+	}, nil
+}
+
+// fromCheckpoint does NOT stamp CreatedAt with the insertion time the way
+// fromEvent and fromStream stamp theirs: CreatedAt is part of what
+// checkpoint.CanonicalPayload signs, so overriding it here would silently
+// invalidate the signature the caller already computed.
+func fromCheckpoint(cp *checkpoint.Checkpoint) *CheckpointModel {
+	return &CheckpointModel{
+		ID:             cp.ID.String(),
+		StreamID:       cp.StreamID.String(),
+		AppID:          cp.AppID,
+		TenantID:       cp.TenantID,
+		FromSeq:        cp.FromSeq,
+		ToSeq:          cp.ToSeq,
+		FromHash:       cp.FromHash,
+		ToHash:         cp.ToHash,
+		EventCount:     cp.EventCount,
+		PrevCheckpoint: cp.PrevCheckpoint,
+		Algorithm:      cp.Algorithm,
+		SignKeyID:      cp.SignKeyID,
+		Signature:      cp.Signature,
+		SignedPayload:  cp.SignedPayload,
+		CreatedAt:      cp.CreatedAt,
+	}
 }

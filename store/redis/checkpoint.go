@@ -7,37 +7,39 @@ import (
 	"github.com/xraph/chronicle/id"
 )
 
-// TODO(checkpoints): Task 3 gives postgres, sqlite, and mongo real checkpoint
-// implementations. Redis stays on this stub permanently: a checkpoint is
-// meant to be a durable root of trust, and Redis's persistence model is not a
-// backend this project treats as durable enough for that job. Every method
-// reports ErrUnsupported rather than silently discarding a checkpoint.
+// Checkpoints are deliberately unsupported on Redis.
+//
+// The README positions this backend as a read-through cache layer, and a
+// cache is the wrong home for a root of trust: a checkpoint that can be
+// evicted asserts nothing. The extension refuses to start when checkpoints
+// are enabled on a backend that returns this, rather than running silently
+// without them.
 
 // AppendCheckpoint is not supported by this backend.
-func (s *Store) AppendCheckpoint(_ context.Context, _ *checkpoint.Checkpoint) error {
+func (s *Store) AppendCheckpoint(context.Context, *checkpoint.Checkpoint) error {
 	return checkpoint.ErrUnsupported
 }
 
 // LatestCheckpoint is not supported by this backend.
-func (s *Store) LatestCheckpoint(_ context.Context, _ id.ID) (*checkpoint.Checkpoint, error) {
+func (s *Store) LatestCheckpoint(context.Context, id.ID) (*checkpoint.Checkpoint, error) {
 	return nil, checkpoint.ErrUnsupported
 }
 
 // CheckpointsInRange is not supported by this backend.
 func (s *Store) CheckpointsInRange(
-	_ context.Context, _ id.ID, _, _ uint64,
+	context.Context, id.ID, uint64, uint64,
 ) ([]*checkpoint.Checkpoint, error) {
 	return nil, checkpoint.ErrUnsupported
 }
 
 // GetCheckpoint is not supported by this backend.
-func (s *Store) GetCheckpoint(_ context.Context, _ id.ID) (*checkpoint.Checkpoint, error) {
+func (s *Store) GetCheckpoint(context.Context, id.ID) (*checkpoint.Checkpoint, error) {
 	return nil, checkpoint.ErrUnsupported
 }
 
 // ListCheckpoints is not supported by this backend.
 func (s *Store) ListCheckpoints(
-	_ context.Context, _ id.ID, _ checkpoint.ListOpts,
+	context.Context, id.ID, checkpoint.ListOpts,
 ) ([]*checkpoint.Checkpoint, error) {
 	return nil, checkpoint.ErrUnsupported
 }

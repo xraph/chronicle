@@ -177,6 +177,35 @@ func init() {
 				return mexec.DropCollection(ctx, (*ReportModel)(nil))
 			},
 		},
+		&migrate.Migration{
+			Name:    "create_chronicle_checkpoints",
+			Version: "20240101000007",
+			Comment: "Signed checkpoints over a stream's sequence range",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+
+				if err := mexec.CreateCollection(ctx, (*CheckpointModel)(nil)); err != nil {
+					return err
+				}
+
+				return mexec.CreateIndexes(ctx, colCheckpoints, []mongo.IndexModel{
+					{
+						Keys:    bson.D{{Key: "stream_id", Value: 1}, {Key: "to_seq", Value: 1}},
+						Options: options.Index().SetUnique(true),
+					},
+				})
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				return mexec.DropCollection(ctx, (*CheckpointModel)(nil))
+			},
+		},
 	)
 }
 
@@ -213,6 +242,12 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 		},
 		colReports: {
 			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "tenant_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		},
+		colCheckpoints: {
+			{
+				Keys:    bson.D{{Key: "stream_id", Value: 1}, {Key: "to_seq", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
 		},
 	}
 }

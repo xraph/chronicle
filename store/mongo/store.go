@@ -25,12 +25,13 @@ import (
 
 // Collection name constants.
 const (
-	colEvents   = "chronicle_events"
-	colStreams  = "chronicle_streams"
-	colErasures = "chronicle_erasures"
-	colPolicies = "chronicle_retention_policies"
-	colArchives = "chronicle_archives"
-	colReports  = "chronicle_reports"
+	colEvents      = "chronicle_events"
+	colStreams     = "chronicle_streams"
+	colErasures    = "chronicle_erasures"
+	colPolicies    = "chronicle_retention_policies"
+	colArchives    = "chronicle_archives"
+	colReports     = "chronicle_reports"
+	colCheckpoints = "chronicle_checkpoints"
 )
 
 // Store implements the Chronicle store interface using grove ORM with MongoDB.

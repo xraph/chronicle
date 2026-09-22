@@ -278,5 +278,43 @@ ALTER TABLE chronicle_events DROP COLUMN IF EXISTS hash_scheme;
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "create_checkpoints_table",
+			Version: "20240101000007",
+			Comment: "Signed checkpoints over a stream's sequence range",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+CREATE TABLE IF NOT EXISTS chronicle_checkpoints (
+    id              TEXT PRIMARY KEY,
+    stream_id       TEXT NOT NULL REFERENCES chronicle_streams(id),
+    app_id          TEXT NOT NULL,
+    tenant_id       TEXT NOT NULL DEFAULT '',
+    from_seq        BIGINT NOT NULL,
+    to_seq          BIGINT NOT NULL,
+    from_hash       TEXT NOT NULL,
+    to_hash         TEXT NOT NULL,
+    event_count     BIGINT NOT NULL,
+    prev_checkpoint TEXT NOT NULL DEFAULT '',
+    algorithm       TEXT NOT NULL,
+    sign_key_id     TEXT NOT NULL,
+    signature       BYTEA NOT NULL,
+    signed_payload  TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    UNIQUE(stream_id, to_seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chronicle_checkpoints_stream
+    ON chronicle_checkpoints (stream_id, to_seq DESC);
+CREATE INDEX IF NOT EXISTS idx_chronicle_checkpoints_scope
+    ON chronicle_checkpoints (app_id, tenant_id, created_at DESC);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `DROP TABLE IF EXISTS chronicle_checkpoints CASCADE;`)
+				return err
+			},
+		},
 	)
 }
