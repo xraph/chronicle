@@ -115,6 +115,27 @@ type ExportReportRequest struct {
 }
 
 // ──────────────────────────────────────────────────
+// Checkpoint request DTOs
+// ──────────────────────────────────────────────────
+
+// GetCheckpointRequest is the request for fetching a single checkpoint.
+type GetCheckpointRequest struct {
+	CheckpointID string `path:"id" description:"Checkpoint ID"`
+}
+
+// ForceCheckpointRequest is the JSON request body for taking a checkpoint now.
+//
+// StreamID is marked optional at the binding level, even though the handler
+// requires it, so a request that omits it entirely still reaches the
+// handler rather than failing forge's own required-field check first. That
+// matters when the Checkpointer dependency itself is unset: the 503 for
+// "checkpointing is not configured" needs to win over a 400 for a missing
+// field the caller was never going to be told about anyway.
+type ForceCheckpointRequest struct {
+	StreamID string `json:"stream_id" optional:"true" description:"Stream to checkpoint"`
+}
+
+// ──────────────────────────────────────────────────
 // Stats response
 // ──────────────────────────────────────────────────
 

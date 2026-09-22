@@ -113,9 +113,136 @@ func TestVerifyPageStaysQuietOnACleanReport(t *testing.T) {
 		Report: &verify.Report{Valid: true, Verified: 3, FirstEvent: 1, LastEvent: 3},
 	})
 
-	for _, unwanted := range []string{"Scheme Downgrades", "Resolved Tolerantly", "Tampered Events", "Sequence Gaps"} {
+	for _, unwanted := range []string{
+		"Scheme Downgrades", "Resolved Tolerantly", "Tampered Events", "Sequence Gaps",
+		"Coverage", "Checkpoints",
+	} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("a clean report rendered the %q block", unwanted)
 		}
+	}
+}
+
+// TestVerifyPageRendersCoverageSpans covers Task 7's addition of the coverage
+// ladder to the page: each span has to show its range, its level, and its
+// note when one is present.
+func TestVerifyPageRendersCoverageSpans(t *testing.T) {
+	out := renderVerify(t, VerifyPageData{
+		Report: &verify.Report{
+			Valid: true, Verified: 10, FirstEvent: 1, LastEvent: 10,
+			Coverage: []verify.Coverage{
+				{FromSeq: 1, ToSeq: 4, Level: verify.LevelUnkeyed, Note: "below the scheme pin; resolved tolerantly"},
+				{FromSeq: 5, ToSeq: 10, Level: verify.LevelSigned},
+			},
+		},
+	})
+
+	if !strings.Contains(out, "Coverage") {
+		t.Error("the page does not have a Coverage section")
+	}
+	if !strings.Contains(out, "1-4: unkeyed") {
+		t.Error("the first span's range and level are not rendered")
+	}
+	if !strings.Contains(out, "below the scheme pin; resolved tolerantly") {
+		t.Error("the first span's note is not rendered")
+	}
+	if !strings.Contains(out, "5-10: signed") {
+		t.Error("the second span's range and level are not rendered")
+	}
+}
+
+// TestVerifyPageMarksAFailedCheckpointAsDestructive is the positive case: a
+// checkpoint whose signature or hash actually failed is real tampering
+// evidence and must read like the Downgrades block does.
+func TestVerifyPageMarksAFailedCheckpointAsDestructive(t *testing.T) {
+	out := renderVerify(t, VerifyPageData{
+		Report: &verify.Report{
+			Valid: false, Verified: 10, FirstEvent: 1, LastEvent: 10,
+			Checkpoints: []verify.CheckpointResult{
+				{
+					ID: "ckpt_1", FromSeq: 1, ToSeq: 10,
+					SignatureValid: true, HashChecked: true, HashMatch: false,
+					ContinuityChecked: true, ContinuityOK: true,
+					Note: "chain hash at to_seq no longer matches what the checkpoint recorded",
+				},
+			},
+		},
+	})
+
+	if !strings.Contains(out, "checkpoint failed") {
+		t.Error("a checkpoint whose hash check failed does not say so")
+	}
+	// The generic Tailwind utility classes on every input and button already
+	// contain the substring "border-destructive" (aria-invalid:border-destructive),
+	// so the assertion has to name the failed-checkpoint block's own class
+	// combination, not that substring alone.
+	if !strings.Contains(out, "border-destructive bg-destructive/5 p-3") {
+		t.Error("a failed checkpoint is not styled as a failure")
+	}
+	if !strings.Contains(out, "chain hash at to_seq no longer matches what the checkpoint recorded") {
+		t.Error("the failure note is not rendered")
+	}
+}
+
+// TestVerifyPageDoesNotTreatAnUncheckedCheckpointAsFailed is the regression
+// test for the bug HashChecked and ContinuityChecked exist to prevent: a
+// checkpoint whose to_seq or predecessor simply fell outside a bounded
+// sub-range must not read as tampering just because the field defaults to
+// false. It reads as inconclusive, with no destructive styling anywhere on
+// the page.
+func TestVerifyPageDoesNotTreatAnUncheckedCheckpointAsFailed(t *testing.T) {
+	out := renderVerify(t, VerifyPageData{
+		Report: &verify.Report{
+			Valid: true, Verified: 5, FirstEvent: 6, LastEvent: 10, Partial: true,
+			Checkpoints: []verify.CheckpointResult{
+				{
+					ID: "ckpt_1", FromSeq: 1, ToSeq: 10,
+					SignatureValid: true,
+					// HashChecked and ContinuityChecked both left false: to_seq
+					// and the predecessor fell outside this bounded range.
+					Note: "to_seq falls outside the verified range; hash not re-checked",
+				},
+			},
+		},
+	})
+
+	if !strings.Contains(out, "not fully checked") {
+		t.Error("an unchecked checkpoint does not say it was not fully checked")
+	}
+	if strings.Contains(out, "checkpoint failed") {
+		t.Error("an unchecked checkpoint is being reported as a failed one")
+	}
+	// Same reasoning as the failed-checkpoint test: check the block's actual
+	// class combination, not a substring the page's ordinary form chrome
+	// (aria-invalid:border-destructive, etc.) already contains everywhere.
+	if strings.Contains(out, "border-destructive bg-destructive/5") {
+		t.Error("an unchecked checkpoint is styled as a failure; HashChecked/ContinuityChecked exist to prevent exactly this")
+	}
+}
+
+// A checkpoint that is fully checked and intact should read as unremarkable,
+// not draw the eye the way a failure or an inconclusive result does.
+func TestVerifyPageRendersAnIntactCheckpointAsUnremarkable(t *testing.T) {
+	out := renderVerify(t, VerifyPageData{
+		Report: &verify.Report{
+			Valid: true, Verified: 10, FirstEvent: 1, LastEvent: 10,
+			Checkpoints: []verify.CheckpointResult{
+				{
+					ID: "ckpt_1", FromSeq: 1, ToSeq: 10,
+					SignatureValid: true, HashChecked: true, HashMatch: true,
+					ContinuityChecked: true, ContinuityOK: true,
+				},
+			},
+		},
+	})
+
+	if !strings.Contains(out, "signed and intact") {
+		t.Error("an intact checkpoint does not say so")
+	}
+	if strings.Contains(out, "border-destructive bg-destructive/5") {
+		t.Error("an intact checkpoint is styled as a failure")
+	}
+	if strings.Contains(out, "not fully checked") {
+		t.Error("an intact, fully-checked checkpoint is being reported as inconclusive")
 	}
 }

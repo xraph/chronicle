@@ -977,6 +977,37 @@ func (s *Store) ListCheckpoints(
 	return cloneCheckpoints(applyListWindow(matched, opts.Offset, opts.Limit)), nil
 }
 
+// ListCheckpointsByScope returns every checkpoint across every stream whose
+// AppID and TenantID match, newest first.
+//
+// This is not part of checkpoint.Store: every method there but GetCheckpoint
+// takes a streamID, because a checkpoint is fundamentally a per-stream
+// artifact. The admin listing API needs a scope-wide view the same way event
+// and erasure listings already have, and the in-memory store is positioned to
+// answer it directly by scanning its one flat slice; see
+// handler.scopedCheckpointLister, which type-asserts for this method and
+// falls back to the caller's single stream (every app+tenant has exactly
+// one, per stream/doc.go) on backends that do not implement it.
+func (s *Store) ListCheckpointsByScope(
+	_ context.Context, appID, tenantID string, opts checkpoint.ListOpts,
+) ([]*checkpoint.Checkpoint, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var matched []*checkpoint.Checkpoint
+	for _, cp := range s.checkpoints {
+		if cp.AppID == appID && cp.TenantID == tenantID {
+			matched = append(matched, cp)
+		}
+	}
+
+	sort.Slice(matched, func(i, j int) bool {
+		return matched[i].CreatedAt.After(matched[j].CreatedAt)
+	})
+
+	return cloneCheckpoints(applyListWindow(matched, opts.Offset, opts.Limit)), nil
+}
+
 // ──────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────

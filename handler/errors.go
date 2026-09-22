@@ -6,6 +6,7 @@ import (
 	"github.com/xraph/forge"
 
 	"github.com/xraph/chronicle"
+	"github.com/xraph/chronicle/checkpoint"
 )
 
 // mapStoreError converts chronicle sentinel errors to forge HTTP errors.
@@ -34,5 +35,6 @@ func isNotFound(err error) bool {
 		errors.Is(err, chronicle.ErrPolicyNotFound) ||
 		errors.Is(err, chronicle.ErrReportNotFound) ||
 		errors.Is(err, chronicle.ErrErasureNotFound) ||
-		errors.Is(err, chronicle.ErrSubjectNotFound)
+		errors.Is(err, chronicle.ErrSubjectNotFound) ||
+		errors.Is(err, checkpoint.ErrNotFound)
 }

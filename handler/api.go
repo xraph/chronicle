@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/hash"
@@ -42,6 +43,17 @@ type Dependencies struct {
 	Compliance     *compliance.Engine
 	Retention      *retention.Enforcer
 	Logger         log.Logger
+
+	// CheckpointStore persists signed checkpoints. Optional: when nil, the
+	// checkpoint routes report 503 rather than panicking or 500ing, the same
+	// way a nil Compliance engine does for the report routes.
+	CheckpointStore checkpoint.Store
+
+	// Checkpointer takes a signed checkpoint on demand for POST
+	// /v1/checkpoints. Optional for the same reason as CheckpointStore: a
+	// deployment that has not configured checkpointing still gets a working
+	// API, just not that one write route.
+	Checkpointer *checkpoint.Checkpointer
 
 	// HashChain is the chain verification recomputes digests under. A
 	// nil value here defaults to a zero-value, unkeyed chain, which is what
@@ -96,6 +108,7 @@ func (a *API) Handler() http.Handler {
 func (a *API) RegisterRoutes(router forge.Router) {
 	a.registerEventRoutes(router)
 	a.registerVerifyRoutes(router)
+	a.registerCheckpointRoutes(router)
 	a.registerErasureRoutes(router)
 	a.registerRetentionRoutes(router)
 	a.registerReportRoutes(router)
@@ -153,6 +166,38 @@ func (a *API) registerVerifyRoutes(router forge.Router) {
 		forge.WithOperationID("verifyChain"),
 		forge.WithRequestSchema(VerifyChainRequest{}),
 		forge.WithResponseSchema(http.StatusOK, "Verification report", &verify.Report{}),
+		forge.WithErrorResponses(),
+	)...))
+}
+
+// registerCheckpointRoutes registers checkpoint routes.
+func (a *API) registerCheckpointRoutes(router forge.Router) {
+	g := router.Group("/v1", forge.WithGroupTags("checkpoints"))
+
+	must(g.GET("/checkpoints", a.listCheckpoints, a.read(
+		forge.WithSummary("List checkpoints"),
+		forge.WithDescription("Returns signed checkpoints for the current app scope."),
+		forge.WithOperationID("listCheckpoints"),
+		forge.WithResponseSchema(http.StatusOK, "Checkpoint list", []*checkpoint.Checkpoint{}),
+		forge.WithErrorResponses(),
+	)...))
+
+	must(g.GET("/checkpoints/:id", a.getCheckpoint, a.read(
+		forge.WithSummary("Get a checkpoint"),
+		forge.WithDescription("Returns details of a specific checkpoint."),
+		forge.WithOperationID("getCheckpoint"),
+		forge.WithRequestSchema(GetCheckpointRequest{}),
+		forge.WithResponseSchema(http.StatusOK, "Checkpoint details", &checkpoint.Checkpoint{}),
+		forge.WithErrorResponses(),
+	)...))
+
+	// Write, not admin: taking a checkpoint creates a record and destroys nothing.
+	must(g.POST("/checkpoints", a.forceCheckpoint, a.write(
+		forge.WithSummary("Take a checkpoint now"),
+		forge.WithDescription("Signs and stores a checkpoint over a stream's current head."),
+		forge.WithOperationID("forceCheckpoint"),
+		forge.WithRequestSchema(ForceCheckpointRequest{}),
+		forge.WithCreatedResponse(&checkpoint.Checkpoint{}),
 		forge.WithErrorResponses(),
 	)...))
 }

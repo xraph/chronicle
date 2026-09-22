@@ -21,3 +21,8 @@ func parsePolicyID(s string) (id.ID, error) {
 func parseReportID(s string) (id.ID, error) {
 	return id.ParseReportID(s)
 }
+
+// parseCheckpointID parses a checkpoint ID string into an id.ID.
+func parseCheckpointID(s string) (id.ID, error) {
+	return id.ParseCheckpointID(s)
+}

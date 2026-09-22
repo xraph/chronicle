@@ -186,6 +186,60 @@ templ VerifyPage(data VerifyPageData) {
 							</dd>
 						</div>
 					}
+
+					if len(data.Report.Coverage) > 0 {
+						<div class="mt-4">
+							<dt class="text-sm font-medium text-muted-foreground mb-2">Coverage</dt>
+							<dd class="space-y-1">
+								for _, cov := range data.Report.Coverage {
+									<div class="text-xs flex flex-wrap items-baseline gap-2">
+										<code class="bg-muted/50 px-2 py-1 rounded-sm">
+											{ strconv.FormatUint(cov.FromSeq, 10) }-{ strconv.FormatUint(cov.ToSeq, 10) }: { string(cov.Level) }
+										</code>
+										if cov.Note != "" {
+											<span class="text-muted-foreground">{ cov.Note }</span>
+										}
+									</div>
+								}
+							</dd>
+						</div>
+					}
+
+					if len(data.Report.Checkpoints) > 0 {
+						<div class="mt-4">
+							<dt class="text-sm font-medium text-muted-foreground mb-2">Checkpoints</dt>
+							<dd class="space-y-2">
+								for _, cp := range data.Report.Checkpoints {
+									switch checkpointStatus(cp) {
+										case "failed":
+											<div class="rounded-sm border border-destructive bg-destructive/5 p-3">
+												<p class="text-xs font-semibold text-destructive">
+													{ strconv.FormatUint(cp.FromSeq, 10) }-{ strconv.FormatUint(cp.ToSeq, 10) }: checkpoint failed
+												</p>
+												if cp.Note != "" {
+													<p class="text-xs text-destructive mt-1">{ cp.Note }</p>
+												}
+											</div>
+										case "inconclusive":
+											<div class="rounded-sm border border-muted bg-muted/30 p-3">
+												<p class="text-xs font-medium text-muted-foreground">
+													{ strconv.FormatUint(cp.FromSeq, 10) }-{ strconv.FormatUint(cp.ToSeq, 10) }: not fully checked
+												</p>
+												if cp.Note != "" {
+													<p class="text-xs text-muted-foreground mt-1">{ cp.Note }</p>
+												}
+											</div>
+										default:
+											<div class="text-xs text-muted-foreground">
+												<code class="bg-muted/50 px-2 py-1 rounded-sm">
+													{ strconv.FormatUint(cp.FromSeq, 10) }-{ strconv.FormatUint(cp.ToSeq, 10) }: signed and intact
+												</code>
+											</div>
+									}
+								}
+							</dd>
+						</div>
+					}
 				}
 			}
 		}
@@ -212,4 +266,34 @@ func boolToStatus(valid bool) string {
 // dashboard that no action could ever clear.
 func issueCount(r *verify.Report) int {
 	return len(r.Gaps) + len(r.Tampered) + len(r.Downgrades)
+}
+
+// checkpointStatus classifies one checkpoint result for display.
+//
+// "failed" means a check that actually ran found a mismatch: the signature
+// did not verify, the recomputed hash disagrees, or continuity is broken.
+//
+// "inconclusive" means a check simply did not run. HashChecked and
+// ContinuityChecked exist precisely so "not checked" cannot be misread as
+// "failed" -- a covering checkpoint whose to_seq or predecessor falls
+// outside a bounded sub-range legitimately leaves them false on an otherwise
+// healthy checkpoint, and rendering that with the same styling as a real
+// failure is the exact bug those fields were added to fix.
+//
+// Anything else -- signature valid, and every check that did run passed --
+// is "valid".
+func checkpointStatus(cr verify.CheckpointResult) string {
+	if !cr.SignatureValid {
+		return "failed"
+	}
+	if cr.HashChecked && !cr.HashMatch {
+		return "failed"
+	}
+	if cr.ContinuityChecked && !cr.ContinuityOK {
+		return "failed"
+	}
+	if !cr.HashChecked || !cr.ContinuityChecked {
+		return "inconclusive"
+	}
+	return "valid"
 }

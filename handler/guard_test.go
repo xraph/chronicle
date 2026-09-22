@@ -114,12 +114,14 @@ func TestGuardsBlockEveryRoute(t *testing.T) {
 		{http.MethodGet, "/v1/retention", nil},
 		{http.MethodGet, "/v1/retention/archives", nil},
 		{http.MethodGet, "/v1/reports", nil},
+		{http.MethodGet, "/v1/checkpoints", nil},
 		{http.MethodPost, "/v1/retention", map[string]any{"category": "auth", "duration": "1h"}},
 		{
 			http.MethodPost, "/v1/erasures",
 			map[string]any{"subject_id": "s1", "reason": "r", "requested_by": "u"},
 		},
 		{http.MethodPost, "/v1/retention/enforce", nil},
+		{http.MethodPost, "/v1/checkpoints", map[string]any{"stream_id": "stream_x"}},
 	}
 
 	for _, r := range routes {
@@ -154,6 +156,8 @@ func TestDestructiveRoutesUseTheAdminGuard(t *testing.T) {
 
 		// Creates records but destroys nothing.
 		{http.MethodPost, "/v1/retention", map[string]any{"category": "auth", "duration": "1h"}, "write"},
+		// Taking a checkpoint creates a record and destroys nothing either.
+		{http.MethodPost, "/v1/checkpoints", map[string]any{"stream_id": "stream_x"}, "write"},
 
 		// Observation only.
 		{http.MethodGet, "/v1/events", nil, "read"},
@@ -162,6 +166,7 @@ func TestDestructiveRoutesUseTheAdminGuard(t *testing.T) {
 		{http.MethodGet, "/v1/erasures", nil, "read"},
 		{http.MethodGet, "/v1/retention/archives", nil, "read"},
 		{http.MethodGet, "/v1/reports", nil, "read"},
+		{http.MethodGet, "/v1/checkpoints", nil, "read"},
 		{http.MethodPost, "/v1/events/aggregate", map[string]any{"group_by": []string{"category"}}, "read"},
 	}
 
