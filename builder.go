@@ -76,6 +76,30 @@ func (b *EventBuilder) AppID(aid string) *EventBuilder {
 	return b
 }
 
+// IP sets the client address the action came from.
+func (b *EventBuilder) IP(ip string) *EventBuilder {
+	b.event.IP = ip
+	return b
+}
+
+// UserAgent sets the client's User-Agent string.
+func (b *EventBuilder) UserAgent(ua string) *EventBuilder {
+	b.event.UserAgent = ua
+	return b
+}
+
+// RequestID sets the HTTP request correlation id.
+func (b *EventBuilder) RequestID(rid string) *EventBuilder {
+	b.event.RequestID = rid
+	return b
+}
+
+// SessionID sets the authenticated session the action ran under.
+func (b *EventBuilder) SessionID(sid string) *EventBuilder {
+	b.event.SessionID = sid
+	return b
+}
+
 // Record persists the built event through the Chronicle pipeline.
 func (b *EventBuilder) Record() error {
 	return b.chronicle.Record(b.ctx, b.event)
