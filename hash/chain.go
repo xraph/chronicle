@@ -99,6 +99,17 @@ type Chain struct {
 // deployment ends up believing its chain is keyed while writing plain digests.
 // SchemeLegacy is rejected outright: it exists to verify old rows, and writing
 // a new one would deliberately drop the actor and source address from coverage.
+//
+// Under SchemeHMAC the active key is resolved here, once, and construction
+// fails if there is not one. A provider that loads cleanly is not the same as a
+// provider that can sign: a keyset whose use is misspelled, or whose only hmac
+// key is active: false, parses and validates perfectly and then has no active
+// key for hmac. Without this check the process boots green and every single
+// Record fails at runtime, which is the worst possible place to find out.
+//
+// The key resolved here is deliberately discarded. Compute re-resolves per
+// event so a rotation takes effect without a restart of the writer; this is a
+// readiness check, not a cache.
 func NewChain(scheme Scheme, provider keys.Provider) (*Chain, error) {
 	switch scheme {
 	case SchemeLegacy:
@@ -106,6 +117,17 @@ func NewChain(scheme Scheme, provider keys.Provider) (*Chain, error) {
 	case SchemeHMAC:
 		if provider == nil {
 			return nil, fmt.Errorf("hash: %s requires a key provider", scheme)
+		}
+		key, keyID, err := provider.Current(context.Background(), keys.UseHMAC)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"hash: %s is configured but no active %s key could be resolved: %w",
+				scheme, keys.UseHMAC, err)
+		}
+		if len(key) == 0 {
+			return nil, fmt.Errorf(
+				"hash: %s key %q resolved to no material; a keyed digest over an empty key "+
+					"is an unkeyed digest with extra steps", scheme, keyID)
 		}
 	case SchemePlain, "":
 		scheme = SchemePlain
