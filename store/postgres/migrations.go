@@ -254,7 +254,17 @@ ALTER TABLE chronicle_streams
 -- Every event that already exists predates the pin, so put the pin just past
 -- the current head. Those rows keep verifying under the tolerant path and
 -- everything written from now on is resolved strictly.
-UPDATE chronicle_streams SET scheme_since = head_seq + 1 WHERE scheme_since = 0;
+--
+-- head_seq is not trusted to equal the true high-water mark: Append derives
+-- the next sequence from MAX(sequence), not head_seq, precisely because a
+-- crash between the event insert and the head update can leave head_seq
+-- lagging. Pinning from a lagging head_seq alone would misclassify the
+-- already-written events above it as claiming no scheme at or above the pin,
+-- which reads as a permanent downgrade rather than as history.
+UPDATE chronicle_streams SET scheme_since = GREATEST(
+    head_seq,
+    COALESCE((SELECT MAX(sequence) FROM chronicle_events e WHERE e.stream_id = chronicle_streams.id), 0)
+) + 1 WHERE scheme_since = 0;
 `)
 				return err
 			},

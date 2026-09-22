@@ -295,7 +295,17 @@ ALTER TABLE chronicle_events  ADD COLUMN hash_scheme  TEXT NOT NULL DEFAULT '';
 ALTER TABLE chronicle_events  ADD COLUMN hash_key_id  TEXT NOT NULL DEFAULT '';
 ALTER TABLE chronicle_streams ADD COLUMN scheme       TEXT NOT NULL DEFAULT 'chronicle/v2';
 ALTER TABLE chronicle_streams ADD COLUMN scheme_since INTEGER NOT NULL DEFAULT 0;
-UPDATE chronicle_streams SET scheme_since = head_seq + 1 WHERE scheme_since = 0;
+-- head_seq is not trusted to equal the true high-water mark: Append derives
+-- the next sequence from MAX(sequence), not head_seq, precisely because a
+-- crash between the event insert and the head update can leave head_seq
+-- lagging. Pinning from a lagging head_seq alone would misclassify the
+-- already-written events above it as a permanent downgrade rather than as
+-- history. MAX(a, b) below is SQLite's two-argument scalar max, not the
+-- single-argument aggregate.
+UPDATE chronicle_streams SET scheme_since = MAX(
+    head_seq,
+    (SELECT COALESCE(MAX(sequence), 0) FROM chronicle_events e WHERE e.stream_id = chronicle_streams.id)
+) + 1 WHERE scheme_since = 0;
 `)
 				return err
 			},
