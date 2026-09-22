@@ -55,6 +55,9 @@ func TestVerifyChainMatchesAnIntactHead(t *testing.T) {
 	if report.Partial {
 		t.Error("a genesis-to-head verification should not be Partial")
 	}
+	if !report.HeadChecked {
+		t.Error("HeadChecked is false even though a full-range head comparison ran")
+	}
 }
 
 // An explicitly bounded range is legitimate, but it must say it did not cover
@@ -77,6 +80,9 @@ func TestBoundedRangeReportsPartial(t *testing.T) {
 	}
 	if report.HeadMatch {
 		t.Error("a range stopping short of the head must not claim HeadMatch")
+	}
+	if report.HeadChecked {
+		t.Error("HeadChecked is true although Partial skipped the head comparison entirely")
 	}
 }
 
@@ -112,6 +118,113 @@ func TestLevelsAreOrdered(t *testing.T) {
 	}
 }
 
+// TestEmptyResolvedRangeIsNotValid pins the fix for a hole the original
+// early return left open: a resolved range that comes up empty against a
+// stream that claims a real, non-zero head must fail, not vacuously pass.
+// This is reachable two ways -- a FromSeq beyond every event the stream has
+// ever held (as this test builds directly), or Chronicle.VerifyChain
+// defaulting ToSeq to an unresolved HeadSeq of 0 -- and before this fix both
+// reported {valid: true, verified: 0}, silently clean where the pre-Task-5
+// code had (by accident, via a spurious Gaps(0,0) -> [0]) at least been
+// loudly wrong.
+func TestEmptyResolvedRangeIsNotValid(t *testing.T) {
+	ctx := context.Background()
+	streamID := id.NewStreamID()
+
+	// The store has nothing in the requested range -- what from_seq=100
+	// against a 5-event stream produces -- but the stream itself claims a
+	// real, non-zero head.
+	v := verify.NewVerifier(fakeStore{})
+	report, err := v.VerifyChain(ctx, &verify.Input{
+		StreamID: streamID,
+		FromSeq:  100,
+		HeadSeq:  5,
+		HeadHash: "the-real-head-hash",
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if report.Valid {
+		t.Error("an empty resolved range against a stream that claims a head reported Valid")
+	}
+	if report.Verified != 0 {
+		t.Errorf("Verified = %d, want 0 (nothing in the resolved range)", report.Verified)
+	}
+	if !report.HeadChecked {
+		t.Error("HeadChecked is false even though the empty range was judged against a known head")
+	}
+}
+
+// TestEmptyResolvedRangeOfATrulyEmptyStreamIsValid is
+// TestEmptyResolvedRangeIsNotValid's counterpart: a stream that claims no
+// head at all (HeadSeq == 0, which is indistinguishable in Input from "the
+// caller never told me") must still verify vacuously true. A freshly created,
+// genuinely empty stream is not evidence of tampering.
+func TestEmptyResolvedRangeOfATrulyEmptyStreamIsValid(t *testing.T) {
+	ctx := context.Background()
+	streamID := id.NewStreamID()
+
+	v := verify.NewVerifier(fakeStore{})
+	report, err := v.VerifyChain(ctx, &verify.Input{StreamID: streamID})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !report.Valid {
+		t.Error("a stream with no claimed head reported invalid on an empty range")
+	}
+	if report.HeadChecked {
+		t.Error("HeadChecked is true even though no head was ever claimed")
+	}
+}
+
+// TestBoundedRangeWithoutHeadReportsPartial pins the fix for a range bounded
+// only on its upper end -- ToSeq set explicitly, HeadSeq left unknown. The
+// original Partial formula could not see this: fromSeq stayed 1 (not > 1),
+// and the HeadSeq > 0 term never applied because HeadSeq was exactly the
+// unknown value the formula needed in order to detect the bound. An explicit
+// ToSeq is a bound regardless of whether this verifier can prove "here" was
+// really the head.
+func TestBoundedRangeWithoutHeadReportsPartial(t *testing.T) {
+	ctx := context.Background()
+	streamID := id.NewStreamID()
+	events := buildChain(t, streamID, 10)
+
+	v := verify.NewVerifier(fakeStore{events: events})
+	report, err := v.VerifyChain(ctx, &verify.Input{
+		StreamID: streamID, ToSeq: 7,
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !report.Partial {
+		t.Error("an explicit ToSeq with no known head did not report Partial")
+	}
+}
+
+// TestNoHeadSuppliedLeavesHeadCheckedFalse proves a caller that never
+// supplies a head gets an honest signal that the tail was not compared,
+// rather than a HeadMatch whose zero value is indistinguishable from
+// "checked and mismatched."
+func TestNoHeadSuppliedLeavesHeadCheckedFalse(t *testing.T) {
+	ctx := context.Background()
+	streamID := id.NewStreamID()
+	events := buildChain(t, streamID, 5)
+
+	v := verify.NewVerifier(fakeStore{events: events})
+	report, err := v.VerifyChain(ctx, &verify.Input{
+		StreamID: streamID, FromSeq: 1, ToSeq: 5,
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if report.HeadChecked {
+		t.Error("HeadChecked is true even though no head was supplied")
+	}
+	if !report.Valid {
+		t.Error("a chain with no head to compare against should still verify its own linkage")
+	}
+}
+
 // buildChain builds n audit events genuinely linked into a hash chain, computed
 // with a zero-value (plain, unkeyed) hash.Chain over the previous hash, with
 // PrevHash set accordingly. This is what makes VerifyChain's linkage
@@ -119,11 +232,6 @@ func TestLevelsAreOrdered(t *testing.T) {
 //
 // fakeStore (used above) is declared in downgrade_test.go, in this same
 // verify_test package; it is reused here rather than redeclared.
-//
-// n is always called with 5, kept as a parameter so a future test can build a
-// shorter or longer chain without changing the helper's shape.
-//
-//nolint:unparam // n kept general on purpose, see comment above.
 func buildChain(t *testing.T, streamID id.ID, n int) []*audit.Event {
 	t.Helper()
 

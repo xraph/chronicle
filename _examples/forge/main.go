@@ -180,7 +180,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Chain valid: %v (verified %d events)\n", report.Valid, report.Verified)
+	fmt.Printf("Chain valid: %v (verified %d events, head checked: %v)\n",
+		report.Valid, report.Verified, report.HeadChecked)
 
 	// 12. Demonstrate the routes handler can be mounted on a server.
 	mux := http.NewServeMux()

@@ -128,13 +128,16 @@ func main() {
 	}
 
 	fmt.Printf("  Valid:           %v\n", report.Valid)
+	fmt.Printf("  Head checked:    %v\n", report.HeadChecked)
 	fmt.Printf("  Events verified: %d\n", report.Verified)
 	fmt.Printf("  First event:     seq=%d\n", report.FirstEvent)
 	fmt.Printf("  Last event:      seq=%d\n", report.LastEvent)
 	fmt.Printf("  Gaps:            %v\n", report.Gaps)
 	fmt.Printf("  Tampered:        %v\n", report.Tampered)
 
-	// 7. Verify a sub-range of the chain.
+	// 7. Verify a sub-range of the chain. This is a deliberately bounded
+	// range (not genesis-to-head), so Partial is true and the head is never
+	// checked even though HeadSeq is unknown here anyway (no AppID supplied).
 	fmt.Println("\n--- Sub-Range Verification (seq 3-7) ---")
 	subReport, err := c.VerifyChain(ctx, &verify.Input{
 		StreamID: firstEvent.StreamID,
@@ -146,6 +149,7 @@ func main() {
 	}
 
 	fmt.Printf("  Valid:           %v\n", subReport.Valid)
+	fmt.Printf("  Partial:         %v\n", subReport.Partial)
 	fmt.Printf("  Events verified: %d\n", subReport.Verified)
 	fmt.Printf("  First event:     seq=%d\n", subReport.FirstEvent)
 	fmt.Printf("  Last event:      seq=%d\n", subReport.LastEvent)

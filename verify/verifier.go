@@ -51,7 +51,15 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 	if toSeq == 0 {
 		toSeq = input.HeadSeq
 	}
-	report.Partial = fromSeq > 1 || (input.HeadSeq > 0 && toSeq < input.HeadSeq)
+	// A range is Partial when the caller bounded either end: FromSeq above
+	// genesis, or ToSeq below a known head. ToSeq alone is also a bound even
+	// when the head is unknown -- an explicit ToSeq says "stop here"
+	// regardless of whether this verifier can prove "here" was the head, and
+	// treating an unprovable upper bound as full coverage would be the wrong
+	// direction to be wrong in.
+	report.Partial = fromSeq > 1 ||
+		(input.HeadSeq > 0 && toSeq < input.HeadSeq) ||
+		(input.ToSeq > 0 && input.HeadSeq == 0)
 	report.HeadSeq = input.HeadSeq
 
 	// Detect gaps in the sequence range.
@@ -71,6 +79,19 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 	}
 
 	if len(events) == 0 {
+		// An empty resolved range against a stream that claims a head (a
+		// non-zero HeadSeq) is a failure, not a trivially valid pass: either
+		// the request asked for a range past the head (from_seq beyond what
+		// the stream has ever held), or every sequence in range is missing,
+		// which Gaps above would already have caught -- so the only way to
+		// land here with a known head is a range that could never have
+		// covered it. A stream with no claimed head (HeadSeq == 0) is
+		// different: that is what a genuinely empty, freshly created stream
+		// reports, and verifying it vacuously true is correct.
+		if input.HeadSeq > 0 {
+			report.Valid = false
+			report.HeadChecked = true
+		}
 		return report, nil
 	}
 
@@ -123,6 +144,7 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 	// head has had events removed from the end, which no amount of internal
 	// linkage can reveal.
 	if input.HeadHash != "" && !report.Partial {
+		report.HeadChecked = true
 		last := events[len(events)-1]
 		report.HeadMatch = last.Hash == input.HeadHash && last.Sequence == input.HeadSeq
 		if !report.HeadMatch {

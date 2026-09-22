@@ -415,28 +415,51 @@ func (c *Chronicle) VerifyEvent(ctx context.Context, eventID id.ID) (bool, error
 // VerifyChain verifies the integrity of a hash chain for a stream.
 //
 // A caller that supplies AppID (the scope GetStreamByScope needs) gets
-// HeadSeq, HeadHash and Pin filled in from the actual stream row for whichever
-// of those it left zero, so it gets head anchoring and pin-aware downgrade
-// detection without having to resolve the stream itself. A caller with only a
-// StreamID in hand -- no scope, no stream row -- gets the old, narrower
-// behaviour: no head anchoring, no downgrade detection, matching Input.Pin's
-// documented contract for callers with no stream in hand.
+// HeadSeq/HeadHash and Pin filled in from the actual stream row for whichever
+// of those it left entirely unset, so it gets head anchoring and pin-aware
+// downgrade detection without having to resolve the stream itself. Three
+// things keep that fill from doing the wrong thing silently:
+//
+//   - It never mutates the caller's *Input. It fills a local copy and only
+//     verifies against that copy, so a caller reusing one Input across a loop
+//     of streams does not have it progressively overwritten by whichever
+//     stream happened to resolve first.
+//   - It only applies when the resolved stream's ID matches the StreamID
+//     being verified. A caller whose StreamID does not belong to the
+//     AppID/TenantID scope it also supplied must not get that scope's
+//     unrelated stream silently anchoring its tail -- a false "tampered" from
+//     an audit tool is an expensive thing to be wrong about.
+//   - HeadSeq and HeadHash fill as a pair, only when both are unset. A caller
+//     who already supplied one half (a HeadHash sourced out of band, from a
+//     checkpoint or an external notary) keeps both, rather than having the
+//     value it specifically wanted cross-checked silently replaced.
+//
+// A caller with only a StreamID in hand -- no scope, no stream row -- gets
+// the old, narrower behaviour: no head anchoring, no downgrade detection,
+// matching Input.Pin's documented contract for callers with no stream in
+// hand.
 func (c *Chronicle) VerifyChain(ctx context.Context, input *verify.Input) (*verify.Report, error) {
 	if c.store == nil {
 		return nil, ErrNoStore
 	}
 
-	if input.AppID != "" && (input.HeadSeq == 0 || input.Pin == (hash.Pin{})) {
+	needsHead := input.HeadSeq == 0 && input.HeadHash == ""
+	needsPin := input.Pin == (hash.Pin{})
+	if input.AppID != "" && (needsHead || needsPin) {
 		s, err := c.store.GetStreamByScope(ctx, input.AppID, input.TenantID)
 		if err != nil {
 			return nil, fmt.Errorf("chronicle: resolve stream for verification: %w", err)
 		}
-		if input.HeadSeq == 0 {
-			input.HeadSeq = s.HeadSeq
-			input.HeadHash = s.HeadHash
-		}
-		if input.Pin == (hash.Pin{}) {
-			input.Pin = hash.Pin{Scheme: hash.Scheme(s.Scheme), Since: s.SchemeSince}
+		if input.StreamID.IsNil() || s.ID == input.StreamID {
+			in := *input
+			if needsHead {
+				in.HeadSeq = s.HeadSeq
+				in.HeadHash = s.HeadHash
+			}
+			if needsPin {
+				in.Pin = hash.Pin{Scheme: hash.Scheme(s.Scheme), Since: s.SchemeSince}
+			}
+			input = &in
 		}
 	}
 

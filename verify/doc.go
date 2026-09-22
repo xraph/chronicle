@@ -39,10 +39,14 @@
 //   - Tampered   — sequence numbers whose stored hash differs from recomputed
 //   - FirstEvent — sequence of the first checked event
 //   - LastEvent  — sequence of the last checked event
-//   - Partial    — true when the caller bounded the range rather than
+//   - Partial     — true when the caller bounded the range rather than
 //     verifying genesis to head
-//   - HeadMatch  — whether the verified tail's hash equals the recorded head
-//   - Coverage   — the assurance [Level] over each span of the verified range
+//   - HeadMatch   — whether the verified tail's hash equals the recorded head
+//   - HeadChecked — whether HeadMatch was actually evaluated. False means no
+//     head was supplied, or the range was Partial; read HeadMatch only when
+//     this is true, since "false" otherwise means "not checked," not
+//     "checked and mismatched"
+//   - Coverage    — the assurance [Level] over each span of the verified range
 //
 // # Store
 //

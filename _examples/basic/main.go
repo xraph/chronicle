@@ -159,6 +159,7 @@ func main() {
 	}
 
 	fmt.Printf("Chain valid:    %v\n", report.Valid)
+	fmt.Printf("Head checked:   %v\n", report.HeadChecked)
 	fmt.Printf("Events verified: %d\n", report.Verified)
 	fmt.Printf("Gaps:           %v\n", report.Gaps)
 	fmt.Printf("Tampered:       %v\n", report.Tampered)
