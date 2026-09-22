@@ -84,12 +84,15 @@ func main() {
 	hasher := &hash.Chain{}
 	allValid := true
 	for _, ev := range result.Events {
-		computed := hasher.Compute(ev.PrevHash, ev)
+		computed, _, computeErr := hasher.Compute(ctx, ev.PrevHash, ev)
+		if computeErr != nil {
+			log.Fatal(computeErr)
+		}
 		valid := computed == ev.Hash
 		if !valid {
 			allValid = false
 		}
-		fmt.Printf("  seq=%2d  valid=%v\n", ev.Sequence, valid)
+		fmt.Printf("  seq=%2d  valid=%v  scheme=%s\n", ev.Sequence, valid, ev.HashScheme)
 	}
 	fmt.Printf("All individual hashes valid: %v\n", allValid)
 
