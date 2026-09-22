@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -54,42 +55,41 @@ func (a *API) listCheckpoints(ctx forge.Context) error {
 	return ctx.JSON(http.StatusOK, filtered)
 }
 
-// scopedCheckpointLister is implemented by checkpoint stores that can list
-// checkpoints across every stream in an app+tenant scope directly, without
-// the caller knowing which stream(s) exist first.
-//
-// checkpoint.Store cannot do this itself: every method on it but GetCheckpoint
-// and AppendCheckpoint takes a streamID, because a checkpoint is fundamentally
-// a per-stream artifact (see checkpoint/checkpoint.go's package doc). This is
-// an optional extension a backend may implement -- today only the in-memory
-// store does, in store/memory/store.go -- and checkpointsForScope falls back
-// to the one stream a scope actually owns when a store does not.
-type scopedCheckpointLister interface {
-	ListCheckpointsByScope(ctx context.Context, appID, tenantID string, opts checkpoint.ListOpts) ([]*checkpoint.Checkpoint, error)
-}
-
 // checkpointsForScope returns every checkpoint belonging to (appID, tenantID).
 //
-// Every app+tenant pair owns exactly one stream (see stream/doc.go), so
-// resolving that stream through StreamStore and listing its checkpoints is a
-// complete answer in production. A store that additionally implements
-// scopedCheckpointLister is asked directly instead: that path exists for a
-// checkpoint recorded against a stream StreamStore does not know about (an
-// unusual shape in production, but exactly what a fixture that seeds
-// checkpoints without ever creating their stream produces).
+// checkpoint.Store has no scope-wide query: every method on it but
+// GetCheckpoint and AppendCheckpoint takes a streamID, because a checkpoint is
+// fundamentally a per-stream artifact (see checkpoint/checkpoint.go's package
+// doc). Every app+tenant pair owns exactly one stream (see stream/doc.go), so
+// resolving that stream through StreamStore and listing its checkpoints is
+// the only path available, and a complete one.
+//
+// That routes a checkpoint's visibility through its stream row, which is the
+// wrong dependency direction for an artifact whose whole purpose is to
+// outlive and testify about that stream: a checkpoint whose stream row was
+// somehow removed would become invisible here even though the signed record
+// itself is untouched. No stream-deletion path exists anywhere in this
+// repository today, so this is latent, not reachable -- flagged here for
+// whoever adds one.
 func (a *API) checkpointsForScope(
 	ctx context.Context, appID, tenantID string, opts checkpoint.ListOpts,
 ) ([]*checkpoint.Checkpoint, error) {
-	if lister, ok := a.deps.CheckpointStore.(scopedCheckpointLister); ok {
-		return lister.ListCheckpointsByScope(ctx, appID, tenantID, opts)
-	}
-
 	if a.deps.StreamStore == nil {
 		return nil, nil
 	}
 	st, err := a.deps.StreamStore.GetStreamByScope(ctx, appID, tenantID)
 	if err != nil {
-		if isNotFound(err) {
+		// isNotFound alone is not enough on every backend. GetStreamByScope's
+		// groveError mapping (store/sqlite, store/postgres) checks
+		// errors.Is(err, grove.ErrNoRows) and the literal string "no rows in
+		// result set", but this driver's actual not-found error is
+		// sql.ErrNoRows, whose message carries a "sql: " prefix that literal
+		// never matches -- so groveError returns the raw driver error instead
+		// of chronicle.ErrStreamNotFound. Recognizing sql.ErrNoRows directly
+		// here, rather than fixing groveError, avoids reaching into a shared
+		// helper that is broken in a second, unrelated way (the postgres
+		// half) and needs its own fix outside this task.
+		if isNotFound(err) || errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err

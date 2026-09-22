@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/xraph/forge"
 	log "github.com/xraph/go-utils/log"
+	"github.com/xraph/grove"
+	"github.com/xraph/grove/drivers/sqlitedriver"
+	_ "github.com/xraph/grove/drivers/sqlitedriver/sqlitemigrate" // registers the sqlite migrate executor
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
@@ -18,6 +22,7 @@ import (
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/store/memory"
+	"github.com/xraph/chronicle/store/sqlite"
 	"github.com/xraph/chronicle/stream"
 )
 
@@ -64,11 +69,32 @@ func (s *cpSetup) do(t *testing.T, method, path string, body any) *httptest.Resp
 	return rec
 }
 
+// seedCheckpoint records a checkpoint against a real, registered stream.
+//
+// checkpointsForScope (checkpoints.go) has exactly one way to answer a
+// scope-wide listing: resolve the caller's stream through StreamStore, then
+// list that stream's checkpoints. A checkpoint recorded against a stream ID
+// nothing ever registered -- the brief's original fixture -- could only be
+// found by a since-removed memory-only shortcut that no other backend
+// shared, so the fallback every real backend actually takes went untested.
+// Creating the stream here, rather than restoring that shortcut, means
+// TestListCheckpointsIsTenantScoped exercises the code every deployment
+// runs.
+//
 //nolint:unparam // appID is always testAppID at every call site in this file; kept for symmetry with tenantID, same shape as newSigner/newCP elsewhere in this plan.
 func seedCheckpoint(t *testing.T, s *cpSetup, appID, tenantID string) *checkpoint.Checkpoint {
 	t.Helper()
+	ctx := context.Background()
+
+	streamID := id.NewStreamID()
+	if err := s.store.CreateStream(ctx, &stream.Stream{
+		ID: streamID, AppID: appID, TenantID: tenantID,
+	}); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
 	cp := &checkpoint.Checkpoint{
-		ID: id.NewCheckpointID(), StreamID: id.NewStreamID(),
+		ID: id.NewCheckpointID(), StreamID: streamID,
 		AppID: appID, TenantID: tenantID,
 		FromSeq: 1, ToSeq: 10, FromHash: "", ToHash: "head",
 		EventCount: 10, Algorithm: checkpoint.AlgorithmEd25519,
@@ -76,7 +102,7 @@ func seedCheckpoint(t *testing.T, s *cpSetup, appID, tenantID string) *checkpoin
 		CreatedAt: time.Now().UTC(),
 	}
 	cp.SignedPayload = checkpoint.CanonicalPayload(cp)
-	if err := s.store.AppendCheckpoint(context.Background(), cp); err != nil {
+	if err := s.store.AppendCheckpoint(ctx, cp); err != nil {
 		t.Fatalf("AppendCheckpoint: %v", err)
 	}
 	return cp
@@ -149,6 +175,85 @@ func TestListCheckpointsIsTenantScoped(t *testing.T) {
 	}
 	if got[0].ID.String() != mine.ID.String() {
 		t.Errorf("returned another tenant's checkpoint")
+	}
+}
+
+// newSQLiteCheckpointStore opens a migrated, file-backed SQLite store.
+//
+// checkpointsForScope's only path for a scope-wide listing goes through
+// StreamStore.GetStreamByScope, and the in-memory store used by every other
+// test in this file cannot exercise what that call actually returns on a
+// real backend: it returns chronicle.ErrStreamNotFound directly for an
+// unknown scope, which isNotFound already recognizes. SQLite's GetStreamByScope
+// goes through groveError instead, which does not recognize this driver's
+// actual not-found error (see TestListCheckpointsOnAnUnseenScopeIsEmptyNotAnError).
+// Reproducing that needs a real SQL driver, and SQLite is the one this repo
+// can run without a live server.
+func newSQLiteCheckpointStore(t *testing.T) *sqlite.Store {
+	t.Helper()
+
+	dsn := filepath.Join(t.TempDir(), "chronicle_checkpoints_test.db")
+	sdb := sqlitedriver.New()
+	if err := sdb.Open(context.Background(), dsn); err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db, err := grove.Open(sdb)
+	if err != nil {
+		t.Fatalf("grove open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	s := sqlite.New(db)
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return s
+}
+
+// TestListCheckpointsOnAnUnseenScopeIsEmptyNotAnError is a regression test
+// for a real defect that every SQL backend has today: GetStreamByScope's
+// groveError mapping (store/sqlite/store.go, store/postgres/store.go) checks
+// errors.Is(err, grove.ErrNoRows) and the literal string "no rows in result
+// set", but this driver's actual not-found error is sql.ErrNoRows, whose
+// message carries a "sql: " prefix that literal never matches. So a scope
+// that has never recorded a stream gets the raw sql.ErrNoRows back from
+// GetStreamByScope instead of chronicle.ErrStreamNotFound, and before
+// checkpointsForScope also recognized sql.ErrNoRows directly, that raw error
+// propagated all the way out as a 500 -- for a caller who did nothing wrong
+// and simply hasn't written anything yet.
+func TestListCheckpointsOnAnUnseenScopeIsEmptyNotAnError(t *testing.T) {
+	store := newSQLiteCheckpointStore(t)
+
+	router := forge.NewRouter()
+	api := handler.New(handler.Dependencies{
+		AuditStore:      store,
+		VerifyStore:     store,
+		StreamStore:     store,
+		ErasureStore:    store,
+		RetentionStore:  store,
+		ReportStore:     store,
+		CheckpointStore: store,
+		Logger:          log.NewNoopLogger(),
+	}, router)
+	api.RegisterRoutes(router)
+
+	req, err := http.NewRequestWithContext(scopedContext(context.Background()), http.MethodGet, "/v1/checkpoints", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	router.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for a scope that has never recorded a stream: %s", rec.Code, rec.Body.String())
+	}
+
+	var got []checkpoint.Checkpoint
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, rec.Body.String())
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d checkpoints, want 0", len(got))
 	}
 }
 
