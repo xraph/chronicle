@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/xraph/chronicle/audit"
@@ -362,5 +363,49 @@ func TestParseTrustedProxiesAcceptsBareAddress(t *testing.T) {
 
 	if got := scope.FromRequestWithProxies(r, trusted).IP; got != "203.0.113.9" {
 		t.Fatalf("IP = %q, want 203.0.113.9", got)
+	}
+}
+
+func TestFromRequestExtractsUserAgentAndRequestID(t *testing.T) {
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	r.RemoteAddr = "198.51.100.7:4433"
+	r.Header.Set("User-Agent", "curl/8.0")
+	r.Header.Set("X-Request-ID", "req-123")
+
+	info := scope.FromRequest(r)
+	if info.UserAgent != "curl/8.0" {
+		t.Errorf("UserAgent = %q", info.UserAgent)
+	}
+	if info.RequestID != "req-123" {
+		t.Errorf("RequestID = %q", info.RequestID)
+	}
+}
+
+func TestFromRequestRejectsUnsafeRequestID(t *testing.T) {
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	r.Header.Set("X-Request-ID", "has space\nand newline")
+	if got := scope.FromRequest(r).RequestID; got != "" {
+		t.Errorf("RequestID = %q, want empty", got)
+	}
+	long := strings.Repeat("a", 200)
+	r.Header.Set("X-Request-ID", long)
+	if got := scope.FromRequest(r).RequestID; got != "" {
+		t.Errorf("RequestID = %q, want empty for over-long id", got)
+	}
+}
+
+func TestApplyToEventFillsRequestFields(t *testing.T) {
+	ctx := scope.WithUserAgent(context.Background(), "ua-1")
+	ctx = scope.WithRequestID(ctx, "req-1")
+	ev := &audit.Event{}
+	scope.ApplyToEvent(ctx, ev)
+	if ev.UserAgent != "ua-1" || ev.RequestID != "req-1" {
+		t.Errorf("event = %+v", ev)
+	}
+
+	preset := &audit.Event{UserAgent: "keep", RequestID: "keep"}
+	scope.ApplyToEvent(ctx, preset)
+	if preset.UserAgent != "keep" || preset.RequestID != "keep" {
+		t.Errorf("ApplyToEvent overwrote preset fields: %+v", preset)
 	}
 }
