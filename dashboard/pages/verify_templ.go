@@ -411,7 +411,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = components.StatCard("triangle-alert", "Issues", strconv.Itoa(len(data.Report.Gaps)+len(data.Report.Tampered)), "gaps + tampered").Render(ctx, templ_7745c5c3_Buffer)
+					templ_7745c5c3_Err = components.StatCard("triangle-alert", "Issues", strconv.Itoa(issueCount(data.Report)), "gaps + tampered + downgrades").Render(ctx, templ_7745c5c3_Buffer)
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -460,12 +460,12 @@ func VerifyPage(data VerifyPageData) templ.Component {
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					if len(data.Report.Tampered) > 0 {
-						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "<div class=\"mt-4\"><dt class=\"text-sm font-medium text-muted-foreground mb-2\">Tampered Events</dt><dd class=\"flex flex-wrap gap-2\">")
+					if len(data.Report.Downgrades) > 0 {
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "<div class=\"mt-4 rounded-sm border border-destructive bg-destructive/5 p-4\"><dt class=\"text-sm font-semibold text-destructive mb-1\">Scheme Downgrades</dt><p class=\"text-xs text-destructive mb-3\">These events claim a weaker digest scheme than their stream is pinned to at that sequence. That is not old history. Someone rewrote them. Treat it as tampering and investigate who has write access to the events table.</p><dd class=\"flex flex-wrap gap-2\">")
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}
-						for _, seq := range data.Report.Tampered {
+						for _, seq := range data.Report.Downgrades {
 							templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, "<code class=\"text-xs bg-destructive/10 text-destructive px-2 py-1 rounded-sm\">")
 							if templ_7745c5c3_Err != nil {
 								return templ_7745c5c3_Err
@@ -473,7 +473,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 							var templ_7745c5c3_Var16 string
 							templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(seq, 10))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 152, Col: 116}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 157, Col: 116}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 							if templ_7745c5c3_Err != nil {
@@ -485,6 +485,72 @@ func VerifyPage(data VerifyPageData) templ.Component {
 							}
 						}
 						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, "</dd></div>")
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, " ")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					if len(data.Report.Tampered) > 0 {
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "<div class=\"mt-4\"><dt class=\"text-sm font-medium text-muted-foreground mb-2\">Tampered Events</dt><dd class=\"flex flex-wrap gap-2\">")
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+						for _, seq := range data.Report.Tampered {
+							templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, "<code class=\"text-xs bg-destructive/10 text-destructive px-2 py-1 rounded-sm\">")
+							if templ_7745c5c3_Err != nil {
+								return templ_7745c5c3_Err
+							}
+							var templ_7745c5c3_Var17 string
+							templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(seq, 10))
+							if templ_7745c5c3_Err != nil {
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 168, Col: 116}
+							}
+							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
+							if templ_7745c5c3_Err != nil {
+								return templ_7745c5c3_Err
+							}
+							templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 35, "</code>")
+							if templ_7745c5c3_Err != nil {
+								return templ_7745c5c3_Err
+							}
+						}
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "</dd></div>")
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 37, " ")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					if len(data.Report.Tolerant) > 0 {
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 38, "<div class=\"mt-4 rounded-sm border border-muted bg-muted/30 p-4\"><dt class=\"text-sm font-medium mb-1\">Resolved Tolerantly</dt><p class=\"text-xs text-muted-foreground mb-3\">These events recorded no digest scheme, so each historical scheme was tried in turn until one matched. They verified, but under a guess rather than a declaration. They predate their stream's pin, and that window cannot grow.</p><dd class=\"flex flex-wrap gap-2\">")
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+						for _, seq := range data.Report.Tolerant {
+							templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 39, "<code class=\"text-xs bg-muted/50 px-2 py-1 rounded-sm\">")
+							if templ_7745c5c3_Err != nil {
+								return templ_7745c5c3_Err
+							}
+							var templ_7745c5c3_Var18 string
+							templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(seq, 10))
+							if templ_7745c5c3_Err != nil {
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 184, Col: 93}
+							}
+							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
+							if templ_7745c5c3_Err != nil {
+								return templ_7745c5c3_Err
+							}
+							templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "</code>")
+							if templ_7745c5c3_Err != nil {
+								return templ_7745c5c3_Err
+							}
+						}
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "</dd></div>")
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}
@@ -502,7 +568,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "</div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 42, "</div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -515,6 +581,21 @@ func boolToStatus(valid bool) string {
 		return "Valid"
 	}
 	return "Tampered"
+}
+
+// issueCount is what the Issues tile shows.
+//
+// Downgrades count. An event claiming a weaker digest scheme than its stream
+// pins is a rewrite, and leaving it out of the headline number is how a
+// verification that found one still reads as clean at a glance.
+//
+// Tolerant resolutions deliberately do not count. They are events written
+// before the scheme was recorded at all, checked against each historical scheme
+// in turn. That is a caveat on the strength of the answer, not a finding, and
+// counting it would put a permanent number on every upgraded deployment's
+// dashboard that no action could ever clear.
+func issueCount(r *verify.Report) int {
+	return len(r.Gaps) + len(r.Tampered) + len(r.Downgrades)
 }
 
 var _ = templruntime.GeneratedTemplate
