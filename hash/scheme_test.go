@@ -118,6 +118,85 @@ func TestHMACRoundTripVerifies(t *testing.T) {
 	}
 }
 
+// The strict path (claimed scheme matches or exceeds the pin) has to actually
+// reject a mismatch, not just accept a match. A downgrade check that always
+// runs before it would let a strict-branch implementation that returns
+// OK: true unconditionally pass every other test in this file.
+func TestHMACStrictVerificationRejectsTamperedEvent(t *testing.T) {
+	ctx := context.Background()
+	c := hmacChain(t)
+	event := newEvent()
+
+	digest, keyID, err := c.Compute(ctx, "prev", event)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	event.Hash, event.HashScheme, event.HashKeyID = digest, string(hash.SchemeHMAC), keyID
+
+	// Tamper after the digest is stored: same scheme, same key, wrong content.
+	event.UserID = "attacker"
+
+	res, err := c.VerifyWithPin(ctx, "prev", event, hash.Pin{Scheme: hash.SchemeHMAC, Since: 1})
+	if err != nil {
+		t.Fatalf("VerifyWithPin: %v", err)
+	}
+	if res.OK {
+		t.Error("a tampered event verified OK under the strict path")
+	}
+	if res.Downgrade {
+		t.Error("a same-scheme mismatch must not be reported as a downgrade")
+	}
+	if res.Scheme != hash.SchemeHMAC {
+		t.Errorf("Scheme = %q, want %q", res.Scheme, hash.SchemeHMAC)
+	}
+}
+
+// A HashKeyID that resolves to nothing is not a verification failure to
+// report as OK: false; it is a lookup the chain cannot even perform, so it
+// must surface as an error rather than silently reporting tampering.
+func TestVerifyWithPinErrorsOnUnresolvableKeyID(t *testing.T) {
+	ctx := context.Background()
+	c := hmacChain(t)
+	event := newEvent()
+
+	digest, _, err := c.Compute(ctx, "prev", event)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	event.Hash, event.HashScheme, event.HashKeyID = digest, string(hash.SchemeHMAC), "no-such-key"
+
+	if _, err := c.VerifyWithPin(ctx, "prev", event, hash.Pin{Scheme: hash.SchemeHMAC, Since: 1}); err == nil {
+		t.Fatal("VerifyWithPin accepted an event whose HashKeyID does not resolve, want an error")
+	}
+}
+
+// The failure scenario this guards: a row edited to claim a scheme this
+// package does not implement, with a digest recomputed under plain SHA-256.
+// Falling through to the plain algorithm because the label is unrecognized
+// would let that pass as an ordinary plain-scheme event. A zero Pin is the
+// case that matters most, since it is what the deprecated Verify shim passes
+// and so what every call site not yet rewired to VerifyWithPin uses today;
+// with a zero Pin the downgrade check at rank() never runs, so only
+// computeUnder itself stands between an unrecognized scheme and a false OK.
+func TestVerifyWithPinRejectsUnrecognizedScheme(t *testing.T) {
+	ctx := context.Background()
+	c := hmacChain(t)
+	event := newEvent()
+
+	var plain hash.Chain
+	digest, _, err := plain.Compute(ctx, "prev", event)
+	if err != nil {
+		t.Fatalf("plain Compute: %v", err)
+	}
+	event.Hash, event.HashScheme = digest, "chronicle/v4"
+
+	res, err := c.VerifyWithPin(ctx, "prev", event, hash.Pin{})
+	if err == nil {
+		t.Fatalf("VerifyWithPin accepted scheme %q by falling back to another algorithm, want an error; got %+v",
+			event.HashScheme, res)
+	}
+}
+
 // The attack this design exists to stop: rewrite the event, recompute the
 // digest under the weaker scheme, and relabel it.
 func TestDowngradeToPlainIsDetected(t *testing.T) {

@@ -169,29 +169,37 @@ func (c *Chain) Compute(ctx context.Context, prevHash string, event *audit.Event
 // computeUnder recomputes a digest under an explicit scheme and key ID, which
 // is what verification needs: it must reproduce what was written, not what this
 // chain would write now.
+//
+// The switch is exhaustive on purpose. Verification must check a claimed
+// scheme against exactly that scheme's algorithm, never a different one: an
+// event whose HashScheme names something this package does not recognize is
+// evidence of tampering or a version skew, not a plain digest waiting to be
+// found by falling through.
 func (c *Chain) computeUnder(ctx context.Context, scheme Scheme, keyID, prevHash string, event *audit.Event) (string, error) {
-	if scheme == SchemeLegacy {
+	switch scheme {
+	case SchemeLegacy:
 		return ComputeLegacy(prevHash, event), nil
-	}
 
-	body := []byte(content(prevHash, event))
-
-	if scheme != SchemeHMAC {
-		sum := sha256.Sum256(body)
+	case SchemePlain, "":
+		sum := sha256.Sum256([]byte(content(prevHash, event)))
 		return hex.EncodeToString(sum[:]), nil
-	}
 
-	if c.keys == nil {
-		return "", fmt.Errorf("hash: cannot verify an %s digest without a key provider", scheme)
-	}
-	key, err := c.keys.ByID(ctx, keyID)
-	if err != nil {
-		return "", fmt.Errorf("hash: resolve key %q: %w", keyID, err)
-	}
+	case SchemeHMAC:
+		if c.keys == nil {
+			return "", fmt.Errorf("hash: cannot verify an %s digest without a key provider", scheme)
+		}
+		key, err := c.keys.ByID(ctx, keyID)
+		if err != nil {
+			return "", fmt.Errorf("hash: resolve key %q: %w", keyID, err)
+		}
 
-	mac := hmac.New(sha256.New, key)
-	mac.Write(body)
-	return hex.EncodeToString(mac.Sum(nil)), nil
+		mac := hmac.New(sha256.New, key)
+		mac.Write([]byte(content(prevHash, event)))
+		return hex.EncodeToString(mac.Sum(nil)), nil
+
+	default:
+		return "", fmt.Errorf("hash: unknown scheme %q", scheme)
+	}
 }
 
 // ComputeLegacy reproduces the original hash scheme, which covered only
