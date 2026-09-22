@@ -33,6 +33,9 @@ Chronicle defines a small set of entity types that flow through the system. All 
 | `TenantID` | `string` | Tenant within the application |
 | `UserID` | `string` | User who performed the action |
 | `IP` | `string` | Client IP address |
+| `UserAgent` | `string` | The client's User-Agent, sealed with `IP` when crypto-erasure is on |
+| `RequestID` | `string` | HTTP request correlation id |
+| `SessionID` | `string` | The authenticated session that performed the action |
 
 Scope fields are automatically applied from the context by `chronicle.Record` via `scope.ApplyToEvent`.
 
