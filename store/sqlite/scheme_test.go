@@ -13,8 +13,58 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/stream"
 )
+
+// stubProvider is a Provider backed by a fixed key, mirroring the one in
+// hash/scheme_test.go and chronicle_test.go.
+type stubProvider struct {
+	key      []byte
+	activeID string
+}
+
+func (s stubProvider) Current(_ context.Context, _ keys.Use) ([]byte, string, error) {
+	return s.key, s.activeID, nil
+}
+
+func (s stubProvider) ByID(_ context.Context, keyID string) ([]byte, error) {
+	if keyID != s.activeID {
+		return nil, keys.ErrKeyNotFound
+	}
+	return s.key, nil
+}
+
+// newHMACTestStore is newTestStore, but the store re-links under an HMAC
+// chain instead of the default plain one, so tests can prove Append picks up
+// the configured scheme rather than a hardcoded one.
+func newHMACTestStore(t *testing.T) *Store {
+	t.Helper()
+
+	dsn := filepath.Join(t.TempDir(), "chronicle_hmac_test.db")
+
+	sdb := sqlitedriver.New()
+	if err := sdb.Open(context.Background(), dsn); err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	db, err := grove.Open(sdb)
+	if err != nil {
+		t.Fatalf("grove open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	h, err := hash.NewChain(hash.SchemeHMAC, stubProvider{key: make([]byte, 32), activeID: "hmac-1"})
+	if err != nil {
+		t.Fatalf("NewChain: %v", err)
+	}
+
+	s := New(db, WithHasher(h))
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return s
+}
 
 // backfillFixture runs migrations 000-005 against a fresh database, seeds a
 // stream at headSeq the way pre-006 code would have (no scheme columns exist
@@ -208,5 +258,38 @@ func TestEventModelCarriesHashKeyID(t *testing.T) {
 	}
 	if got.HashScheme != string(hash.SchemeHMAC) {
 		t.Errorf("HashScheme = %q, want %q", got.HashScheme, hash.SchemeHMAC)
+	}
+}
+
+// Append re-derives the sequence and prev_hash under a row lock, and therefore
+// recomputes the digest. If it recomputes under a plain chain while Chronicle
+// is configured for HMAC, every event silently reverts to an unkeyed digest.
+func TestAppendRecomputesUnderTheConfiguredScheme(t *testing.T) {
+	ctx := context.Background()
+	s := newHMACTestStore(t) // wraps newTestStore with an HMAC chain; see step 3
+
+	st := &stream.Stream{ID: id.NewStreamID(), AppID: "app", Scheme: "chronicle/v3", SchemeSince: 1}
+	if err := s.CreateStream(ctx, st); err != nil {
+		t.Fatalf("CreateStream: %v", err)
+	}
+
+	eventID := id.NewAuditID()
+	if err := s.Append(ctx, &audit.Event{
+		ID: eventID, StreamID: st.ID, Timestamp: time.Now().UTC(),
+		AppID: "app", Action: "login", Resource: "session", Category: "auth",
+		Outcome: audit.OutcomeSuccess, Severity: audit.SeverityInfo,
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	got, err := s.Get(ctx, eventID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.HashScheme != "chronicle/v3" {
+		t.Errorf("HashScheme = %q, want chronicle/v3; Append reverted to an unkeyed digest", got.HashScheme)
+	}
+	if got.HashKeyID == "" {
+		t.Error("HashKeyID is empty; the key used for the digest was not recorded")
 	}
 }

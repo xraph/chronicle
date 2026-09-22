@@ -26,8 +26,9 @@ import (
 
 // Store implements the Chronicle store interface using grove ORM with SQLite.
 type Store struct {
-	db  *grove.DB
-	sdb *sqlitedriver.SqliteDB
+	db     *grove.DB
+	sdb    *sqlitedriver.SqliteDB
+	hasher *hash.Chain
 }
 
 // Compile-time interface checks.
@@ -41,16 +42,34 @@ var (
 	_ compliance.ReportStore = (*Store)(nil)
 )
 
-// hasher re-links events into the chain inside Append's transaction. hash.Chain
-// is stateless, so one package-level value is safe to share.
-var hasher = &hash.Chain{}
+// Option configures a Store constructed by New.
+type Option func(*Store)
+
+// WithHasher sets the chain the store re-links with.
+//
+// Append re-derives the sequence and prev_hash inside its transaction, which
+// means it must also recompute the digest. That recomputation has to use the
+// same scheme Chronicle was configured with; a store left on the default
+// plain chain would quietly downgrade every event it re-linked.
+func WithHasher(h *hash.Chain) Option {
+	return func(s *Store) { s.hasher = h }
+}
 
 // New creates a new grove ORM store with the given database connection.
-func New(db *grove.DB) *Store {
-	return &Store{
-		db:  db,
-		sdb: sqlitedriver.Unwrap(db),
+//
+// Without WithHasher, Append re-links under a zero-value hash.Chain, which is
+// SchemePlain with no key provider -- the same behavior as before this option
+// existed.
+func New(db *grove.DB, opts ...Option) *Store {
+	s := &Store{
+		db:     db,
+		sdb:    sqlitedriver.Unwrap(db),
+		hasher: &hash.Chain{},
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Migrate runs grove migrations for the Chronicle schema.
