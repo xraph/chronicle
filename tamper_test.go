@@ -13,6 +13,7 @@ import (
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store"
 	"github.com/xraph/chronicle/store/memory"
+	"github.com/xraph/chronicle/stream"
 	"github.com/xraph/chronicle/verify"
 )
 
@@ -60,7 +61,10 @@ func TestPlainChainDoesNotDetectARewrite(t *testing.T) {
 		t.Fatalf("VerifyChain: %v", err)
 	}
 	if !report.Valid {
-		t.Fatal("the plain chain detected a full relink; update this test and the README claim")
+		t.Fatalf("plain chain reported the relink invalid: gaps=%v tampered=%v downgrades=%v verified=%d "+
+			"(if the plain scheme now genuinely detects rewrites, update this test and the README claim; "+
+			"if not, look for a regression in EventRange, Gaps, or the fields hash.Chain covers)",
+			report.Gaps, report.Tampered, report.Downgrades, report.Verified)
 	}
 }
 
@@ -127,6 +131,28 @@ func TestRotatedKeyStillVerifiesOldEvents(t *testing.T) {
 	}
 
 	total := uint64(len(events) + 5)
+
+	// Valid==true and no Downgrades is necessary but not sufficient: a
+	// Chronicle that stopped calling Current per event (resolving the HMAC
+	// key once at New instead) would leave every event on hmac-1, rotation
+	// would silently stop taking effect, and every event would still verify
+	// under a resolvable key -- Valid would stay true and this test would
+	// stay green without ever exercising rotation. Reading the key ID back
+	// per segment is what catches that: it fails if rotation never happened,
+	// independent of whether verification also happens to pass.
+	all, err := c.Store().EventRange(ctx, streamID, 1, total)
+	if err != nil {
+		t.Fatalf("EventRange: %v", err)
+	}
+	for _, e := range all {
+		switch {
+		case e.Sequence <= 5 && e.HashKeyID != "hmac-1":
+			t.Errorf("event %d HashKeyID = %q, want hmac-1 (written before rotation)", e.Sequence, e.HashKeyID)
+		case e.Sequence > 5 && e.HashKeyID != "hmac-2":
+			t.Errorf("event %d HashKeyID = %q, want hmac-2 (written after rotation)", e.Sequence, e.HashKeyID)
+		}
+	}
+
 	report, err := c.VerifyChain(ctx, &verify.Input{
 		StreamID: streamID, FromSeq: 1, ToSeq: total,
 		Pin: hash.Pin{Scheme: hash.SchemeHMAC, Since: 1},
@@ -141,6 +167,91 @@ func TestRotatedKeyStillVerifiesOldEvents(t *testing.T) {
 	if len(report.Downgrades) != 0 {
 		t.Errorf("Downgrades = %v, want none", report.Downgrades)
 	}
+}
+
+// TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints names the
+// residual risk Axis 1 leaves open: raising the cost of tampering is not the
+// same as eliminating it. Per-event forgery without the HMAC key is stopped
+// -- see TestHMACChainDetectsARewrite -- because an attacker who rewrites
+// events but leaves the stream's pin alone gets caught by the downgrade
+// check at hash/chain.go.
+//
+// But the pin the downgrade check compares against is not outside the
+// attacker's reach. It is a row in chronicle_streams, in the same database as
+// chronicle_events. An attacker with write access to that database can
+// rewrite every event to the plain scheme AND update the stream row's
+// scheme to match, the way production reads it at chronicle.go's
+// VerifyEvent, handler/verify.go, and dashboard/contributor.go: fetch the
+// stream, take st.Scheme and st.SchemeSince as the pin. With both halves
+// rewritten consistently, the claimed scheme equals the pinned scheme
+// everywhere, the rank comparison never finds a mismatch, and every plain
+// digest recomputes correctly. VerifyChain reports Valid: true even when fed
+// a pin read fresh from the (now-tampered) stream row, not a literal.
+//
+// Closing this needs evidence that lives outside the database: a signed
+// checkpoint anchored somewhere the attacker's database write access does
+// not reach. That is Axis 2, not this one. This test exists so nobody reads
+// the three tests above it as a stronger guarantee than they make.
+func TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints(t *testing.T) {
+	ctx := context.Background()
+	key := make([]byte, 32)
+	provider := stubProvider{key: key, activeID: "hmac-1"}
+	c, events, streamID := seedChain(t, hash.SchemeHMAC, provider)
+
+	// idx 0, not a tail: a full-stream downgrade needs every claimed scheme
+	// to read plain, or a surviving hmac event would still mismatch a
+	// plain-pinned stream and get caught on its own.
+	rewriteAndRelink(t, events, 0, "attacker-was-not-here")
+	persist(t, c, events)
+
+	// Rewrite the stream's own pin, the second half of the attack a SQL shell
+	// can run in the same transaction. There is no exported method for this:
+	// production never updates a stream's scheme after creation, only an
+	// attacker would. The closest available read path is stream.Store's
+	// GetStream, promoted onto store.Adapter; for the memory backend it
+	// returns the live *stream.Stream (see UpdateStreamHead in
+	// store/memory/store.go, which mutates a stream the same way, by finding
+	// it and setting fields directly -- streams are not cloned on read or
+	// write the way events are). Setting fields on it is, for this backend,
+	// the persisted state, which is the closest analogue available to the
+	// UPDATE chronicle_streams a real attacker would run.
+	reader, ok := c.Store().(streamReader)
+	if !ok {
+		t.Fatalf("store %T cannot read the stream row directly", c.Store())
+	}
+	st, err := reader.GetStream(ctx, streamID)
+	if err != nil {
+		t.Fatalf("GetStream: %v", err)
+	}
+	st.Scheme = string(hash.SchemePlain)
+
+	// Derive the pin the way production does, from the stream row, not a
+	// literal, so this test cannot pass just because the test author typed
+	// the wrong scheme by hand.
+	pin := hash.Pin{Scheme: hash.Scheme(st.Scheme), Since: st.SchemeSince}
+
+	report, err := c.VerifyChain(ctx, &verify.Input{
+		StreamID: streamID, FromSeq: 1, ToSeq: uint64(len(events)),
+		Pin: pin,
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("a full-stream downgrade (events and pin rewritten together) was detected; "+
+			"that would mean Axis 1 closes this gap on its own, which it does not -- "+
+			"gaps=%v tampered=%v downgrades=%v verified=%d",
+			report.Gaps, report.Tampered, report.Downgrades, report.Verified)
+	}
+}
+
+// streamReader is satisfied by the store this suite always builds: its
+// embedded store.Store interface promotes stream.Store's GetStream.
+// TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints uses it to
+// read, and for the memory backend mutate through the same pointer, the
+// stream row that carries the pin.
+type streamReader interface {
+	GetStream(ctx context.Context, streamID id.ID) (*stream.Stream, error)
 }
 
 // seedChain builds a memory-backed Chronicle under the given scheme, records
