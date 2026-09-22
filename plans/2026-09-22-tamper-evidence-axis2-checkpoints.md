@@ -52,6 +52,18 @@ Three hard-won lessons from Axis 1 that apply directly here:
 
 **There is a live SQLite bug that will bite your tests.** `store/sqlite/store.go`'s `groveError` compares against `"no rows in result set"` but the driver returns `sql.ErrNoRows`, whose message carries a `sql: ` prefix. So `GetStreamByScope` never returns `chronicle.ErrStreamNotFound` and `resolveStream` cannot auto-create a stream: the first event for a brand-new scope fails on SQLite. It is unrelated to this work and is being fixed separately. Build tests on the memory store, or pre-seed the stream, and do not try to fix it here.
 
+## The import constraint that shapes this package
+
+`chronicle` imports `verify` (`chronicle.go:17`) and `stream` imports `chronicle` (`stream/stream.go:5`). Task 6 has `verify` import `checkpoint`. So **`checkpoint` must not import `chronicle` or `stream`**, or the graph closes into a cycle and nothing builds.
+
+Three consequences, applied throughout this plan:
+
+- `Checkpoint` does not embed `chronicle.Entity`. It carries its own `CreatedAt`. `Entity` would also have brought `UpdatedAt`, which is a lie for an append-only artifact.
+- The error sentinels live in this package as `ErrNotFound`, `ErrExists` and `ErrUnsupported`, not in the root `errors.go`.
+- `Checkpointer` takes a minimal `StreamHead` rather than `*stream.Stream`. `chronicle.StreamInfo` exists for exactly this reason and its doc comment says so; this follows it.
+
+`checkpoint` therefore imports only `id`, `audit` and `keys`, none of which import `chronicle`.
+
 ## What this plan does NOT build
 
 External anchoring is part 2. That means `Publisher`, `Fetch`, the file and S3 publishers, the `chronicle_anchors` table and its retry queue, `fail_closed` with its lag bound, and the `anchored` coverage level. The `Level` type below declares `LevelAnchored` so part 2 does not have to change it, but nothing in this plan ever emits it.
@@ -351,7 +363,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/id"
 )
 
@@ -362,8 +373,6 @@ const payloadVersion = "chronicle-checkpoint/v1"
 // Checkpoint is a signed statement about one stream's chain over a sequence
 // range.
 type Checkpoint struct {
-	chronicle.Entity
-
 	ID       id.ID `json:"id"`
 	StreamID id.ID `json:"stream_id"`
 
@@ -549,7 +558,7 @@ git commit -m "feat(checkpoint): signed checkpoint entity and its ed25519 signer
 
 **Interfaces:**
 - Consumes: `checkpoint.Checkpoint`, `checkpoint.ListOpts` from Task 1.
-- Produces: `checkpoint.Store` with `AppendCheckpoint`, `LatestCheckpoint`, `CheckpointsInRange`, `GetCheckpoint`, `ListCheckpoints`; `chronicle.ErrCheckpointNotFound`; `chronicle.ErrCheckpointExists`; `chronicle.ErrCheckpointsUnsupported`.
+- Produces: `checkpoint.Store` with `AppendCheckpoint`, `LatestCheckpoint`, `CheckpointsInRange`, `GetCheckpoint`, `ListCheckpoints`; `checkpoint.ErrNotFound`; `checkpoint.ErrExists`; `checkpoint.ErrUnsupported`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -622,7 +631,7 @@ func TestAppendCheckpointRejectsADuplicateToSeq(t *testing.T) {
 		t.Fatalf("first AppendCheckpoint: %v", err)
 	}
 	err := s.AppendCheckpoint(ctx, newCP(streamID, 1, 100, ""))
-	if !errors.Is(err, chronicle.ErrCheckpointExists) {
+	if !errors.Is(err, checkpoint.ErrExists) {
 		t.Fatalf("second AppendCheckpoint error = %v, want ErrCheckpointExists", err)
 	}
 }
@@ -649,7 +658,7 @@ func TestLatestCheckpointReturnsTheHighestToSeq(t *testing.T) {
 
 func TestLatestCheckpointOnAStreamWithNone(t *testing.T) {
 	ctx := context.Background()
-	if _, err := New().LatestCheckpoint(ctx, id.NewStreamID()); !errors.Is(err, chronicle.ErrCheckpointNotFound) {
+	if _, err := New().LatestCheckpoint(ctx, id.NewStreamID()); !errors.Is(err, checkpoint.ErrNotFound) {
 		t.Errorf("LatestCheckpoint error = %v, want ErrCheckpointNotFound", err)
 	}
 }
@@ -709,28 +718,31 @@ func TestCheckpointsAreScopedToTheirStream(t *testing.T) {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `go test ./store/memory/ -run Checkpoint -v`
-Expected: build failure, `undefined: chronicle.ErrCheckpointExists` and `s.AppendCheckpoint undefined`.
+Expected: build failure, `undefined: checkpoint.ErrExists` and `s.AppendCheckpoint undefined`.
 
 - [ ] **Step 3: Write the implementation**
 
-Add to `errors.go` in the root package, beside the existing sentinels:
+Add the sentinels to `checkpoint/store.go`. They live here rather than in the root `errors.go` because `checkpoint` must not import `chronicle`; see the import constraint above.
 
 ```go
-	// ErrCheckpointNotFound is returned when a checkpoint cannot be found.
-	ErrCheckpointNotFound = errors.New("chronicle: checkpoint not found")
+// Sentinel errors.
+var (
+	// ErrNotFound is returned when a checkpoint cannot be found.
+	ErrNotFound = errors.New("checkpoint: not found")
 
-	// ErrCheckpointExists is returned when a checkpoint already covers a
-	// stream's sequence.
+	// ErrExists is returned when a checkpoint already covers a stream's
+	// sequence.
 	//
 	// Two checkpointers racing on one stream is expected: a background ticker
 	// and an operator-triggered run can overlap. Rather than rely on lock
 	// discipline, the store makes a duplicate structurally impossible and the
 	// loser of the race gets this.
-	ErrCheckpointExists = errors.New("chronicle: checkpoint already exists for this sequence")
+	ErrExists = errors.New("checkpoint: already exists for this sequence")
 
-	// ErrCheckpointsUnsupported is returned by backends that cannot store
-	// checkpoints durably enough to be a root of trust.
-	ErrCheckpointsUnsupported = errors.New("chronicle: this store does not support checkpoints")
+	// ErrUnsupported is returned by backends that cannot store checkpoints
+	// durably enough to be a root of trust.
+	ErrUnsupported = errors.New("checkpoint: this store does not support checkpoints")
+)
 ```
 
 Create `checkpoint/store.go`:
@@ -749,13 +761,12 @@ import (
 // Checkpoints are append-only. There is no update and no delete: a checkpoint
 // that could be revised would assert nothing.
 type Store interface {
-	// AppendCheckpoint persists a checkpoint. It returns
-	// chronicle.ErrCheckpointExists if one already covers the same
-	// (stream, to_seq).
+	// AppendCheckpoint persists a checkpoint. It returns ErrExists if one
+	// already covers the same (stream, to_seq).
 	AppendCheckpoint(ctx context.Context, cp *Checkpoint) error
 
 	// LatestCheckpoint returns the checkpoint with the highest ToSeq for a
-	// stream, or chronicle.ErrCheckpointNotFound when the stream has none.
+	// stream, or ErrNotFound when the stream has none.
 	LatestCheckpoint(ctx context.Context, streamID id.ID) (*Checkpoint, error)
 
 	// CheckpointsInRange returns every checkpoint whose range OVERLAPS
@@ -785,7 +796,7 @@ Implement the five methods on `store/memory/store.go`'s `Store`. Follow the file
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./store/memory/ ./checkpoint/ -v && go test ./... -count=1`
-Expected: PASS. The composite now requires `checkpoint.Store`, so postgres, sqlite, mongo and redis will fail to compile until Task 3. To keep this task's commit building, add a temporary stub returning `chronicle.ErrCheckpointsUnsupported` on each of those four, and note in your report that Task 3 replaces three of them with real implementations.
+Expected: PASS. The composite now requires `checkpoint.Store`, so postgres, sqlite, mongo and redis will fail to compile until Task 3. To keep this task's commit building, add a temporary stub returning `checkpoint.ErrUnsupported` on each of those four, and note in your report that Task 3 replaces three of them with real implementations.
 
 - [ ] **Step 5: Build, vet, and commit**
 
@@ -802,8 +813,8 @@ git commit -m "feat(checkpoint): store interface with the memory implementation"
 **Files:**
 - Modify: `store/postgres/migrations.go`, `store/postgres/models.go`, create `store/postgres/checkpoint.go`
 - Modify: `store/sqlite/migrations.go`, `store/sqlite/models.go`, create `store/sqlite/checkpoint.go`
-- Modify: `store/mongo/models.go`, create `store/mongo/checkpoint.go`
-- Modify: `store/redis/checkpoint.go` (keep the unsupported stub, make it deliberate)
+- Modify: `store/mongo/models.go`; replace the Task 2 stub in `store/mongo/checkpoint.go` with a real implementation
+- Modify: `store/redis/checkpoint.go` (created as a stub in Task 2; keep it unsupported, make it deliberate)
 - Test: `store/sqlite/checkpoint_test.go`
 
 **Interfaces:**
@@ -896,7 +907,7 @@ func TestSQLiteRejectsADuplicateCheckpointSequence(t *testing.T) {
 		t.Fatalf("first AppendCheckpoint: %v", err)
 	}
 	err := s.AppendCheckpoint(ctx, newCP(streamID, 1, 100, ""))
-	if !errors.Is(err, chronicle.ErrCheckpointExists) {
+	if !errors.Is(err, checkpoint.ErrExists) {
 		t.Fatalf("second AppendCheckpoint error = %v, want ErrCheckpointExists", err)
 	}
 }
@@ -985,7 +996,7 @@ Add the same to `store/sqlite/migrations.go` with `BLOB` for `signature`, `INTEG
 
 Add a `CheckpointModel` to `store/postgres/models.go` and `store/sqlite/models.go` with grove tags matching the columns, plus `toCheckpoint`/`fromCheckpoint` converters. Follow `EventModel` and `StreamModel` exactly, including `safeUint64`/`safeInt64` on the sequence fields the way `HeadSeq` is handled on Postgres.
 
-Create `store/postgres/checkpoint.go` and `store/sqlite/checkpoint.go` implementing the five methods. `AppendCheckpoint` must map a unique-constraint violation to `chronicle.ErrCheckpointExists`; read how `groveError` is used elsewhere in the package and follow it, but note that a uniqueness violation is a different error than a missing row, so check the driver's error text for a constraint violation as well as using `errors.Is`.
+Create `store/postgres/checkpoint.go` and `store/sqlite/checkpoint.go` implementing the five methods. `AppendCheckpoint` must map a unique-constraint violation to `checkpoint.ErrExists`; read how `groveError` is used elsewhere in the package and follow it, but note that a uniqueness violation is a different error than a missing row, so check the driver's error text for a constraint violation as well as using `errors.Is`.
 
 `CheckpointsInRange` overlaps, so the predicate is `from_seq <= :toSeq AND to_seq >= :fromSeq`, ordered `to_seq ASC`.
 
@@ -1001,8 +1012,13 @@ For `store/redis/checkpoint.go`, keep the unsupported stub but make it deliberat
 // asserts nothing. The extension refuses to start when checkpoints are enabled
 // on a backend that returns this, rather than running silently without them.
 func (s *Store) AppendCheckpoint(context.Context, *checkpoint.Checkpoint) error {
-	return chronicle.ErrCheckpointsUnsupported
+	return checkpoint.ErrUnsupported
 }
+```
+
+(That one is in `package redis`, so the `checkpoint.` qualifier is correct there. Inside `package checkpoint` itself the sentinels are bare: `ErrNotFound`, `ErrExists`, `ErrUnsupported`.)
+
+```go
 ```
 
 ...and the same for the other four methods.
@@ -1029,8 +1045,8 @@ git commit -m "feat(store): migration 007 and checkpoint persistence across back
 - Test: `checkpoint/checkpointer_test.go`
 
 **Interfaces:**
-- Consumes: `checkpoint.Store`, `checkpoint.Signer`, `stream.Store`, `verify.Store`.
-- Produces: `checkpoint.NewCheckpointer(...) *Checkpointer`, `(*Checkpointer).CheckpointStream(ctx, *stream.Stream) (*Checkpoint, error)`, `checkpoint.ErrNothingToCheckpoint`.
+- Consumes: `checkpoint.Store`, `checkpoint.Signer`, and an `EventRange` reader. NOT `stream` or `chronicle`; see the import constraint.
+- Produces: `checkpoint.NewCheckpointer(...) *Checkpointer`, `(*Checkpointer).CheckpointStream(ctx, StreamHead) (*Checkpoint, error)`, `checkpoint.ErrNothingToCheckpoint`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1045,11 +1061,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/id"
-	"github.com/xraph/chronicle/stream"
 )
 
 // fakeStores is the smallest thing satisfying what a Checkpointer reads.
@@ -1078,7 +1092,7 @@ func (f *fakeStores) AppendCheckpoint(_ context.Context, cp *checkpoint.Checkpoi
 	defer f.mu.Unlock()
 	for _, existing := range f.cps {
 		if existing.StreamID == cp.StreamID && existing.ToSeq == cp.ToSeq {
-			return chronicle.ErrCheckpointExists
+			return checkpoint.ErrExists
 		}
 	}
 	f.cps = append(f.cps, cp)
@@ -1095,7 +1109,7 @@ func (f *fakeStores) LatestCheckpoint(_ context.Context, streamID id.ID) (*check
 		}
 	}
 	if latest == nil {
-		return nil, chronicle.ErrCheckpointNotFound
+		return nil, checkpoint.ErrNotFound
 	}
 	return latest, nil
 }
@@ -1104,20 +1118,20 @@ func (f *fakeStores) CheckpointsInRange(context.Context, id.ID, uint64, uint64) 
 	return nil, nil
 }
 func (f *fakeStores) GetCheckpoint(context.Context, id.ID) (*checkpoint.Checkpoint, error) {
-	return nil, chronicle.ErrCheckpointNotFound
+	return nil, checkpoint.ErrNotFound
 }
 func (f *fakeStores) ListCheckpoints(context.Context, id.ID, checkpoint.ListOpts) ([]*checkpoint.Checkpoint, error) {
 	return nil, nil
 }
 
-func seed(f *fakeStores, streamID id.ID, n uint64) *stream.Stream {
+func seed(f *fakeStores, streamID id.ID, n uint64) checkpoint.StreamHead {
 	for i := uint64(1); i <= n; i++ {
 		f.events = append(f.events, &audit.Event{
 			Sequence: i, StreamID: streamID,
 			Hash: "hash-" + string(rune('a'+i)), Action: "a", Resource: "r", Category: "c",
 		})
 	}
-	return &stream.Stream{
+	return checkpoint.StreamHead{
 		ID: streamID, AppID: "app", TenantID: "tenant",
 		HeadSeq: n, HeadHash: f.events[n-1].Hash,
 	}
@@ -1224,7 +1238,7 @@ func TestConcurrentCheckpointersProduceExactlyOne(t *testing.T) {
 		switch {
 		case err == nil:
 			created++
-		case errors.Is(err, chronicle.ErrCheckpointExists), errors.Is(err, checkpoint.ErrNothingToCheckpoint):
+		case errors.Is(err, checkpoint.ErrExists), errors.Is(err, checkpoint.ErrNothingToCheckpoint):
 		default:
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -1259,10 +1273,8 @@ import (
 
 	log "github.com/xraph/go-utils/log"
 
-	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
-	"github.com/xraph/chronicle/stream"
 )
 
 // ErrNothingToCheckpoint is returned when a stream has gained no events since
@@ -1273,6 +1285,19 @@ var ErrNothingToCheckpoint = errors.New("checkpoint: no new events since the las
 // here rather than imported so this package does not depend on verify.
 type EventReader interface {
 	EventRange(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64) ([]*audit.Event, error)
+}
+
+// StreamHead is the minimal view of a stream a checkpoint is taken over.
+//
+// It exists so this package does not import stream, which imports chronicle,
+// which imports verify, which imports this package. chronicle.StreamInfo is the
+// same device for the same reason; callers convert at the boundary.
+type StreamHead struct {
+	ID       id.ID
+	AppID    string
+	TenantID string
+	HeadSeq  uint64
+	HeadHash string
 }
 
 // Checkpointer takes signed checkpoints over a stream's sequence range.
@@ -1322,7 +1347,7 @@ func (c *Checkpointer) lockStream(streamID id.ID) func() {
 //
 // The window runs from one past the previous checkpoint's ToSeq (or 1 for a
 // stream's first) up to the stream's head.
-func (c *Checkpointer) CheckpointStream(ctx context.Context, st *stream.Stream) (*Checkpoint, error) {
+func (c *Checkpointer) CheckpointStream(ctx context.Context, st StreamHead) (*Checkpoint, error) {
 	unlock := c.lockStream(st.ID)
 	defer unlock()
 
@@ -1338,7 +1363,7 @@ func (c *Checkpointer) CheckpointStream(ctx context.Context, st *stream.Stream) 
 		fromSeq = latest.ToSeq + 1
 		fromHash = latest.ToHash
 		prev = Digest(latest.SignedPayload)
-	case errors.Is(err, chronicle.ErrCheckpointNotFound):
+	case errors.Is(err, ErrNotFound):
 		// First checkpoint for this stream; the zero values above are right.
 	default:
 		return nil, fmt.Errorf("checkpoint: read latest: %w", err)
@@ -1899,7 +1924,22 @@ and to `Report`:
 	Checkpoints []CheckpointResult `json:"checkpoints,omitempty"`
 ```
 
-In `verify/verifier.go`, add the constructor and the fields:
+In `verify/verifier.go`, first add the two fields to the `Verifier` struct, which today holds only `store` and `chain`:
+
+```go
+type Verifier struct {
+	store Store
+	chain *hash.Chain
+
+	// checkpoints and signer are optional. Without them verification behaves
+	// exactly as it did before checkpoints existed and coverage tops out at
+	// keyed.
+	checkpoints checkpoint.Store
+	signer      checkpoint.Signer
+}
+```
+
+Then add the constructor:
 
 ```go
 // NewVerifierWithCheckpoints creates a Verifier that also checks signed
