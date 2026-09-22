@@ -13,25 +13,16 @@ import (
 )
 
 // fakeStores is the smallest thing satisfying what a Checkpointer reads.
+//
+// It still tracks events (used by seed to derive HeadHash for the
+// StreamHead it hands back), even though nothing here implements
+// EventReader any more: CheckpointStream stopped reading events entirely,
+// see checkpointer.go.
 type fakeStores struct {
 	mu     sync.Mutex
 	events []*audit.Event
 	cps    []*checkpoint.Checkpoint
 }
-
-func (f *fakeStores) EventRange(_ context.Context, _ id.ID, from, to uint64) ([]*audit.Event, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []*audit.Event
-	for _, e := range f.events {
-		if e.Sequence >= from && e.Sequence <= to {
-			out = append(out, e)
-		}
-	}
-	return out, nil
-}
-
-func (f *fakeStores) Gaps(context.Context, id.ID, uint64, uint64) ([]uint64, error) { return nil, nil }
 
 func (f *fakeStores) AppendCheckpoint(_ context.Context, cp *checkpoint.Checkpoint) error {
 	f.mu.Lock()
@@ -91,7 +82,7 @@ func seed(f *fakeStores, streamID id.ID, n uint64) checkpoint.StreamHead {
 func newCheckpointer(t *testing.T, f *fakeStores) *checkpoint.Checkpointer {
 	t.Helper()
 	signer, _ := newSigner(t, false) // from signer_test.go, same package
-	return checkpoint.NewCheckpointer(f, f, signer, nil)
+	return checkpoint.NewCheckpointer(f, signer, nil)
 }
 
 func TestCheckpointStreamSignsTheHeadState(t *testing.T) {
@@ -267,7 +258,7 @@ func TestCreatedAtRoundTripsBackendPrecision(t *testing.T) {
 	t.Run("millisecond-truncated CreatedAt survives Postgres and Mongo precision", func(t *testing.T) {
 		f := &fakeStores{}
 		st := seed(f, id.NewStreamID(), 10)
-		cp, err := checkpoint.NewCheckpointer(f, f, signer, nil).CheckpointStream(ctx, st)
+		cp, err := checkpoint.NewCheckpointer(f, signer, nil).CheckpointStream(ctx, st)
 		if err != nil {
 			t.Fatalf("CheckpointStream: %v", err)
 		}

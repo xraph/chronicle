@@ -184,15 +184,30 @@ type CheckpointConfig struct {
 // fields would show that. A no-argument Validate would wrongly reject that
 // documented path; see AuthConfig.Validate(routesEnabled bool) for the same
 // shape applied to a different runtime fact.
+//
+// Signer.Provider is checked against the exact set this extension implements
+// ("", meaning take one from WithKeyProvider, or "file") rather than merely
+// requiring it be non-empty. A value like "kms", "vault", a typo, or a
+// capitalised "File" used to pass this check, leave no provider resolved,
+// and reach checkpoint.NewEd25519Signer(nil) -- which then panicked the
+// process on the scheduler's first tick instead of failing here at Register.
 func (c CheckpointConfig) Validate(hasSigner bool) error {
 	if !c.Enabled {
 		return nil
 	}
-	if !hasSigner && c.Signer.Provider == "" && c.Signer.Path == "" {
-		return ErrCheckpointSignerRequired
-	}
-	if c.Signer.Provider == "file" && c.Signer.Path == "" {
-		return errors.New("chronicle: checkpoints.signer.provider is file but no path was given")
+	switch c.Signer.Provider {
+	case "":
+		if !hasSigner && c.Signer.Path == "" {
+			return ErrCheckpointSignerRequired
+		}
+	case "file":
+		if c.Signer.Path == "" {
+			return errors.New("chronicle: checkpoints.signer.provider is file but no path was given")
+		}
+	default:
+		return fmt.Errorf(
+			"chronicle: unknown checkpoints.signer.provider %q; want \"\" (to supply one via "+
+				"extension.WithKeyProvider) or \"file\"", c.Signer.Provider)
 	}
 	if c.EveryEvents < 0 {
 		return fmt.Errorf("chronicle: checkpoints.every_events is %d; it cannot be negative", c.EveryEvents)

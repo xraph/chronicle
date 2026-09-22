@@ -509,19 +509,49 @@ func (e *Extension) runRetentionScheduler(ctx context.Context) {
 	}
 }
 
-// runCheckpointScheduler takes a signed checkpoint over every stream once per
-// Checkpoints.EveryInterval. It follows runRetentionScheduler's shape
-// exactly, including its ctx.Done() handling.
+// checkpointPollDivisor and checkpointPollFloor choose the checkpoint
+// scheduler's base tick from Checkpoints.EveryInterval.
 //
-// EveryInterval is the only trigger implemented; EveryEvents is part of the
-// config shape (validated by CheckpointConfig.Validate) but nothing here
-// watches per-stream event counts between ticks. A stream that crosses
-// EveryEvents well inside one interval is still only checkpointed on the next
-// tick, not the moment it crosses the threshold -- it remains covered no
-// later than EveryInterval after any burst, which is the guarantee the
-// interval trigger exists to make.
+// Both triggers -- EveryInterval and EveryEvents -- are evaluated per stream
+// on every base tick, so the tick has to be finer than EveryInterval itself
+// or EveryEvents could never fire meaningfully ahead of it. 1/12th means the
+// documented default (EveryInterval: 1h when left at zero; see
+// mergeWithDefaults) polls every 5 minutes: frequent enough that a stream
+// crossing EveryEvents is covered within minutes rather than waiting out the
+// full hour, without polling so often that ListStreams plus one
+// LatestCheckpoint per stream dominates a large deployment. The floor exists
+// for a short EveryInterval -- an aggressive operator setting, or a test --
+// where EveryInterval/12 alone would poll faster than once a second; nothing
+// about EveryEvents (a count, not a rate) argues for going faster than that.
+const (
+	checkpointPollDivisor = 12
+	checkpointPollFloor   = time.Second
+)
+
+// checkpointPollInterval derives the scheduler's base tick from
+// Checkpoints.EveryInterval. See the constants above for why.
+func (e *Extension) checkpointPollInterval() time.Duration {
+	d := e.config.Checkpoints.EveryInterval / checkpointPollDivisor
+	if d < checkpointPollFloor {
+		return checkpointPollFloor
+	}
+	return d
+}
+
+// runCheckpointScheduler evaluates every stream against both of
+// Checkpoints' triggers on a base tick finer than EveryInterval (see
+// checkpointPollInterval), and follows runRetentionScheduler's shape
+// otherwise, including its ctx.Done() handling.
+//
+// Both triggers are implemented: a stream is checkpointed once the elapsed
+// time since its last checkpoint reaches EveryInterval, OR once it has
+// gained EveryEvents events since then -- whichever comes first. The
+// interval alone is not enough, because the window between checkpoints is
+// exactly the span an attacker can still rewrite: a stream doing thousands
+// of events a minute should not have to wait out a full EveryInterval (an
+// hour, by default) before that window closes again.
 func (e *Extension) runCheckpointScheduler(ctx context.Context) {
-	ticker := time.NewTicker(e.config.Checkpoints.EveryInterval)
+	ticker := time.NewTicker(e.checkpointPollInterval())
 	defer ticker.Stop()
 
 	for {
@@ -534,7 +564,8 @@ func (e *Extension) runCheckpointScheduler(ctx context.Context) {
 	}
 }
 
-// checkpointAllStreams lists every stream and takes a checkpoint over each.
+// checkpointAllStreams lists every stream and takes a checkpoint over each
+// one that streamCheckpointDue reports as due.
 //
 // ErrNothingToCheckpoint (a quiet stream) and ErrExists (lost a race with
 // another checkpointer -- another process's scheduler tick, or an
@@ -552,6 +583,18 @@ func (e *Extension) checkpointAllStreams(ctx context.Context) {
 	}
 
 	for _, st := range streams {
+		due, dueErr := e.streamCheckpointDue(ctx, st)
+		if dueErr != nil {
+			e.Logger().Error("checkpoint scheduler: could not determine whether stream is due",
+				forge.F("stream_id", st.ID.String()),
+				forge.F("error", dueErr.Error()),
+			)
+			continue
+		}
+		if !due {
+			continue
+		}
+
 		_, cpErr := e.checkpointer.CheckpointStream(ctx, checkpoint.StreamHead{
 			ID:       st.ID,
 			AppID:    st.AppID,
@@ -569,6 +612,50 @@ func (e *Extension) checkpointAllStreams(ctx context.Context) {
 			)
 		}
 	}
+}
+
+// streamCheckpointDue reports whether st has crossed Checkpoints.EveryInterval
+// or Checkpoints.EveryEvents since its last checkpoint, resolving that
+// checkpoint (if any) from e.store and deferring the actual decision to
+// checkpointDue, a pure function kept separate so the trigger logic can be
+// reasoned about (and, from within this package, tested) without a live
+// store or a running scheduler.
+func (e *Extension) streamCheckpointDue(ctx context.Context, st *stream.Stream) (bool, error) {
+	latest, err := e.store.LatestCheckpoint(ctx, st.ID)
+	switch {
+	case err == nil:
+		return checkpointDue(time.Now(), true, latest.CreatedAt, latest.ToSeq, st.HeadSeq, e.config.Checkpoints), nil
+	case errors.Is(err, checkpoint.ErrNotFound):
+		return checkpointDue(time.Now(), false, time.Time{}, 0, st.HeadSeq, e.config.Checkpoints), nil
+	default:
+		return false, err
+	}
+}
+
+// checkpointDue is the pure decision at the heart of the dual-trigger
+// scheduler: given now and what the stream's last checkpoint (if any)
+// asserted, is this stream due?
+//
+//   - Never checkpointed (hasCheckpoint false): due immediately. There is no
+//     "elapsed since last checkpoint" to measure yet, and CheckpointStream
+//     itself returns ErrNothingToCheckpoint cheaply if the stream has no
+//     events at all, so attempting on every poll costs nothing on an empty
+//     stream and covers a new one within one poll period of its first event
+//     rather than waiting out a full EveryInterval.
+//   - Otherwise due when either EveryInterval has elapsed since the last
+//     checkpoint's CreatedAt, or the stream has gained at least EveryEvents
+//     sequences since the last checkpoint's ToSeq.
+func checkpointDue(now time.Time, hasCheckpoint bool, lastCreatedAt time.Time, lastToSeq, headSeq uint64, cfg CheckpointConfig) bool {
+	if !hasCheckpoint {
+		return true
+	}
+	if now.Sub(lastCreatedAt) >= cfg.EveryInterval {
+		return true
+	}
+	if cfg.EveryEvents > 0 && headSeq > lastToSeq && headSeq-lastToSeq >= uint64(cfg.EveryEvents) {
+		return true
+	}
+	return false
 }
 
 // --- Config Loading (mirrors grove/shield extension pattern) ---
@@ -884,27 +971,84 @@ func (e *Extension) buildHashChain() (*hash.Chain, error) {
 
 // buildCheckpointSigner resolves a keys.Provider for checkpoint signing --
 // from config or [WithKeyProvider], mirroring buildHashChain -- and returns
-// an Ed25519Signer.
+// a ready Ed25519Signer, or an error if this deployment has no working way
+// to sign a checkpoint. Callers must only invoke this when Checkpoints.Enabled
+// is true.
 //
 // The same e.keyProvider WithKeyProvider sets for tamper_evidence doubles as
 // the checkpoint signing key source: keys.Provider is parameterised by Use,
 // so a single provider (a keyset file or a KMS-backed implementation) can
 // vend both the hmac digest key and the ed25519 checkpoint key without the
-// deployment naming two separate sources. Callers must only invoke this when
-// Checkpoints.Enabled is true.
+// deployment naming two separate sources.
+//
+// Three failure modes reach here that CheckpointConfig.Validate and the
+// original construction could not catch on their own, all found in review:
+//
+//  1. checkpoints.signer.provider naming something this extension does not
+//     implement -- "kms", "vault", a typo, a capitalised "File" -- used to
+//     pass Validate (it only special-cased "file" and rejected empty), leave
+//     provider nil below, and reach checkpoint.NewEd25519Signer(nil).
+//     Nothing panicked until the scheduler's first tick called Sign on it,
+//     inside its own goroutine, taking the process down. Validate now
+//     rejects any Signer.Provider it does not implement, and the nil check
+//     below is a second, construction-time backstop -- mirroring
+//     hash.NewChain's own explicit nil check for SchemeHMAC -- so a future
+//     gap in Validate fails Register instead of reaching Sign.
+//  2. A provider that resolves cleanly but cannot vend a checkpoint-sig key:
+//     e.g. one supplied via WithKeyProvider that only holds tamper
+//     evidence's hmac key. Register used to succeed and every tick then
+//     failed silently forever -- checkpoints.enabled: true recording
+//     nothing is exactly the gap the store-support probe in
+//     buildCheckpointer exists to close, reached through a different door.
+//     The active key is now resolved once, here, and construction fails if
+//     it is missing or the wrong size; the key itself is then discarded,
+//     the same way hash.NewChain's check discards its resolved key --
+//     Ed25519Signer re-resolves per checkpoint so rotation takes effect
+//     without a restart.
+//  3. An inherited e.keyProvider silently outranking an explicit
+//     checkpoints.signer.path: tamper_evidence.keys.provider: file and
+//     checkpoints.signer.provider: file naming two different keyset files
+//     used to open only the first, because buildHashChain runs first and
+//     leaves e.keyProvider already non-nil by the time this runs, regardless
+//     of whether WithKeyProvider was ever called. An explicit
+//     Signer.Provider: "file" now always opens Signer.Path, ahead of
+//     whatever e.keyProvider already holds.
 func (e *Extension) buildCheckpointSigner() (checkpoint.Signer, error) {
 	if err := e.config.Checkpoints.Validate(e.keyProvider != nil); err != nil {
 		return nil, err
 	}
 
-	provider := e.keyProvider
-	if provider == nil && e.config.Checkpoints.Signer.Provider == "file" {
+	var provider keys.Provider
+	switch {
+	case e.config.Checkpoints.Signer.Provider == "file":
+		// Explicit config always wins over an inherited provider: naming
+		// checkpoints.signer.path is a deliberate choice of keyset, and
+		// silently using whatever tamper_evidence left in e.keyProvider
+		// instead is not debuggable from outside.
 		p, err := keys.NewFileProvider(e.config.Checkpoints.Signer.Path)
 		if err != nil {
 			return nil, err
 		}
 		provider = p
+	case e.keyProvider != nil:
+		provider = e.keyProvider
 	}
+	if provider == nil {
+		return nil, ErrCheckpointSignerRequired
+	}
+
+	key, keyID, err := provider.Current(context.Background(), keys.UseCheckpointSig)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"chronicle: checkpoints.enabled is true but no active %s key could be resolved: %w",
+			keys.UseCheckpointSig, err)
+	}
+	if len(key) != keys.Ed25519KeySize {
+		return nil, fmt.Errorf(
+			"chronicle: checkpoints signing key %q is %d bytes, want %d (a %s key)",
+			keyID, len(key), keys.Ed25519KeySize, keys.UseCheckpointSig)
+	}
+
 	return checkpoint.NewEd25519Signer(provider), nil
 }
 
@@ -939,5 +1083,5 @@ func (e *Extension) buildCheckpointer(s store.Store) (*checkpoint.Checkpointer, 
 		return nil, nil, fmt.Errorf("%w (store type %T)", ErrCheckpointsUnsupportedByStore, s)
 	}
 
-	return checkpoint.NewCheckpointer(s, s, signer, e.Logger()), s, nil
+	return checkpoint.NewCheckpointer(s, signer, e.Logger()), s, nil
 }

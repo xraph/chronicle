@@ -9,19 +9,12 @@ import (
 
 	log "github.com/xraph/go-utils/log"
 
-	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
 )
 
 // ErrNothingToCheckpoint is returned when a stream has gained no events since
 // its last checkpoint. It is an ordinary outcome on a quiet stream, not a fault.
 var ErrNothingToCheckpoint = errors.New("checkpoint: no new events since the last checkpoint")
-
-// EventReader is the slice of verify.Store a Checkpointer needs. It is declared
-// here rather than imported so this package does not depend on verify.
-type EventReader interface {
-	EventRange(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64) ([]*audit.Event, error)
-}
 
 // StreamHead is the minimal view of a stream a checkpoint is taken over.
 //
@@ -43,7 +36,6 @@ type StreamHead struct {
 // per-tenant write ceiling. A checkpoint reads the head at some instant and
 // signs that; concurrent appends simply land in the next window.
 type Checkpointer struct {
-	events EventReader
 	store  Store
 	signer Signer
 	logger log.Logger
@@ -53,12 +45,15 @@ type Checkpointer struct {
 }
 
 // NewCheckpointer creates a Checkpointer. A nil logger is replaced with a no-op.
-func NewCheckpointer(events EventReader, store Store, signer Signer, logger log.Logger) *Checkpointer {
+//
+// It does not take an EventReader: CheckpointStream never reads an event, so
+// there is nothing here for one to do. See CheckpointStream's doc for why.
+func NewCheckpointer(store Store, signer Signer, logger log.Logger) *Checkpointer {
 	if logger == nil {
 		logger = log.NewNoopLogger()
 	}
 	return &Checkpointer{
-		events: events, store: store, signer: signer, logger: logger,
+		store: store, signer: signer, logger: logger,
 		locks: make(map[string]*sync.Mutex),
 	}
 }
@@ -92,6 +87,18 @@ func (c *Checkpointer) lockStream(streamID id.ID) func() {
 //
 // The window runs from one past the previous checkpoint's ToSeq (or 1 for a
 // stream's first) up to the stream's head.
+//
+// It does not read a single event to do this. Everything a checkpoint
+// asserts -- FromSeq, ToSeq, EventCount -- is arithmetic on sequence numbers
+// the caller already supplied (st.HeadSeq) or this function already read
+// (latest.ToSeq); reading and counting the actual event rows would add
+// nothing a verifier trusts, since ToHash already pins the head and a gap in
+// between is Store.Gaps' job to find, not a checkpoint's. Before this,
+// materialising every event in [fromSeq, st.HeadSeq] just to call len() on
+// the result meant a first checkpoint over a stream with millions of
+// existing events read that entire history into memory, serially, per
+// stream, in one goroutine -- and runCheckpointScheduler is what put this on
+// an automatic, per-stream, per-tick path across an entire deployment.
 func (c *Checkpointer) CheckpointStream(ctx context.Context, st StreamHead) (*Checkpoint, error) {
 	unlock := c.lockStream(st.ID)
 	defer unlock()
@@ -114,28 +121,27 @@ func (c *Checkpointer) CheckpointStream(ctx context.Context, st StreamHead) (*Ch
 		return nil, fmt.Errorf("checkpoint: read latest: %w", err)
 	}
 
+	// st.HeadSeq >= fromSeq below is the only "is there anything new" check
+	// this function needs: the range [fromSeq, st.HeadSeq] is non-empty by
+	// construction whenever it holds, so there is no separate empty-read case
+	// to guard against the way there was when events were actually fetched.
 	if st.HeadSeq < fromSeq {
 		return nil, ErrNothingToCheckpoint
 	}
 
-	events, err := c.events.EventRange(ctx, st.ID, fromSeq, st.HeadSeq)
-	if err != nil {
-		return nil, fmt.Errorf("checkpoint: read events %d..%d: %w", fromSeq, st.HeadSeq, err)
-	}
-	if len(events) == 0 {
-		return nil, ErrNothingToCheckpoint
-	}
-
 	cp := &Checkpoint{
-		ID:             id.NewCheckpointID(),
-		StreamID:       st.ID,
-		AppID:          st.AppID,
-		TenantID:       st.TenantID,
-		FromSeq:        fromSeq,
-		ToSeq:          st.HeadSeq,
-		FromHash:       fromHash,
-		ToHash:         st.HeadHash,
-		EventCount:     int64(len(events)),
+		ID:       id.NewCheckpointID(),
+		StreamID: st.ID,
+		AppID:    st.AppID,
+		TenantID: st.TenantID,
+		FromSeq:  fromSeq,
+		ToSeq:    st.HeadSeq,
+		FromHash: fromHash,
+		ToHash:   st.HeadHash,
+		// The span, not a verified count -- see EventCount's doc. Sequence
+		// numbers realistically never approach 1<<63, so this cannot
+		// overflow int64 in practice.
+		EventCount:     int64(st.HeadSeq-fromSeq) + 1, //nolint:gosec // G115: span, not raw seq; no realistic overflow
 		PrevCheckpoint: prev,
 
 		// Truncated to millisecond, not left at time.Now's nanosecond

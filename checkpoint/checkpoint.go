@@ -42,6 +42,12 @@ type Checkpoint struct {
 	FromHash string `json:"from_hash"`
 	ToHash   string `json:"to_hash"`
 
+	// EventCount is the sequence span this checkpoint covers (ToSeq - FromSeq
+	// + 1), not a verified count of rows the store actually holds in that
+	// range. CheckpointStream computes it arithmetically from the two
+	// sequence numbers it already asserts, without reading a single event;
+	// a gap in the range (a missing sequence) is not reflected here and is
+	// verification's job (Store.Gaps), not a checkpoint's.
 	EventCount int64 `json:"event_count"`
 
 	// PrevCheckpoint is the digest of the preceding checkpoint's signed payload,
