@@ -293,3 +293,32 @@ func TestAppendRecomputesUnderTheConfiguredScheme(t *testing.T) {
 		t.Error("HashKeyID is empty; the key used for the digest was not recorded")
 	}
 }
+
+// TestUpdateStreamSchemeMovesThePin exercises the SQL write behind advancing a
+// stream's pin: the columns migration 006 added have to be updatable after the
+// row exists, or turning HMAC on never takes effect on an existing deployment.
+func TestUpdateStreamSchemeMovesThePin(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	streamID := seedStream(t, s, "app", "tenant")
+
+	if err := s.UpdateStreamScheme(ctx, streamID, string(hash.SchemeHMAC), 42); err != nil {
+		t.Fatalf("UpdateStreamScheme: %v", err)
+	}
+
+	got, err := s.GetStream(ctx, streamID)
+	if err != nil {
+		t.Fatalf("GetStream: %v", err)
+	}
+	if got.Scheme != string(hash.SchemeHMAC) {
+		t.Errorf("Scheme = %q, want %q", got.Scheme, hash.SchemeHMAC)
+	}
+	if got.SchemeSince != 42 {
+		t.Errorf("SchemeSince = %d, want 42", got.SchemeSince)
+	}
+
+	if err := s.UpdateStreamScheme(ctx, id.NewStreamID(), string(hash.SchemeHMAC), 1); err == nil {
+		t.Error("UpdateStreamScheme on an unknown stream returned nil; a silent no-op would hide a lost pin")
+	}
+}

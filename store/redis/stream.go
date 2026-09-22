@@ -138,6 +138,29 @@ func (s *Store) ListStreams(ctx context.Context, opts stream.ListOpts) ([]*strea
 	return applyPagination(result, opts.Offset, opts.Limit), nil
 }
 
+// UpdateStreamScheme moves the stream's digest pin to scheme, applying from
+// sequence since.
+func (s *Store) UpdateStreamScheme(ctx context.Context, streamID id.ID, scheme string, since uint64) error {
+	key := entityKey(prefixStream, streamID.String())
+
+	var m streamModel
+	if err := s.getEntity(ctx, key, &m); err != nil {
+		if isNotFound(err) {
+			return fmt.Errorf("%w: stream %s", chronicle.ErrStreamNotFound, streamID)
+		}
+		return fmt.Errorf("chronicle/redis: update stream scheme get: %w", err)
+	}
+
+	m.Scheme = scheme
+	m.SchemeSince = since
+	m.UpdatedAt = now()
+
+	if err := s.setEntity(ctx, key, &m); err != nil {
+		return fmt.Errorf("chronicle/redis: update stream scheme: %w", err)
+	}
+	return nil
+}
+
 // UpdateStreamHead updates the stream's head hash and sequence after append.
 func (s *Store) UpdateStreamHead(ctx context.Context, streamID id.ID, hash string, seq uint64) error {
 	key := entityKey(prefixStream, streamID.String())

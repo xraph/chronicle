@@ -72,3 +72,39 @@ func TestStreamSchemePinRoundTrips(t *testing.T) {
 		t.Errorf("SchemeSince = %d, want 84301", got.SchemeSince)
 	}
 }
+
+// TestUpdateStreamSchemeMovesThePin covers the write path that turning a
+// stronger digest on depends on. Without it the pin written at creation is the
+// only pin a stream ever has, and every stream that predates the change keeps
+// advertising the weaker scheme while keyed events land in it.
+func TestUpdateStreamSchemeMovesThePin(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+
+	st := &stream.Stream{
+		ID:          id.NewStreamID(),
+		AppID:       "app",
+		TenantID:    "tenant",
+		Scheme:      "chronicle/v2",
+		SchemeSince: 1,
+	}
+	if err := s.CreateStream(ctx, st); err != nil {
+		t.Fatalf("CreateStream: %v", err)
+	}
+
+	if err := s.UpdateStreamScheme(ctx, st.ID, "chronicle/v3", 42); err != nil {
+		t.Fatalf("UpdateStreamScheme: %v", err)
+	}
+
+	got, err := s.GetStream(ctx, st.ID)
+	if err != nil {
+		t.Fatalf("GetStream: %v", err)
+	}
+	if got.Scheme != "chronicle/v3" || got.SchemeSince != 42 {
+		t.Errorf("pin = %s from %d, want chronicle/v3 from 42", got.Scheme, got.SchemeSince)
+	}
+
+	if err := s.UpdateStreamScheme(ctx, id.NewStreamID(), "chronicle/v3", 1); err == nil {
+		t.Error("UpdateStreamScheme on an unknown stream returned nil; a silent no-op would hide a lost pin")
+	}
+}

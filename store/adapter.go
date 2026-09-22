@@ -58,6 +58,11 @@ func (a *Adapter) UpdateStreamHead(ctx context.Context, streamID id.ID, hash str
 	return a.Store.UpdateStreamHead(ctx, streamID, hash, seq)
 }
 
+// UpdateStreamScheme delegates to the underlying store.
+func (a *Adapter) UpdateStreamScheme(ctx context.Context, streamID id.ID, scheme string, since uint64) error {
+	return a.Store.UpdateStreamScheme(ctx, streamID, scheme, since)
+}
+
 // GetStored returns an event in its stored form, for hash verification.
 //
 // The wrapped store may decrypt on read, and a decrypted event no longer matches

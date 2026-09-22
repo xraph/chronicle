@@ -89,6 +89,26 @@ func (s *Store) ListStreams(ctx context.Context, opts stream.ListOpts) ([]*strea
 	return streams, nil
 }
 
+// UpdateStreamScheme moves the stream's digest pin to scheme, applying from
+// sequence since.
+func (s *Store) UpdateStreamScheme(ctx context.Context, streamID id.ID, scheme string, since uint64) error {
+	res, err := s.mdb.NewUpdate((*StreamModel)(nil)).
+		Filter(bson.M{"_id": streamID.String()}).
+		Set("scheme", scheme).
+		Set("scheme_since", since).
+		Set("updated_at", time.Now().UTC()).
+		Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to update stream scheme: %w", err)
+	}
+
+	if res.MatchedCount() == 0 {
+		return fmt.Errorf("%w: stream %s", chronicle.ErrStreamNotFound, streamID)
+	}
+
+	return nil
+}
+
 // UpdateStreamHead updates the stream's head hash and sequence after append.
 func (s *Store) UpdateStreamHead(ctx context.Context, streamID id.ID, hash string, seq uint64) error {
 	res, err := s.mdb.NewUpdate((*StreamModel)(nil)).

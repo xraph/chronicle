@@ -406,6 +406,23 @@ func (s *Store) UpdateStreamHead(_ context.Context, streamID id.ID, hash string,
 	return chronicle.ErrStreamNotFound
 }
 
+// UpdateStreamScheme moves the stream's digest pin.
+func (s *Store) UpdateStreamScheme(_ context.Context, streamID id.ID, scheme string, since uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idStr := streamID.String()
+	for _, st := range s.streams {
+		if st.ID.String() == idStr {
+			st.Scheme = scheme
+			st.SchemeSince = since
+			st.UpdatedAt = time.Now().UTC()
+			return nil
+		}
+	}
+	return chronicle.ErrStreamNotFound
+}
+
 // ──────────────────────────────────────────────────
 // verify.Store
 // ──────────────────────────────────────────────────

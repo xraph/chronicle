@@ -56,4 +56,5 @@
 //   - [Store.GetStreamByScope]  — retrieve by (appID, tenantID)
 //   - [Store.ListStreams]        — paginated listing of all streams
 //   - [Store.UpdateStreamHead]  — atomically advance HeadHash and HeadSeq after append
+//   - [Store.UpdateStreamScheme] — move the digest pin when a stronger scheme is configured
 package stream

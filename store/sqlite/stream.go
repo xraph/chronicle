@@ -75,6 +75,31 @@ func (s *Store) ListStreams(ctx context.Context, opts stream.ListOpts) ([]*strea
 	return streams, nil
 }
 
+// UpdateStreamScheme moves the stream's digest pin to scheme, applying from
+// sequence since.
+func (s *Store) UpdateStreamScheme(ctx context.Context, streamID id.ID, scheme string, since uint64) error {
+	result, err := s.sdb.NewUpdate((*StreamModel)(nil)).
+		Set("scheme = ?", scheme).
+		Set("scheme_since = ?", since).
+		Set("updated_at = ?", now().Format("2006-01-02T15:04:05.999999999Z07:00")).
+		Where("id = ?", streamID.String()).
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rows == 0 {
+		return fmt.Errorf("%w: stream %s", chronicle.ErrStreamNotFound, streamID)
+	}
+
+	return nil
+}
+
 // UpdateStreamHead updates the stream's head hash and sequence after append.
 func (s *Store) UpdateStreamHead(ctx context.Context, streamID id.ID, hash string, seq uint64) error {
 	result, err := s.sdb.NewUpdate((*StreamModel)(nil)).

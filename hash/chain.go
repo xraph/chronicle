@@ -40,10 +40,16 @@ const (
 	SchemeHMAC Scheme = "chronicle/v3"
 )
 
-// rank orders schemes by strength, so a stream pinned to one scheme can detect
+// Rank orders schemes by strength, so a stream pinned to one scheme can detect
 // an event claiming anything weaker. Ranking rather than requiring equality is
 // what lets a stream change scheme more than once without an epoch table.
-func rank(s Scheme) int {
+//
+// It is exported because the same ordering decides two different questions, and
+// they must never disagree: verification asks whether an event claims less than
+// its stream pins, and the writer asks whether a newly configured scheme is
+// strong enough to move that pin forward. An unknown or empty scheme ranks
+// below every named one.
+func Rank(s Scheme) int {
 	switch s {
 	case SchemeHMAC:
 		return 2
@@ -260,7 +266,7 @@ func (c *Chain) VerifyWithPin(ctx context.Context, prevHash string, event *audit
 		return Result{Tolerant: true}, nil
 	}
 
-	if atOrAbovePin && rank(claimed) < rank(pin.Scheme) {
+	if atOrAbovePin && Rank(claimed) < Rank(pin.Scheme) {
 		return Result{Scheme: claimed, Downgrade: true}, nil
 	}
 

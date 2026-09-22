@@ -68,4 +68,23 @@ var (
 			"pass chronicle.WithKeyProvider(keys.NewFileProvider(path)) so digests " +
 			"are keyed, or leave the digest scheme unset",
 	)
+
+	// ErrSchemeWeakeningRefused is returned when a stream is pinned to a
+	// stronger digest scheme than the one this process is configured to write.
+	//
+	// Chronicle moves a stream's pin up on its own, because that is the only way
+	// turning HMAC on takes effect on streams that already exist. It will not
+	// move one down. A pin that drops on its own is indistinguishable from an
+	// attacker lowering it, and once it has dropped every event written under
+	// the weaker scheme verifies clean, so the operator sees green while the
+	// guarantee they configured is gone. Refusing the write is loud, reversible,
+	// and leaves the existing chain intact.
+	ErrSchemeWeakeningRefused = errors.New(
+		"chronicle: this stream is pinned to a stronger digest scheme than this " +
+			"process writes; restore the stronger scheme (tamper_evidence.digest " +
+			"and its key source, or chronicle.WithDigestScheme plus " +
+			"chronicle.WithKeyProvider), or if the weaker scheme is genuinely " +
+			"intended, record that decision and lower the stream's pin " +
+			"deliberately through the store",
+	)
 )

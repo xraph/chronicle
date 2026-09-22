@@ -48,6 +48,7 @@ type Storer interface {
 	CreateStreamInfo(ctx context.Context, s *StreamInfo) error
 	GetStreamByScope(ctx context.Context, appID, tenantID string) (*StreamInfo, error)
 	UpdateStreamHead(ctx context.Context, streamID id.ID, hash string, seq uint64) error
+	UpdateStreamScheme(ctx context.Context, streamID id.ID, scheme string, since uint64) error
 
 	// Verification operations.
 	EventRange(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64) ([]*audit.Event, error)
@@ -260,10 +261,20 @@ func getStored(ctx context.Context, s Storer, eventID id.ID) (*audit.Event, erro
 	return s.Get(ctx, eventID)
 }
 
-// resolveStream gets or creates the hash chain stream for an app+tenant scope.
+// resolveStream gets or creates the hash chain stream for an app+tenant scope,
+// and brings an existing stream's digest pin up to the scheme this process
+// writes under.
+//
+// Callers hold the per-stream lock from Record, which is what makes the pin
+// move safe: the read of the pin, the write that advances it, and the append
+// that lands above the new boundary cannot interleave with another append to
+// the same stream.
 func (c *Chronicle) resolveStream(ctx context.Context, appID, tenantID string) (*StreamInfo, error) {
 	s, err := c.store.GetStreamByScope(ctx, appID, tenantID)
 	if err == nil {
+		if pinErr := c.reconcileStreamPin(ctx, s); pinErr != nil {
+			return nil, pinErr
+		}
 		return s, nil
 	}
 
@@ -284,6 +295,92 @@ func (c *Chronicle) resolveStream(ctx context.Context, appID, tenantID string) (
 		return nil, err
 	}
 	return s, nil
+}
+
+// reconcileStreamPin brings an existing stream's scheme pin into line with the
+// scheme this process writes under, in the strengthening direction only.
+//
+// Writing the pin once at stream creation is not enough. Migration 006 backfills
+// every pre-existing stream to the plain scheme, so an operator who turns HMAC
+// on afterwards has streams advertising plain forever while HMAC events land in
+// them. A verifier comparing an event's claimed scheme against that stale pin
+// finds nothing to object to, and an attacker who rewrites every event back to
+// plain (recomputing the unkeyed digests, which anyone can) never has to touch
+// chronicle_streams at all. Moving the pin is what makes the two records
+// cross-check, which is the whole point of recording the scheme twice.
+//
+// Three cases:
+//
+//   - Configured ranks above the pin: move the pin to the configured scheme,
+//     applying from one past the stream's high-water mark, and persist that
+//     before the event is appended. Everything already written stays below the
+//     new boundary and keeps verifying under its own recorded scheme.
+//   - Configured ranks below the pin: refuse. Silently weakening would let a
+//     misconfigured restart, or an attacker who got the pin lowered, quietly
+//     reduce the guarantee, and the operator would see nothing but green.
+//   - Equal: nothing to do, which is every ordinary append.
+//
+// The boundary comes from the high-water mark rather than HeadSeq alone,
+// matching migration 006: a crash between an event insert and the head update
+// leaves HeadSeq lagging behind MAX(sequence), and pinning from the lagging
+// value would drop already-written events above the new boundary, where their
+// weaker recorded scheme reads as a downgrade rather than as history.
+func (c *Chronicle) reconcileStreamPin(ctx context.Context, s *StreamInfo) error {
+	configured := c.hasher.Scheme()
+	pinned := hash.Scheme(s.Scheme)
+
+	switch {
+	case hash.Rank(configured) == hash.Rank(pinned):
+		return nil
+
+	case hash.Rank(configured) < hash.Rank(pinned):
+		return fmt.Errorf(
+			"%w: stream %s (app %q, tenant %q) is pinned to %s from sequence %d, "+
+				"but this process is configured to write %s",
+			ErrSchemeWeakeningRefused, s.ID, s.AppID, s.TenantID, pinned, s.SchemeSince, configured)
+	}
+
+	since, err := c.pinBoundary(ctx, s)
+	if err != nil {
+		return err
+	}
+
+	if err := c.store.UpdateStreamScheme(ctx, s.ID, string(configured), since); err != nil {
+		return fmt.Errorf("advance stream scheme pin: %w", err)
+	}
+
+	c.logger.Info("chronicle: stream digest scheme advanced",
+		log.String("stream_id", s.ID.String()),
+		log.String("from", string(pinned)),
+		log.String("to", string(configured)),
+		log.Uint64("since", since),
+	)
+
+	s.Scheme = string(configured)
+	s.SchemeSince = since
+	return nil
+}
+
+// pinBoundary returns the first sequence a newly advanced pin applies from:
+// one past whichever of the stream head and the last stored event is higher.
+//
+// A store that cannot report its last sequence falls back to the head, which is
+// the value the stream itself carries; over-reporting the boundary is the safe
+// direction, since it leaves an extra event or two resolving tolerantly instead
+// of flagging honest history as a downgrade.
+func (c *Chronicle) pinBoundary(ctx context.Context, s *StreamInfo) (uint64, error) {
+	high := s.HeadSeq
+
+	last, err := c.store.LastSequence(ctx, s.ID)
+	if err != nil {
+		if !errors.Is(err, ErrStreamNotFound) && !errors.Is(err, ErrEventNotFound) {
+			return 0, fmt.Errorf("resolve stream high-water mark: %w", err)
+		}
+	} else if last > high {
+		high = last
+	}
+
+	return high + 1, nil
 }
 
 // VerifyEvent recomputes and verifies a single event's hash.

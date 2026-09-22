@@ -35,3 +35,34 @@ func TestAdapterCarriesTheSchemePinBothWays(t *testing.T) {
 		t.Errorf("SchemeSince = %d, want 7; the adapter dropped the pin", got.SchemeSince)
 	}
 }
+
+// The adapter is the only thing standing between chronicle.Storer and a
+// backend, so a pin advance that stops here is indistinguishable from one that
+// never happened.
+func TestAdapterForwardsAPinAdvance(t *testing.T) {
+	ctx := context.Background()
+	a := store.NewAdapter(memory.New())
+
+	streamID := id.NewStreamID()
+	if err := a.CreateStreamInfo(ctx, &chronicle.StreamInfo{
+		ID:          streamID,
+		AppID:       "app",
+		TenantID:    "tenant",
+		Scheme:      "chronicle/v2",
+		SchemeSince: 1,
+	}); err != nil {
+		t.Fatalf("CreateStreamInfo: %v", err)
+	}
+
+	if err := a.UpdateStreamScheme(ctx, streamID, "chronicle/v3", 9); err != nil {
+		t.Fatalf("UpdateStreamScheme: %v", err)
+	}
+
+	got, err := a.GetStreamByScope(ctx, "app", "tenant")
+	if err != nil {
+		t.Fatalf("GetStreamByScope: %v", err)
+	}
+	if got.Scheme != "chronicle/v3" || got.SchemeSince != 9 {
+		t.Errorf("pin = %s from %d, want chronicle/v3 from 9", got.Scheme, got.SchemeSince)
+	}
+}
