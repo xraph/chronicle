@@ -246,3 +246,63 @@ func TestVerifyPageRendersAnIntactCheckpointAsUnremarkable(t *testing.T) {
 		t.Error("an intact, fully-checked checkpoint is being reported as inconclusive")
 	}
 }
+
+// TestVerifyPageExplainsATruncatedTail covers the finding that has no
+// sequence numbers to show.
+//
+// A truncation caught by the latest checkpoint leaves Gaps, Tampered and
+// Downgrades all empty, so the Issues tile reads zero and every other block
+// on the page stays hidden. Without copy of its own, an operator sees a
+// result that says "Tampered" and offers no reason at all.
+func TestVerifyPageExplainsATruncatedTail(t *testing.T) {
+	out := renderVerify(t, VerifyPageData{
+		Report: &verify.Report{
+			Valid:                 false,
+			Verified:              10,
+			FirstEvent:            1,
+			LastEvent:             10,
+			HeadSeq:               10,
+			HeadChecked:           true,
+			HeadMatch:             true,
+			CheckpointHeadChecked: true,
+			CheckpointHeadOK:      false,
+		},
+	})
+
+	if !strings.Contains(out, "Truncated Tail") {
+		t.Error("the page does not name the truncation at all")
+	}
+	if !strings.Contains(out, "signed checkpoint") {
+		t.Error("the copy does not say what the finding rests on")
+	}
+	if !strings.Contains(out, "text-destructive") {
+		t.Error("the truncation block is not styled as a failure")
+	}
+}
+
+// TestVerifyPageStaysQuietWhenTheHeadComparisonAgrees pins the other side:
+// a clean comparison, and one that never ran, must both render nothing.
+// CheckpointHeadOK's false zero value on an unchecked report would otherwise
+// accuse every deployment that takes no checkpoints.
+func TestVerifyPageStaysQuietWhenTheHeadComparisonAgrees(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		checked bool
+		ok      bool
+	}{
+		{name: "compared and consistent", checked: true, ok: true},
+		{name: "never compared", checked: false, ok: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := renderVerify(t, VerifyPageData{
+				Report: &verify.Report{
+					Valid: true, Verified: 10, FirstEvent: 1, LastEvent: 10,
+					CheckpointHeadChecked: tc.checked, CheckpointHeadOK: tc.ok,
+				},
+			})
+			if strings.Contains(out, "Truncated Tail") {
+				t.Errorf("the page reported a truncation on a report that found none:\n%s", out)
+			}
+		})
+	}
+}

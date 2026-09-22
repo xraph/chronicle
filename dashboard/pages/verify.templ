@@ -160,6 +160,19 @@ templ VerifyPage(data VerifyPageData) {
 						</div>
 					}
 
+					if data.Report.CheckpointHeadChecked && !data.Report.CheckpointHeadOK {
+						<div class="mt-4 rounded-sm border border-destructive bg-destructive/5 p-4">
+							<dt class="text-sm font-semibold text-destructive mb-1">Truncated Tail</dt>
+							<p class="text-xs text-destructive">
+								A signed checkpoint says this chain once reached a sequence past the head this
+								stream now claims. Events were removed from the end and the head row was moved
+								down to match. Nothing inside the surviving range has to look wrong for that to
+								have happened, so read this on its own: find out who holds write access to the
+								events and streams tables.
+							</p>
+						</div>
+					}
+
 					if len(data.Report.Tampered) > 0 {
 						<div class="mt-4">
 							<dt class="text-sm font-medium text-muted-foreground mb-2">Tampered Events</dt>
