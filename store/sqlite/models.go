@@ -60,6 +60,9 @@ type EventModel struct {
 	TenantID        string `grove:"tenant_id"`
 	UserID          string `grove:"user_id"`
 	IP              string `grove:"ip"`
+	UserAgent       string `grove:"user_agent"`
+	RequestID       string `grove:"request_id"`
+	SessionID       string `grove:"session_id"`
 	Action          string `grove:"action"`
 	Resource        string `grove:"resource"`
 	Category        string `grove:"category"`
@@ -112,6 +115,9 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		TenantID:        m.TenantID,
 		UserID:          m.UserID,
 		IP:              m.IP,
+		UserAgent:       m.UserAgent,
+		RequestID:       m.RequestID,
+		SessionID:       m.SessionID,
 		Action:          m.Action,
 		Resource:        m.Resource,
 		Category:        m.Category,
@@ -168,6 +174,9 @@ func fromEvent(e *audit.Event) *EventModel {
 		TenantID:        e.TenantID,
 		UserID:          e.UserID,
 		IP:              e.IP,
+		UserAgent:       e.UserAgent,
+		RequestID:       e.RequestID,
+		SessionID:       e.SessionID,
 		Action:          e.Action,
 		Resource:        e.Resource,
 		Category:        e.Category,

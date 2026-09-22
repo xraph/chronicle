@@ -1042,6 +1042,12 @@ func matchesQuery(e *audit.Event, q *audit.Query) bool {
 	if q.UserID != "" && e.UserID != q.UserID {
 		return false
 	}
+	if q.SessionID != "" && e.SessionID != q.SessionID {
+		return false
+	}
+	if q.RequestID != "" && e.RequestID != q.RequestID {
+		return false
+	}
 	if !q.After.IsZero() && e.Timestamp.Before(q.After) {
 		return false
 	}

@@ -26,6 +26,9 @@ type eventModel struct {
 	TenantID        string         `json:"tenant_id"`
 	UserID          string         `json:"user_id"`
 	IP              string         `json:"ip"`
+	UserAgent       string         `json:"user_agent"`
+	RequestID       string         `json:"request_id"`
+	SessionID       string         `json:"session_id"`
 	Action          string         `json:"action"`
 	Resource        string         `json:"resource"`
 	Category        string         `json:"category"`
@@ -56,6 +59,9 @@ func toEventModel(e *audit.Event) *eventModel {
 		TenantID:        e.TenantID,
 		UserID:          e.UserID,
 		IP:              e.IP,
+		UserAgent:       e.UserAgent,
+		RequestID:       e.RequestID,
+		SessionID:       e.SessionID,
 		Action:          e.Action,
 		Resource:        e.Resource,
 		Category:        e.Category,
@@ -97,6 +103,9 @@ func fromEventModel(m *eventModel) (*audit.Event, error) {
 		TenantID:        m.TenantID,
 		UserID:          m.UserID,
 		IP:              m.IP,
+		UserAgent:       m.UserAgent,
+		RequestID:       m.RequestID,
+		SessionID:       m.SessionID,
 		Action:          m.Action,
 		Resource:        m.Resource,
 		Category:        m.Category,
@@ -533,6 +542,12 @@ func matchesEventFilter(m *eventModel, q *audit.Query) bool {
 		return false
 	}
 	if q.UserID != "" && m.UserID != q.UserID {
+		return false
+	}
+	if q.SessionID != "" && m.SessionID != q.SessionID {
+		return false
+	}
+	if q.RequestID != "" && m.RequestID != q.RequestID {
 		return false
 	}
 	if len(q.Categories) > 0 && !containsStr(q.Categories, m.Category) {

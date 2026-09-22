@@ -399,6 +399,39 @@ CREATE INDEX IF NOT EXISTS idx_chronicle_checkpoints_scope
 				return nil
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_request_correlation_columns",
+			Version: "20260922000001",
+			Comment: "Add user_agent, request_id and session_id to chronicle_events",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// chronicle_events is created by an earlier migration and these
+				// columns are new, so plain ADD COLUMN is safe here.
+				for _, stmt := range []string{
+					`ALTER TABLE chronicle_events ADD COLUMN user_agent TEXT NOT NULL DEFAULT ''`,
+					`ALTER TABLE chronicle_events ADD COLUMN request_id TEXT NOT NULL DEFAULT ''`,
+					`ALTER TABLE chronicle_events ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
+					`CREATE INDEX IF NOT EXISTS idx_chronicle_events_session ON chronicle_events (session_id, timestamp DESC) WHERE session_id != ''`,
+				} {
+					if _, err := exec.Exec(ctx, stmt); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				for _, stmt := range []string{
+					`DROP INDEX IF EXISTS idx_chronicle_events_session`,
+					`ALTER TABLE chronicle_events DROP COLUMN session_id`,
+					`ALTER TABLE chronicle_events DROP COLUMN request_id`,
+					`ALTER TABLE chronicle_events DROP COLUMN user_agent`,
+				} {
+					if _, err := exec.Exec(ctx, stmt); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
 	)
 	return g
 }()

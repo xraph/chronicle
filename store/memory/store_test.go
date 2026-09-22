@@ -35,6 +35,32 @@ func TestAppendAndGet(t *testing.T) {
 	}
 }
 
+func TestQueryFiltersBySessionAndRequest(t *testing.T) {
+	s := New()
+	ctx := context.Background()
+	for i, sid := range []string{"sess_a", "sess_b", "sess_a"} {
+		ev := &audit.Event{
+			ID: id.NewAuditID(), Timestamp: time.Now().UTC().Add(time.Duration(i) * time.Second),
+			AppID: "app", Action: "x", Resource: "y", Category: "z",
+			SessionID: sid, RequestID: "req_" + string(rune('0'+i)),
+		}
+		if err := s.Append(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := s.Query(ctx, &audit.Query{AppID: "app", SessionID: "sess_a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 2 {
+		t.Errorf("SessionID filter: Total = %d, want 2", res.Total)
+	}
+	res, _ = s.Query(ctx, &audit.Query{AppID: "app", RequestID: "req_1"})
+	if res.Total != 1 || res.Events[0].SessionID != "sess_b" {
+		t.Errorf("RequestID filter returned %+v", res.Events)
+	}
+}
+
 func TestAppendBatch(t *testing.T) {
 	s := New()
 	ctx := context.Background()

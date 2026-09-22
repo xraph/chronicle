@@ -408,6 +408,12 @@ func applyEventFilters(q *pgdriver.SelectQuery, f *audit.Query) {
 	if f.UserID != "" {
 		q.Where("e.user_id = ?", f.UserID)
 	}
+	if f.SessionID != "" {
+		q.Where("e.session_id = ?", f.SessionID)
+	}
+	if f.RequestID != "" {
+		q.Where("e.request_id = ?", f.RequestID)
+	}
 	if !f.After.IsZero() {
 		q.Where("e.timestamp >= ?", f.After)
 	}

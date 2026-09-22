@@ -251,6 +251,10 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 			{Keys: bson.D{{Key: "category", Value: 1}, {Key: "timestamp", Value: -1}}},
 			{Keys: bson.D{{Key: "action", Value: 1}, {Key: "outcome", Value: 1}, {Key: "timestamp", Value: -1}}},
 			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "timestamp", Value: -1}}},
+			{
+				Keys:    bson.D{{Key: "session_id", Value: 1}, {Key: "timestamp", Value: -1}},
+				Options: options.Index().SetPartialFilterExpression(bson.M{"session_id": bson.M{"$ne": ""}}),
+			},
 			{Keys: bson.D{{Key: "subject_id", Value: 1}}},
 			{Keys: bson.D{{Key: "severity", Value: 1}, {Key: "timestamp", Value: -1}}},
 			{Keys: bson.D{{Key: "resource", Value: 1}, {Key: "resource_id", Value: 1}, {Key: "timestamp", Value: -1}}},

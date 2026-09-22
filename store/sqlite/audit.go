@@ -413,6 +413,12 @@ func applyEventFilters(q *sqlitedriver.SelectQuery, f *audit.Query) *sqlitedrive
 	if f.UserID != "" {
 		q = q.Where("e.user_id = ?", f.UserID)
 	}
+	if f.SessionID != "" {
+		q = q.Where("e.session_id = ?", f.SessionID)
+	}
+	if f.RequestID != "" {
+		q = q.Where("e.request_id = ?", f.RequestID)
+	}
 	if !f.After.IsZero() {
 		q = q.Where("e.timestamp >= ?", formatTime(f.After))
 	}

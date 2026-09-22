@@ -356,5 +356,29 @@ ALTER TABLE chronicle_events
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_request_correlation_columns",
+			Version: "20260922000001",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE chronicle_events ADD COLUMN IF NOT EXISTS user_agent TEXT NOT NULL DEFAULT '';
+ALTER TABLE chronicle_events ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE chronicle_events ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_chronicle_events_session
+    ON chronicle_events (session_id, timestamp DESC)
+    WHERE session_id != '';
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_chronicle_events_session;
+ALTER TABLE chronicle_events DROP COLUMN IF EXISTS session_id;
+ALTER TABLE chronicle_events DROP COLUMN IF EXISTS request_id;
+ALTER TABLE chronicle_events DROP COLUMN IF EXISTS user_agent;
+`)
+				return err
+			},
+		},
 	)
 }
