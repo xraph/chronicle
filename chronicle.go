@@ -24,6 +24,9 @@ type StreamInfo struct {
 	TenantID string
 	HeadHash string
 	HeadSeq  uint64
+
+	Scheme      string
+	SchemeSince uint64
 }
 
 // Storer is the minimal store interface used by Chronicle to avoid import cycles.
@@ -255,11 +258,14 @@ func (c *Chronicle) resolveStream(ctx context.Context, appID, tenantID string) (
 		return nil, err
 	}
 
-	// Create a new stream.
+	// Create a new stream, pinned from sequence 1, so every event it will ever
+	// hold is covered by the pin and none of them fall into the tolerant window.
 	s = &StreamInfo{
-		ID:       id.NewStreamID(),
-		AppID:    appID,
-		TenantID: tenantID,
+		ID:          id.NewStreamID(),
+		AppID:       appID,
+		TenantID:    tenantID,
+		Scheme:      string(c.hasher.Scheme()),
+		SchemeSince: 1,
 	}
 	if err := c.store.CreateStreamInfo(ctx, s); err != nil {
 		return nil, err

@@ -28,23 +28,27 @@ func (a *Adapter) GetStreamByScope(ctx context.Context, appID, tenantID string) 
 		return nil, err
 	}
 	return &chronicle.StreamInfo{
-		ID:       s.ID,
-		AppID:    s.AppID,
-		TenantID: s.TenantID,
-		HeadHash: s.HeadHash,
-		HeadSeq:  s.HeadSeq,
+		ID:          s.ID,
+		AppID:       s.AppID,
+		TenantID:    s.TenantID,
+		HeadHash:    s.HeadHash,
+		HeadSeq:     s.HeadSeq,
+		Scheme:      s.Scheme,
+		SchemeSince: s.SchemeSince,
 	}, nil
 }
 
 // CreateStreamInfo creates a new stream from StreamInfo.
 func (a *Adapter) CreateStreamInfo(ctx context.Context, info *chronicle.StreamInfo) error {
 	s := &stream.Stream{
-		Entity:   chronicle.NewEntity(),
-		ID:       info.ID,
-		AppID:    info.AppID,
-		TenantID: info.TenantID,
-		HeadHash: info.HeadHash,
-		HeadSeq:  info.HeadSeq,
+		Entity:      chronicle.NewEntity(),
+		ID:          info.ID,
+		AppID:       info.AppID,
+		TenantID:    info.TenantID,
+		HeadHash:    info.HeadHash,
+		HeadSeq:     info.HeadSeq,
+		Scheme:      info.Scheme,
+		SchemeSince: info.SchemeSince,
 	}
 	return a.CreateStream(ctx, s)
 }
