@@ -487,6 +487,7 @@ func TestSealedFieldsSurviveSQLiteRoundTrip(t *testing.T) {
 
 	// The digest must still match what SQLite returned.
 	got.Hash, got.PrevHash = storedHash, storedPrev
+	//nolint:staticcheck // Verify is deprecated in favor of VerifyWithPin; fine for this zero-Pin test chain.
 	if !chain.Verify(storedPrev, got) {
 		t.Fatal("stored digest does not match the event read back from SQLite")
 	}
@@ -513,6 +514,7 @@ func TestSealedFieldsSurviveSQLiteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get after erasure: %v", err)
 	}
+	//nolint:staticcheck // Verify is deprecated in favor of VerifyWithPin; fine for this zero-Pin test chain.
 	if !chain.Verify(storedPrev, reread) {
 		t.Fatal("digest must still verify after the key is destroyed")
 	}

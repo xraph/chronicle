@@ -1,6 +1,7 @@
 package hash_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -24,8 +25,8 @@ func TestComputeDeterministic(t *testing.T) {
 		Metadata:   map[string]any{"key": "value"},
 	}
 
-	h1 := c.Compute("", event)
-	h2 := c.Compute("", event)
+	h1, _, _ := c.Compute(context.Background(), "", event)
+	h2, _, _ := c.Compute(context.Background(), "", event)
 
 	if h1 != h2 {
 		t.Errorf("hashes should be deterministic: %q != %q", h1, h2)
@@ -49,7 +50,7 @@ func TestComputeChainLinkage(t *testing.T) {
 		Outcome:   audit.OutcomeSuccess,
 		Severity:  audit.SeverityInfo,
 	}
-	hash1 := c.Compute("", event1)
+	hash1, _, _ := c.Compute(context.Background(), "", event1)
 
 	event2 := &audit.Event{
 		Timestamp: ts.Add(time.Second),
@@ -59,7 +60,7 @@ func TestComputeChainLinkage(t *testing.T) {
 		Outcome:   audit.OutcomeSuccess,
 		Severity:  audit.SeverityInfo,
 	}
-	hash2 := c.Compute(hash1, event2)
+	hash2, _, _ := c.Compute(context.Background(), hash1, event2)
 
 	event3 := &audit.Event{
 		Timestamp: ts.Add(2 * time.Second),
@@ -69,7 +70,7 @@ func TestComputeChainLinkage(t *testing.T) {
 		Outcome:   audit.OutcomeSuccess,
 		Severity:  audit.SeverityInfo,
 	}
-	hash3 := c.Compute(hash2, event3)
+	hash3, _, _ := c.Compute(context.Background(), hash2, event3)
 
 	// All hashes must be different.
 	if hash1 == hash2 {
@@ -80,7 +81,7 @@ func TestComputeChainLinkage(t *testing.T) {
 	}
 
 	// Hash 3 depends on hash 2 (and transitively on hash 1).
-	hash3Alt := c.Compute("tampered", event3)
+	hash3Alt, _, _ := c.Compute(context.Background(), "tampered", event3)
 	if hash3 == hash3Alt {
 		t.Error("hash3 should differ when prevHash changes")
 	}
@@ -99,8 +100,8 @@ func TestComputeDifferentPrevHash(t *testing.T) {
 		Severity:  audit.SeverityInfo,
 	}
 
-	h1 := c.Compute("abc", event)
-	h2 := c.Compute("def", event)
+	h1, _, _ := c.Compute(context.Background(), "abc", event)
+	h2, _, _ := c.Compute(context.Background(), "def", event)
 
 	if h1 == h2 {
 		t.Error("different prevHash should produce different hashes")
@@ -132,8 +133,8 @@ func TestComputeEmptyMetadata(t *testing.T) {
 	}
 
 	// nil and empty metadata should produce the same hash.
-	h1 := c.Compute("", event1)
-	h2 := c.Compute("", event2)
+	h1, _, _ := c.Compute(context.Background(), "", event1)
+	h2, _, _ := c.Compute(context.Background(), "", event2)
 
 	if h1 != h2 {
 		t.Errorf("nil and empty metadata should produce the same hash: %q != %q", h1, h2)
@@ -165,8 +166,8 @@ func TestComputeMetadataKeyOrder(t *testing.T) {
 		Metadata:  map[string]any{"c": 3, "a": 1, "b": 2},
 	}
 
-	h1 := c.Compute("", event1)
-	h2 := c.Compute("", event2)
+	h1, _, _ := c.Compute(context.Background(), "", event1)
+	h2, _, _ := c.Compute(context.Background(), "", event2)
 
 	if h1 != h2 {
 		t.Errorf("metadata key order should not affect hash: %q != %q", h1, h2)
@@ -224,14 +225,14 @@ func TestComputeCoversEveryAttributableField(t *testing.T) {
 		"Metadata":   func(e *audit.Event) { e.Metadata = map[string]any{"key": "other"} },
 	}
 
-	original := c.Compute("prev", baseEvent())
+	original, _, _ := c.Compute(context.Background(), "prev", baseEvent())
 
 	for field, mutate := range mutations {
 		t.Run(field, func(t *testing.T) {
 			tampered := baseEvent()
 			mutate(tampered)
 
-			if got := c.Compute("prev", tampered); got == original {
+			if got, _, _ := c.Compute(context.Background(), "prev", tampered); got == original {
 				t.Fatalf("rewriting %s did not change the hash, so tampering with it is undetectable", field)
 			}
 		})
@@ -242,7 +243,7 @@ func TestComputeCoversEveryAttributableField(t *testing.T) {
 func TestVerifyAcceptsCurrentHash(t *testing.T) {
 	c := &hash.Chain{}
 	event := baseEvent()
-	event.Hash = c.Compute("prev", event)
+	event.Hash, _, _ = c.Compute(context.Background(), "prev", event)
 
 	if !c.Verify("prev", event) {
 		t.Fatal("Verify rejected a hash it had just computed")
@@ -253,7 +254,7 @@ func TestVerifyAcceptsCurrentHash(t *testing.T) {
 func TestVerifyRejectsTamperedActor(t *testing.T) {
 	c := &hash.Chain{}
 	event := baseEvent()
-	event.Hash = c.Compute("prev", event)
+	event.Hash, _, _ = c.Compute(context.Background(), "prev", event)
 
 	event.UserID = "innocent@corp"
 	event.IP = "10.0.0.1"
@@ -284,7 +285,8 @@ func TestLegacyAndCurrentHashesDiffer(t *testing.T) {
 	c := &hash.Chain{}
 	event := baseEvent()
 
-	if c.Compute("prev", event) == hash.ComputeLegacy("prev", event) {
+	current, _, _ := c.Compute(context.Background(), "prev", event)
+	if current == hash.ComputeLegacy("prev", event) {
 		t.Fatal("current and legacy hashes must differ")
 	}
 }
@@ -296,12 +298,13 @@ func TestLegacyAndCurrentHashesDiffer(t *testing.T) {
 func TestLegacyFallbackDoesNotWeakenCurrentEvents(t *testing.T) {
 	c := &hash.Chain{}
 	event := baseEvent()
-	event.Hash = c.Compute("prev", event) // current scheme
+	event.Hash, _, _ = c.Compute(context.Background(), "prev", event) // current scheme
 
 	event.UserID = "innocent@corp"
 
 	// The tampered event must match neither scheme.
-	if c.Compute("prev", event) == event.Hash {
+	recomputed, _, _ := c.Compute(context.Background(), "prev", event)
+	if recomputed == event.Hash {
 		t.Fatal("current recompute matched after tampering")
 	}
 	if hash.ComputeLegacy("prev", event) == event.Hash {

@@ -63,6 +63,7 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 		// Recompute the hash. Verify accepts the legacy scheme too, so events
 		// written before the hash coverage was extended are not all reported as
 		// tampered after an upgrade.
+		//nolint:staticcheck // Verify is deprecated in favor of VerifyWithPin; this call site is rewired in a later task.
 		if !v.chain.Verify(expectedPrevHash, event) {
 			report.Valid = false
 			report.Tampered = append(report.Tampered, event.Sequence)

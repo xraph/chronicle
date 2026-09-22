@@ -56,6 +56,13 @@ type Event struct {
 	SubjectID       string `json:"subject_id,omitempty"`
 	EncryptionKeyID string `json:"encryption_key_id,omitempty"`
 
+	// Hash scheme provenance. HashScheme names the digest scheme this event was
+	// written under and HashKeyID the key generation, so verification
+	// reproduces what was written rather than what the current config would
+	// write. Both empty means a row written before schemes were recorded.
+	HashScheme string `json:"hash_scheme,omitempty"`
+	HashKeyID  string `json:"hash_key_id,omitempty"`
+
 	// Erasure state (set by retention/GDPR engine, never by caller)
 	Erased    bool       `json:"erased,omitempty"`
 	ErasedAt  *time.Time `json:"erased_at,omitempty"`

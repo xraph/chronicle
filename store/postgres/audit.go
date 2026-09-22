@@ -71,7 +71,13 @@ func (s *Store) Append(ctx context.Context, event *audit.Event) error {
 	// sequence is part of the hashed content, and it is allocated above, so the
 	// hash has to be computed after it is known.
 	event.PrevHash = headHash
-	event.Hash = hasher.Compute(event.PrevHash, event)
+	digest, keyID, hErr := hasher.Compute(ctx, event.PrevHash, event)
+	if hErr != nil {
+		return fmt.Errorf("compute hash for event %s: %w", event.ID, hErr)
+	}
+	event.Hash = digest
+	event.HashScheme = string(hasher.Scheme())
+	event.HashKeyID = keyID
 
 	m := fromEvent(event)
 	if _, err := tx.NewInsert(m).Exec(ctx); err != nil {

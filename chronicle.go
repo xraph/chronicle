@@ -206,7 +206,13 @@ func (c *Chronicle) Record(ctx context.Context, event *audit.Event) error {
 	event.StreamID = s.ID
 	event.Sequence = s.HeadSeq + 1
 	event.PrevHash = s.HeadHash
-	event.Hash = c.hasher.Compute(event.PrevHash, event)
+	digest, keyID, hErr := c.hasher.Compute(ctx, event.PrevHash, event)
+	if hErr != nil {
+		return fmt.Errorf("chronicle: compute hash: %w", hErr)
+	}
+	event.Hash = digest
+	event.HashScheme = string(c.hasher.Scheme())
+	event.HashKeyID = keyID
 
 	// 6. Persist to store.
 	if err := c.store.Append(ctx, event); err != nil {
@@ -277,6 +283,7 @@ func (c *Chronicle) VerifyEvent(ctx context.Context, eventID id.ID) (bool, error
 
 	// Verify accepts the legacy hash scheme too, so events written before the
 	// hash coverage was extended are not all reported as tampered.
+	//nolint:staticcheck // Verify is deprecated in favor of VerifyWithPin; this call site is rewired in a later task.
 	return c.hasher.Verify(event.PrevHash, event), nil
 }
 

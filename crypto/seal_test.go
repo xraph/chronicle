@@ -1,6 +1,7 @@
 package crypto_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -146,13 +147,14 @@ func TestChainStillVerifiesAfterKeyDestruction(t *testing.T) {
 	}
 
 	// Hash is computed after sealing, exactly as Chronicle.Record does.
-	event.Hash = chain.Compute("prev", event)
+	event.Hash, _, _ = chain.Compute(context.Background(), "prev", event)
 
 	if err := keys.Delete(event.SubjectID); err != nil {
 		t.Fatalf("Delete key: %v", err)
 	}
 
 	// A verifier reads the stored form, which is unchanged by key destruction.
+	//nolint:staticcheck // Verify is deprecated in favor of VerifyWithPin; fine for this zero-Pin test chain.
 	if !chain.Verify("prev", event) {
 		t.Fatal("chain verification failed after key destruction; " +
 			"the digest must cover the sealed bytes, not the plaintext")
@@ -169,12 +171,13 @@ func TestOpenedEventDoesNotVerify(t *testing.T) {
 	if err := sealer.Seal(event); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	event.Hash = chain.Compute("prev", event)
+	event.Hash, _, _ = chain.Compute(context.Background(), "prev", event)
 
 	if err := sealer.Open(event); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 
+	//nolint:staticcheck // Verify is deprecated in favor of VerifyWithPin; fine for this zero-Pin test chain.
 	if chain.Verify("prev", event) {
 		t.Fatal("an opened event should not match its stored digest; " +
 			"if it did, the digest would be covering plaintext")
