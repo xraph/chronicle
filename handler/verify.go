@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/verify"
 )
 
@@ -61,9 +62,10 @@ func (a *API) verifyChain(ctx forge.Context, req *VerifyChainRequest) (*verify.R
 		StreamID: streamID,
 		FromSeq:  req.FromSeq,
 		ToSeq:    req.ToSeq,
+		Pin:      hash.Pin{Scheme: hash.Scheme(st.Scheme), Since: st.SchemeSince},
 	}
 
-	verifier := verify.NewVerifier(a.deps.VerifyStore)
+	verifier := verify.NewVerifierWithChain(a.deps.VerifyStore, a.deps.HashChain)
 	report, err := verifier.VerifyChain(c, input)
 	if err != nil {
 		a.deps.Logger.Error("failed to verify chain", log.String("stream_id", req.StreamID), log.Error(err))

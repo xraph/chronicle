@@ -1,6 +1,7 @@
 package dashboard_test
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -11,10 +12,12 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/compliance"
 	chronicledash "github.com/xraph/chronicle/dashboard"
+	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store/memory"
+	"github.com/xraph/chronicle/stream"
 )
 
 const (
@@ -305,5 +308,81 @@ func TestDashboardReadsStillWorkWithMutationsDisabled(t *testing.T) {
 				t.Fatalf("RenderPage(%s): %v", route, err)
 			}
 		})
+	}
+}
+
+// TestRenderVerificationDetectsSchemeDowngrade pins that the dashboard's
+// verify page, like POST /v1/verify, actually uses the stream's pin.
+//
+// The event below carries a correct chronicle/v2 digest (computed with the
+// same plain chain the page recomputes under) for a stream pinned to
+// chronicle/v3 from sequence 1. Recomputing the digest alone says it matches:
+// only cross-checking the claimed scheme against the stream's pin exposes
+// that it was written under a weaker algorithm than the stream promises,
+// which is what hash/chain.go's VerifyWithPin calls a downgrade rather than
+// an ordinary tamper. Without the pin wired in, the page reports "Valid";
+// with it, "Tampered" (see dashboard/pages/verify_templ.go's boolToStatus,
+// which has no separate word for a downgrade).
+func TestRenderVerificationDetectsSchemeDowngrade(t *testing.T) {
+	ds := newDashSetup(t, false)
+	ctx := viewerCtx()
+
+	st := &stream.Stream{
+		ID:          id.NewStreamID(),
+		AppID:       viewerApp,
+		TenantID:    viewerTenant,
+		Scheme:      "chronicle/v3",
+		SchemeSince: 1,
+	}
+	if err := ds.store.CreateStream(context.Background(), st); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	event := &audit.Event{
+		ID:        id.NewAuditID(),
+		StreamID:  st.ID,
+		Sequence:  1,
+		Timestamp: time.Now().UTC(),
+		AppID:     viewerApp,
+		TenantID:  viewerTenant,
+		Action:    "login",
+		Resource:  "session",
+		Category:  "auth",
+	}
+
+	plain, err := hash.NewChain(hash.SchemePlain, nil)
+	if err != nil {
+		t.Fatalf("NewChain: %v", err)
+	}
+	digest, _, err := plain.Compute(context.Background(), "", event)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	event.Hash = digest
+	event.HashScheme = string(hash.SchemePlain)
+
+	if appendErr := ds.store.Append(context.Background(), event); appendErr != nil {
+		t.Fatalf("append: %v", appendErr)
+	}
+
+	component, err := ds.contributor.RenderPage(ctx, "/verify", contributor.Params{
+		FormData: map[string]string{
+			"action":    "verify",
+			"stream_id": st.ID.String(),
+			"from_seq":  "1",
+			"to_seq":    "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RenderPage: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := component.Render(ctx, &buf); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	if !bytes.Contains(buf.Bytes(), []byte("Tampered")) {
+		t.Fatalf("rendered page does not report Tampered; the stream is pinned to chronicle/v3 but event 1's real digest was computed under chronicle/v2, so a pin-aware verifier must flag it as a downgrade. Output:\n%s", buf.String())
 	}
 }

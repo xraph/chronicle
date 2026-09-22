@@ -16,6 +16,7 @@ import (
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/dashboard/pages"
 	"github.com/xraph/chronicle/dashboard/widgets"
+	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/store"
@@ -44,6 +45,12 @@ type Config struct {
 	// asserts that the dashboard route is already protected. Enforcement here
 	// purges audit events, so the default has to be the safe one.
 	AllowMutations bool
+
+	// HashChain is the chain the verify page recomputes digests under. A nil
+	// value defaults to a zero-value, unkeyed chain in [New] -- fine for a
+	// plain deployment, but an HMAC one needs its keyed chain here or the
+	// verify page cannot check anything at all.
+	HashChain *hash.Chain
 }
 
 // Contributor implements the dashboard LocalContributor interface for the
@@ -59,6 +66,9 @@ type Contributor struct {
 
 // New creates a new chronicle dashboard contributor.
 func New(manifest *contributor.Manifest, s store.Store, engine *compliance.Engine, enforcer *retention.Enforcer, config Config) *Contributor {
+	if config.HashChain == nil {
+		config.HashChain = &hash.Chain{}
+	}
 	return &Contributor{
 		manifest: manifest,
 		store:    s,
@@ -254,11 +264,12 @@ func (c *Contributor) renderVerification(ctx context.Context, params contributor
 			return pages.VerifyPage(data), nil
 		}
 
-		verifier := verify.NewVerifier(c.store)
+		verifier := verify.NewVerifierWithChain(c.store, c.config.HashChain)
 		report, err := verifier.VerifyChain(ctx, &verify.Input{
 			StreamID: streamID,
 			FromSeq:  fromSeq,
 			ToSeq:    toSeq,
+			Pin:      hash.Pin{Scheme: hash.Scheme(st.Scheme), Since: st.SchemeSince},
 		})
 		if err != nil {
 			data.Error = fmt.Sprintf("Verification failed: %v", err)

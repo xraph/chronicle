@@ -13,6 +13,7 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
+	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/stream"
 	"github.com/xraph/chronicle/verify"
@@ -42,6 +43,13 @@ type Dependencies struct {
 	Retention      *retention.Enforcer
 	Logger         log.Logger
 
+	// HashChain is the chain verification recomputes digests under. A
+	// nil value here defaults to a zero-value, unkeyed chain, which is what
+	// every deployment gets unless tamper_evidence.digest is "hmac". An HMAC
+	// deployment that forgets to set this cannot verify anything at all, so
+	// callers that have a keyed chain in hand should always pass it.
+	HashChain *hash.Chain
+
 	// Guards authenticate and authorise callers per operation class.
 	//
 	// A zero value leaves every route open to any caller that carries an app
@@ -62,6 +70,9 @@ type API struct {
 func New(deps Dependencies, router forge.Router) *API {
 	if deps.Logger == nil {
 		deps.Logger = log.NewNoopLogger()
+	}
+	if deps.HashChain == nil {
+		deps.HashChain = &hash.Chain{}
 	}
 	return &API{
 		deps:   deps,

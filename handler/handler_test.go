@@ -22,6 +22,7 @@ import (
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store/memory"
 	"github.com/xraph/chronicle/stream"
+	"github.com/xraph/chronicle/verify"
 )
 
 const (
@@ -754,5 +755,65 @@ func TestVerifyChainAcceptsOwnStream(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestVerifyChainDetectsSchemeDowngrade pins that POST /v1/verify actually
+// uses the stream's pin. A pin the handler never builds cannot expose a
+// downgrade: hash.Chain.VerifyWithPin only flags one when the event's
+// sequence is at or above pin.Since, and a zero-value Pin has Since 0 and
+// Scheme "", which disables the check entirely (see hash/chain.go).
+//
+// The event below claims the weaker chronicle/v2 scheme while its stream is
+// pinned to chronicle/v3 from sequence 1 -- exactly what an attacker gets by
+// relabeling a tampered event and recomputing under the weaker algorithm.
+func TestVerifyChainDetectsSchemeDowngrade(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := context.Background()
+
+	st := &stream.Stream{
+		ID:          id.NewStreamID(),
+		AppID:       testAppID,
+		TenantID:    testTenantID,
+		Scheme:      "chronicle/v3",
+		SchemeSince: 1,
+	}
+	if err := ts.store.CreateStream(ctx, st); err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	// Append bypasses Chronicle, so nothing here recomputes the digest; this
+	// stands in for an event an attacker already downgraded and relabeled.
+	if err := ts.store.Append(ctx, &audit.Event{
+		ID:         id.NewAuditID(),
+		StreamID:   st.ID,
+		Sequence:   1,
+		Timestamp:  time.Now().UTC(),
+		AppID:      testAppID,
+		TenantID:   testTenantID,
+		Action:     "login",
+		Resource:   "session",
+		Category:   "auth",
+		HashScheme: "chronicle/v2",
+		Hash:       "does-not-matter-for-downgrade-detection",
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	rec := ts.do(t, http.MethodPost, "/v1/verify", map[string]any{
+		"stream_id": st.ID.String(),
+		"from_seq":  1,
+		"to_seq":    1,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	var report verify.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if len(report.Downgrades) != 1 || report.Downgrades[0] != 1 {
+		t.Fatalf("Downgrades = %v, want [1]; stream pinned to chronicle/v3 but event 1 claims chronicle/v2", report.Downgrades)
 	}
 }
