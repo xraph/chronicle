@@ -638,8 +638,9 @@ func (e *Extension) checkpointAllStreams(ctx context.Context) {
 // or Checkpoints.EveryEvents since its last checkpoint, resolving that
 // checkpoint (if any) from e.store and deferring the actual decision to
 // checkpointDue, a pure function kept separate so the trigger logic can be
-// reasoned about (and, from within this package, tested) without a live
-// store or a running scheduler.
+// reasoned about, and tested, without a live store or a running scheduler.
+// Both are covered directly by checkpoint_due_test.go, the one test file in
+// this package that is package extension rather than extension_test.
 func (e *Extension) streamCheckpointDue(ctx context.Context, st *stream.Stream) (bool, error) {
 	latest, err := e.store.LatestCheckpoint(ctx, st.ID)
 	switch {
@@ -665,6 +666,11 @@ func (e *Extension) streamCheckpointDue(ctx context.Context, st *stream.Stream) 
 //   - Otherwise due when either EveryInterval has elapsed since the last
 //     checkpoint's CreatedAt, or the stream has gained at least EveryEvents
 //     sequences since the last checkpoint's ToSeq.
+//
+// The interval branch is the one the dual trigger exists for. A quiet stream
+// that never reaches EveryEvents would otherwise sit unprotected
+// indefinitely, since the window between two checkpoints is exactly the span
+// an attacker can still rewrite.
 func checkpointDue(now time.Time, hasCheckpoint bool, lastCreatedAt time.Time, lastToSeq, headSeq uint64, cfg CheckpointConfig) bool {
 	if !hasCheckpoint {
 		return true
