@@ -10,6 +10,7 @@ import (
 	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/keys"
@@ -463,8 +464,31 @@ func (c *Chronicle) VerifyChain(ctx context.Context, input *verify.Input) (*veri
 		}
 	}
 
-	verifier := verify.NewVerifierWithChain(c.store, c.hasher)
+	verifier := c.newVerifier()
 	return verifier.VerifyChain(ctx, input)
+}
+
+// newVerifier builds a Verifier that also checks signed checkpoints when
+// Chronicle has both a store that can hold them and a key provider to check
+// their signatures under, and falls back to plain chain verification when it
+// does not -- which is every deployment today, since nothing yet configures
+// checkpoints.
+//
+// The store is the same Storer c.store already is: every real backend also
+// implements checkpoint.Store, so this passes c.store through as-is rather
+// than wiring a second store. The signer is built from c.keys, the same
+// provider HMAC digests already resolve from, under keys.UseCheckpointSig --
+// the key use Axis 1 declared for exactly this. A store that technically
+// satisfies the interface but refuses every call (redis, which is
+// deliberately unsupported) is handled inside verify.Verifier itself, not
+// here: it treats checkpoint.ErrUnsupported as "no checkpoints", not a
+// verification failure.
+func (c *Chronicle) newVerifier() *verify.Verifier {
+	cps, ok := c.store.(checkpoint.Store)
+	if !ok || c.keys == nil {
+		return verify.NewVerifierWithChain(c.store, c.hasher)
+	}
+	return verify.NewVerifierWithCheckpoints(c.store, c.hasher, cps, checkpoint.NewEd25519Signer(c.keys))
 }
 
 // Info creates an EventBuilder for an info-severity event.

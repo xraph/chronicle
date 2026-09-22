@@ -113,6 +113,30 @@ type Report struct {
 
 	// Coverage grades assurance by span. Read it rather than Valid alone.
 	Coverage []Coverage `json:"coverage,omitempty"`
+
+	// Checkpoints is what each covering checkpoint asserted and whether it held.
+	Checkpoints []CheckpointResult `json:"checkpoints,omitempty"`
+}
+
+// CheckpointResult is what one covering checkpoint asserted and whether it holds.
+type CheckpointResult struct {
+	ID      string `json:"id"`
+	FromSeq uint64 `json:"from_seq"`
+	ToSeq   uint64 `json:"to_seq"`
+
+	// SignatureValid is whether the stored payload verifies under the key that
+	// signed it. False means the checkpoint was edited after signing.
+	SignatureValid bool `json:"signature_valid"`
+
+	// HashMatch is whether the event now at ToSeq still hashes to the recorded
+	// ToHash. False means the chain was rewritten after this checkpoint.
+	HashMatch bool `json:"hash_match"`
+
+	// ContinuityOK is whether this checkpoint follows the previous one without
+	// a gap. False means a checkpoint was removed.
+	ContinuityOK bool `json:"continuity_ok"`
+
+	Note string `json:"note,omitempty"`
 }
 
 // gradeCoverage grades assurance across the verified span.
