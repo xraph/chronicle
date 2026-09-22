@@ -144,3 +144,94 @@ func TestFileProviderRejectsDuplicateKeyID(t *testing.T) {
 		t.Fatal("NewFileProvider accepted a duplicate key ID across uses, want an error")
 	}
 }
+
+// TestRetiredKeyStillResolves is the half of the contract that makes ordinary
+// rotation safe: the old key stops signing, and everything it already signed
+// stays verifiable.
+func TestRetiredKeyStillResolves(t *testing.T) {
+	retired := make([]byte, 32)
+	retired[0] = 1
+	active := make([]byte, 32)
+	active[0] = 2
+
+	path := writeKeyset(t, []map[string]any{
+		{"id": "hmac-new", "use": "hmac", "active": true, "material": b64(active)},
+		{"id": "hmac-old", "use": "hmac", "active": false, "material": b64(retired)},
+	})
+
+	p, err := keys.NewFileProvider(path)
+	if err != nil {
+		t.Fatalf("NewFileProvider: %v", err)
+	}
+
+	got, err := p.ByID(context.Background(), "hmac-old")
+	if err != nil {
+		t.Fatalf("ByID on a retired key = %v; rotation would strand every event it signed", err)
+	}
+	if string(got) != string(retired) {
+		t.Error("ByID returned the wrong material for the retired key")
+	}
+
+	_, activeID, err := p.Current(context.Background(), keys.UseHMAC)
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if activeID != "hmac-new" {
+		t.Errorf("Current resolved %q, want hmac-new; the retired key is still signing", activeID)
+	}
+}
+
+// TestRevokedKeyIsRefused is the other half, and the one that makes revocation
+// worth having.
+//
+// Retiring a leaked key does nothing to an attacker who holds it: they rewrite
+// every event, relabel hash_key_id back to the leaked key, recompute, and the
+// digests genuinely check out. Refusing the key at resolution is what turns
+// that into an error instead of a pass.
+func TestRevokedKeyIsRefused(t *testing.T) {
+	leaked := make([]byte, 32)
+	leaked[0] = 1
+	active := make([]byte, 32)
+	active[0] = 2
+
+	path := writeKeyset(t, []map[string]any{
+		{"id": "hmac-new", "use": "hmac", "active": true, "material": b64(active)},
+		{"id": "hmac-leaked", "use": "hmac", "active": false, "revoked": true, "material": b64(leaked)},
+	})
+
+	p, err := keys.NewFileProvider(path)
+	if err != nil {
+		t.Fatalf("NewFileProvider: %v", err)
+	}
+
+	_, err = p.ByID(context.Background(), "hmac-leaked")
+	if err == nil {
+		t.Fatal("ByID resolved a revoked key; anything signed with it still verifies clean")
+	}
+	if !errors.Is(err, keys.ErrKeyRevoked) {
+		t.Fatalf("ByID error = %v, want ErrKeyRevoked", err)
+	}
+	// Distinct from "we have never heard of this key", which points at a
+	// truncated keyset rather than a compromise.
+	if errors.Is(err, keys.ErrKeyNotFound) {
+		t.Error("a revoked key reported as not-found; the two need telling apart in an audit report")
+	}
+
+	// Revoking one key does not disturb the rest of the keyset.
+	if _, err := p.ByID(context.Background(), "hmac-new"); err != nil {
+		t.Errorf("ByID on the active key = %v", err)
+	}
+}
+
+// A key cannot both sign new events and be declared worthless. Accepting that
+// combination would write digests that fail verification the moment they land.
+func TestActiveAndRevokedIsRejectedAtLoad(t *testing.T) {
+	material := make([]byte, 32)
+	path := writeKeyset(t, []map[string]any{
+		{"id": "hmac-1", "use": "hmac", "active": true, "revoked": true, "material": b64(material)},
+	})
+
+	if _, err := keys.NewFileProvider(path); err == nil {
+		t.Fatal("a key marked both active and revoked loaded clean")
+	}
+}
