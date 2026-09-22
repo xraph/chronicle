@@ -131,160 +131,200 @@ func TestDeletingAMiddleCheckpointIsDetected(t *testing.T) {
 	}
 }
 
-// TestTruncationBeyondTheLastCheckpointIsNotDetected names the boundary a
-// local checkpoint cannot cover.
+// truncatedChain is the state the two truncation tests below share: a
+// fifteen-event chain with three checkpoints over it, its tail deleted, and
+// its head row rewritten to hide that.
+type truncatedChain struct {
+	verifier *verify.Verifier
+	streamID id.ID
+
+	// claimedHeadSeq/Hash are the head the attacker left in the stream row.
+	claimedHeadSeq  uint64
+	claimedHeadHash string
+
+	// honestHeadSeq/Hash are the head as it stood before the attack, which
+	// is what an external anchor would have preserved.
+	honestHeadSeq  uint64
+	honestHeadHash string
+}
+
+// verifyAt runs a full genesis-to-head verification against the head given.
+func (tc truncatedChain) verifyAt(t *testing.T, headSeq uint64, headHash string) *verify.Report {
+	t.Helper()
+
+	report, err := tc.verifier.VerifyChain(context.Background(), &verify.Input{
+		StreamID: tc.streamID, FromSeq: 1, HeadSeq: headSeq, HeadHash: headHash,
+		Pin: hash.Pin{Scheme: hash.SchemePlain, Since: 1},
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if report.Partial {
+		t.Fatalf("this was meant to be a full genesis-to-head check, not a bounded one, or the result "+
+			"below would mean something different: %+v", report)
+	}
+	return report
+}
+
+// truncateTailBeyondTheLastCheckpoint builds a fifteen-event chain with
+// checkpoints over 1-5, 6-10 and 11-15, then deletes every event after ten
+// and rewrites the stream's head so the truncation reads as a stream that
+// simply never grew past ten.
 //
-// What actually defeats detection is not that the checkpoint gets deleted.
-// verifyCheckpoints (verify/verifier.go) only ever asks the checkpoint store
-// for CheckpointsInRange(fromSeq, toSeq), where toSeq resolves from the head
-// the caller claims. Every backend's CheckpointsInRange excludes a checkpoint
-// whose FromSeq exceeds that toSeq -- see the identical `cp.FromSeq > toSeq`
-// guard in store/memory and store/sqlite -- so once an attacker rewrites the
-// stream's head down to hide a truncated tail, a checkpoint covering the
-// truncated range is never fetched, whether its row still exists or was
-// deleted along with everything else. The two subtests below prove that
-// directly: deleting the covering checkpoint and leaving it untouched in the
-// checkpoint table produce the identical non-result, which is the evidence
-// that the row's survival was never the deciding factor. (An earlier version
-// of this test and this comment attributed the gap to the deletion; a review
-// caught that the deletion at the time was not load-bearing. It is kept only
-// as one of the two variants now, not as the cause.)
+// deleteCheckpoint decides whether the checkpoint covering the deleted range
+// goes with them, and that is the entire difference between a truncation
+// Chronicle can prove and one it still cannot. Neither variant is caught by
+// anything inside the verified range: verification only asks the checkpoint
+// store for what overlaps [fromSeq, toSeq], and toSeq comes from the head
+// the attacker just rewrote, so a checkpoint covering 11-15 is excluded
+// before its signature is looked at either way.
+func truncateTailBeyondTheLastCheckpoint(t *testing.T, deleteCheckpoint bool) truncatedChain {
+	t.Helper()
+	ctx := context.Background()
+
+	c, events, streamID := seedChain(t, hash.SchemePlain, nil)
+
+	signer := newCheckpointSigner(t)
+	cps := &mutableCheckpointStore{}
+	checkpointer := checkpoint.NewCheckpointer(cps, signer, nil)
+
+	takeCheckpoint(t, c, checkpointer, events) // 1-5
+	recordFiveMore(t, c, events)
+	takeCheckpoint(t, c, checkpointer, events) // 6-10
+	recordFiveMore(t, c, events)
+	latest := takeCheckpoint(t, c, checkpointer, events) // 11-15
+
+	all, err := c.Store().EventRange(ctx, streamID, 1, 15)
+	if err != nil {
+		t.Fatalf("EventRange: %v", err)
+	}
+	if len(all) != 15 {
+		t.Fatalf("got %d events, want 15", len(all))
+	}
+
+	if deleteCheckpoint {
+		cps.deleteToSeq(latest.ToSeq)
+	}
+	purger, ok := c.Store().(eventPurger)
+	if !ok {
+		t.Fatalf("store %T cannot purge events for a truncation", c.Store())
+	}
+	truncated := make([]id.ID, 0, len(all)-10)
+	for _, e := range all[10:] {
+		truncated = append(truncated, e.ID)
+	}
+	if _, purgeErr := purger.PurgeEvents(ctx, truncated); purgeErr != nil {
+		t.Fatalf("PurgeEvents: %v", purgeErr)
+	}
+	if headErr := c.Store().UpdateStreamHead(ctx, streamID, all[9].Hash, all[9].Sequence); headErr != nil {
+		t.Fatalf("UpdateStreamHead: %v", headErr)
+	}
+
+	// The stream head row is no safeguard, because the same attacker who
+	// rewrites events rewrites it too. Read it back through the same
+	// streamReader path TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints
+	// uses rather than trusting UpdateStreamHead's nil error.
+	reader, ok := c.Store().(streamReader)
+	if !ok {
+		t.Fatalf("store %T cannot read the stream row directly", c.Store())
+	}
+	st, err := reader.GetStream(ctx, streamID)
+	if err != nil {
+		t.Fatalf("GetStream: %v", err)
+	}
+	if st.HeadSeq != 10 || st.HeadHash != all[9].Hash {
+		t.Fatalf("stream head row = (seq %d, hash %q), want (10, %q): the rewrite did not take, "+
+			"so this test would not be exercising the attack it claims to", st.HeadSeq, st.HeadHash, all[9].Hash)
+	}
+
+	return truncatedChain{
+		verifier:        verify.NewVerifierWithCheckpoints(c.Store(), &hash.Chain{}, cps, signer),
+		streamID:        streamID,
+		claimedHeadSeq:  all[9].Sequence,
+		claimedHeadHash: all[9].Hash,
+		honestHeadSeq:   all[14].Sequence,
+		honestHeadHash:  all[14].Hash,
+	}
+}
+
+// TestTruncationIsDetectedWhileTheCheckpointSurvives is the closable half of
+// what used to be one flat "not detected" test.
+//
+// Nothing inside the range the attacker left behind looks wrong: sequences 1
+// to 10 are all present, every digest recomputes, the chain links, and the
+// head row agrees with the tail. The checkpoint covering 11-15 is never
+// fetched either, because it starts past the claimed head. What catches the
+// truncation is the stream's latest checkpoint, read directly rather than by
+// range: it asserts, under a signature, that this chain once reached
+// sequence 15, and the caller is claiming 10.
+func TestTruncationIsDetectedWhileTheCheckpointSurvives(t *testing.T) {
+	tc := truncateTailBeyondTheLastCheckpoint(t, false)
+
+	report := tc.verifyAt(t, tc.claimedHeadSeq, tc.claimedHeadHash)
+	if report.Valid {
+		t.Fatalf("a truncated tail with its covering checkpoint still in the table verified as Valid: %+v", report)
+	}
+	if !report.CheckpointHeadChecked {
+		t.Fatalf("the latest checkpoint was never compared against the claimed head, so the verdict "+
+			"rests on something else: %+v", report)
+	}
+	if report.CheckpointHeadOK {
+		t.Errorf("CheckpointHeadOK is true while a checkpoint asserts the chain reached 15 and the "+
+			"caller claims 10: %+v", report)
+	}
+
+	// Everything else has to look clean, or this test would pass for a
+	// reason that has nothing to do with the checkpoint.
+	if len(report.Gaps) != 0 || len(report.Tampered) != 0 || len(report.Downgrades) != 0 {
+		t.Errorf("the surviving range itself reported problems (gaps=%v tampered=%v downgrades=%v); "+
+			"the truncation is meant to be invisible inside it", report.Gaps, report.Tampered, report.Downgrades)
+	}
+	if !report.HeadChecked || !report.HeadMatch {
+		t.Errorf("head anchoring flagged the truncation (checked=%v match=%v); the attacker moved the "+
+			"head row precisely so it would not", report.HeadChecked, report.HeadMatch)
+	}
+}
+
+// TestTruncationBeyondADeletedCheckpointIsNotDetected names the boundary a
+// local checkpoint still cannot cover.
+//
+// Delete the covering checkpoint along with the events and there is nothing
+// left to compare the claimed head against: the newest surviving checkpoint
+// ends at ten, which is exactly what the rewritten head row says. The
+// comparison runs, agrees, and is right to, given what it can see.
 //
 // TestDeletingAMiddleCheckpointIsDetected shows deleting one checkpoint out
 // of several IS caught, by the continuity chain the survivors still carry.
-// That relies on a checkpoint on either side of the hole both falling inside
-// the verified range. There is no checkpoint after the last one, by
-// definition, so nothing past a rewritten head can ever supply that
-// continuity check, checkpoint present or not.
+// That relies on a checkpoint on either side of the hole falling inside the
+// verified range, and there is no checkpoint after the last one by
+// definition.
 //
-// This also names a real, closable half of the gap rather than one flat
-// "not detected": a check that compared LatestCheckpoint's ToSeq against the
-// claimed head would catch the checkpoint-survives variant today, with a
-// store method every backend already implements. Nothing in VerifyChain runs
-// that comparison yet. The checkpoint-deleted variant needs more even than
-// that: comparing against a checkpoint only helps while the checkpoint row is
-// still there to compare against, so closing that half needs a signature
-// held somewhere write access to Chronicle's own database cannot reach.
-// External anchoring is what closes it, and it is still the next piece of
-// work.
-func TestTruncationBeyondTheLastCheckpointIsNotDetected(t *testing.T) {
-	for _, tc := range []struct {
-		name             string
-		deleteCheckpoint bool
-	}{
-		{name: "checkpoint deleted", deleteCheckpoint: true},
-		{name: "checkpoint survives", deleteCheckpoint: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			c, events, streamID := seedChain(t, hash.SchemePlain, nil)
+// Closing this needs a signature held somewhere write access to Chronicle's
+// own database cannot reach. External anchoring is what does that, and it is
+// the next piece of work.
+func TestTruncationBeyondADeletedCheckpointIsNotDetected(t *testing.T) {
+	tc := truncateTailBeyondTheLastCheckpoint(t, true)
 
-			signer := newCheckpointSigner(t)
-			cps := &mutableCheckpointStore{}
-			checkpointer := checkpoint.NewCheckpointer(cps, signer, nil)
+	report := tc.verifyAt(t, tc.claimedHeadSeq, tc.claimedHeadHash)
+	if !report.Valid {
+		t.Fatalf("truncation past a deleted checkpoint was reported invalid; if that is now genuinely "+
+			"detected, update this test, the companion note on "+
+			"TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints, and the README -- this test "+
+			"exists to document a real, still-open gap, not to pin a broken fixture. Full report: %+v", report)
+	}
+	if report.CheckpointHeadChecked && !report.CheckpointHeadOK {
+		t.Fatalf("the head comparison reported a break while the checkpoint that could prove one was "+
+			"deleted: %+v", report)
+	}
 
-			takeCheckpoint(t, c, checkpointer, events) // 1-5
-			recordFiveMore(t, c, events)
-			takeCheckpoint(t, c, checkpointer, events) // 6-10
-			recordFiveMore(t, c, events)
-			latest := takeCheckpoint(t, c, checkpointer, events) // 11-15
-
-			all, err := c.Store().EventRange(ctx, streamID, 1, 15)
-			if err != nil {
-				t.Fatalf("EventRange: %v", err)
-			}
-			if len(all) != 15 {
-				t.Fatalf("got %d events, want 15", len(all))
-			}
-			// What an external anchor would have preserved: the head as it
-			// stood before the attack. Used below to show the same verifier
-			// call catches the truncation once it is not also trusting the
-			// tampered row for the answer to "how far should this chain go".
-			honestHeadSeq, honestHeadHash := all[14].Sequence, all[14].Hash
-
-			// The attack: delete every event after the checkpoint before the
-			// newest one, and fix up the stream's own head so the truncation
-			// reads as the stream simply never having grown past ten.
-			// Whether the newest checkpoint's own row also gets deleted is
-			// the thing this subtest pair varies: either way it covers
-			// 11-15, past the rewritten head, so CheckpointsInRange(1, 10)
-			// never returns it regardless.
-			if tc.deleteCheckpoint {
-				cps.deleteToSeq(latest.ToSeq)
-			}
-			purger, ok := c.Store().(eventPurger)
-			if !ok {
-				t.Fatalf("persist: store %T cannot purge events for a truncation", c.Store())
-			}
-			truncated := make([]id.ID, 0, len(all)-10)
-			for _, e := range all[10:] {
-				truncated = append(truncated, e.ID)
-			}
-			if _, purgeErr := purger.PurgeEvents(ctx, truncated); purgeErr != nil {
-				t.Fatalf("PurgeEvents: %v", purgeErr)
-			}
-			if headErr := c.Store().UpdateStreamHead(ctx, streamID, all[9].Hash, all[9].Sequence); headErr != nil {
-				t.Fatalf("UpdateStreamHead: %v", headErr)
-			}
-
-			// The doc comment above calls the stream head row "no safeguard"
-			// because the same attacker who rewrites events can rewrite it
-			// too. Prove that by reading it back through the same
-			// streamReader path TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints
-			// uses, rather than only asserting UpdateStreamHead returned no
-			// error.
-			reader, ok := c.Store().(streamReader)
-			if !ok {
-				t.Fatalf("store %T cannot read the stream row directly", c.Store())
-			}
-			st, err := reader.GetStream(ctx, streamID)
-			if err != nil {
-				t.Fatalf("GetStream: %v", err)
-			}
-			if st.HeadSeq != 10 || st.HeadHash != all[9].Hash {
-				t.Fatalf("stream head row = (seq %d, hash %q), want (10, %q): the rewrite did not take, "+
-					"so this test would not be exercising the attack it claims to", st.HeadSeq, st.HeadHash, all[9].Hash)
-			}
-
-			v := verify.NewVerifierWithCheckpoints(c.Store(), &hash.Chain{}, cps, signer)
-			report, err := v.VerifyChain(ctx, &verify.Input{
-				StreamID: streamID, FromSeq: 1, HeadSeq: all[9].Sequence, HeadHash: all[9].Hash,
-				Pin: hash.Pin{Scheme: hash.SchemePlain, Since: 1},
-			})
-			if err != nil {
-				t.Fatalf("VerifyChain: %v", err)
-			}
-			if report.Partial {
-				t.Fatalf("this was meant to be a full genesis-to-head check, not a bounded one, or the "+
-					"non-detection below would be unsurprising for the wrong reason: %+v", report)
-			}
-			if !report.Valid {
-				t.Fatalf("truncation past the last surviving checkpoint (%s) was reported invalid; if "+
-					"that is now genuinely detected, update this test, the companion note on "+
-					"TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints, and the README -- this "+
-					"test exists to document a real, still-open gap, not to pin a broken fixture. Full "+
-					"report: %+v", tc.name, report)
-			}
-
-			// Proof this documents a real limit rather than a fixture that
-			// would report Valid true regardless of what happened: verified
-			// against the head an external anchor would have preserved, the
-			// honest one, not the one now sitting in the tampered stream
-			// row, the same chain, same checkpoints, same verifier call
-			// catches the truncation immediately, in both subtests alike.
-			honest := verify.NewVerifierWithCheckpoints(c.Store(), &hash.Chain{}, cps, signer)
-			honestReport, err := honest.VerifyChain(ctx, &verify.Input{
-				StreamID: streamID, FromSeq: 1, HeadSeq: honestHeadSeq, HeadHash: honestHeadHash,
-				Pin: hash.Pin{Scheme: hash.SchemePlain, Since: 1},
-			})
-			if err != nil {
-				t.Fatalf("VerifyChain (honest head): %v", err)
-			}
-			if honestReport.Valid {
-				t.Fatalf("expected the truncation to be caught once verified against the head an "+
-					"external anchor would have preserved, but it still reported Valid: %+v", honestReport)
-			}
-		})
+	// Proof this documents a real limit rather than a fixture that would
+	// report Valid true regardless: verified against the head an external
+	// anchor would have preserved, the same chain, the same checkpoints and
+	// the same verifier catch the truncation immediately.
+	honest := tc.verifyAt(t, tc.honestHeadSeq, tc.honestHeadHash)
+	if honest.Valid {
+		t.Fatalf("expected the truncation to be caught once verified against the head an external "+
+			"anchor would have preserved, but it still reported Valid: %+v", honest)
 	}
 }
 
@@ -364,10 +404,10 @@ func TestDeletingEveryCheckpointDropsCoverageNotValidity(t *testing.T) {
 //
 // It matches store/memory's behaviour for the methods verification actually
 // uses: AppendCheckpoint's duplicate-ToSeq-or-FromSeq rejection and
-// CheckpointsInRange's overlap-and-exclude filter, which is what verifyCheckpoints (and this
-// suite's proof, in TestTruncationBeyondTheLastCheckpointIsNotDetected, that
-// a checkpoint outside the claimed range is never even asked about) both
-// depend on. It is not a full replica: it does not clone on read the way
+// CheckpointsInRange's overlap-and-exclude filter, which is what
+// verifyCheckpoints (and this suite's proof, in
+// TestTruncationBeyondADeletedCheckpointIsNotDetected, that a checkpoint
+// outside the claimed range is never even asked about) both depend on. It is not a full replica: it does not clone on read the way
 // store/memory does, and GetCheckpoint and ListCheckpoints are simplified
 // stubs, with ListCheckpoints ignoring ListOpts and not sorting newest-first.
 // Neither of those two is called anywhere in this file or by verify.Verifier,
@@ -535,9 +575,9 @@ func takeCheckpoint(
 // recordFiveMore appends five more events to the stream seedChain built,
 // through the same Info(...).Record() path -- not persist's raw-write
 // bypass -- under the scope events[0] already carries. It exists so
-// TestDeletingAMiddleCheckpointIsDetected and
-// TestTruncationBeyondTheLastCheckpointIsNotDetected can grow a chain to
-// fifteen events, three checkpoints' worth, past seedChain's fixed five.
+// TestDeletingAMiddleCheckpointIsDetected and the two truncation tests can
+// grow a chain to fifteen events, three checkpoints' worth, past seedChain's
+// fixed five.
 func recordFiveMore(t *testing.T, c *chronicle.Chronicle, events []*audit.Event) {
 	t.Helper()
 	ctx := context.Background()

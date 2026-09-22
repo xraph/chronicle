@@ -457,35 +457,43 @@ longer show a clean line back to the one before the gap, which is how a
 missing checkpoint gets caught. `TestDeletingAMiddleCheckpointIsDetected`
 pins that.
 
-None of this reaches past the newest checkpoint still standing, and the
-reason is more specific than "a checkpoint can be deleted too." Verification
-only ever asks the checkpoint store for what falls inside the range you're
-checking, and the top of that range comes from the head you claim. A
-checkpoint whose starting sequence sits past that claimed head gets excluded
-before its signature or its hash is looked at, on every backend. So once
-someone rewrites the stream's own head to hide a truncated tail, a checkpoint
-covering the truncated events is never fetched, whether its row still exists
-in `chronicle_checkpoints` or was deleted along with everything else.
-Deleting the checkpoint isn't what defeats detection here. Rewriting the head
-is, and it works whether or not the checkpoint survives it.
-`TestTruncationBeyondTheLastCheckpointIsNotDetected` pins both variants side
-by side.
+The range checks don't reach past the head you claim, and the reason is more
+specific than "a checkpoint can be deleted too." Verification asks the
+checkpoint store for what falls inside the range you're checking, and the top
+of that range comes from the head you claim. A checkpoint whose starting
+sequence sits past that head gets excluded before its signature or its hash
+is looked at, on every backend. Rewrite the stream's own head to hide a
+truncated tail and every checkpoint covering the removed events drops out of
+that comparison, whether its row survives or not.
+
+One check runs outside the range, and it catches exactly that. Chronicle
+reads the stream's latest checkpoint directly, confirms its signature still
+verifies, and compares its `to_seq` against the head you claimed. A
+checkpoint asserting the chain once reached sequence 15, against a claimed
+head of 10, fails the verification: `checkpoint_head_ok` comes back false,
+and `checkpoint_head_checked` tells you the comparison ran rather than
+leaving you to guess. It runs before the range is resolved at all, so
+deleting every event and zeroing the head doesn't get past it either.
+`TestTruncationIsDetectedWhileTheCheckpointSurvives` pins the truncation and
+`TestTotalWipeIsCaughtByTheLatestCheckpoint` pins the wipe.
+
+Retention won't trip it. Purging works from the front of a stream and never
+lowers the head, so a checkpoint ending past the head you claim means events
+left the tail.
 
 Deleting every checkpoint a stream has is milder. Nothing gets tampered
 with, so `Valid` stays true. But no span of the coverage ladder can claim
 `LevelSigned` anymore, because nothing survived to have signed it.
 `TestDeletingEveryCheckpointDropsCoverageNotValidity` pins that too.
 
-That leaves two different problems wearing one name. Comparing the latest
-checkpoint's `ToSeq` against the head you're claiming would catch the case
-where the checkpoint row is still there, using a store method every backend
-already implements. Chronicle doesn't run that comparison today, so don't
-read this section as saying it does. The harder case, where the checkpoint
-row is gone too, needs more than that: a signature held somewhere that write
-access to Chronicle's own database can't reach. External anchoring,
-publishing a checkpoint or just its hash somewhere an attacker with a SQL
-shell can't also edit, is what closes that one, and it's the next piece of
-work.
+What still gets through is deleting the covering checkpoint along with the
+events it covers. The newest surviving checkpoint then ends exactly where the
+rewritten head says it should, the comparison agrees, and it's right to,
+given what's left to compare against. Closing that needs a signature held
+somewhere write access to Chronicle's own database can't reach. External
+anchoring, publishing a checkpoint or just its hash somewhere an attacker
+with a SQL shell can't also edit, is what does it, and it's the next piece of
+work. `TestTruncationBeyondADeletedCheckpointIsNotDetected` pins the gap.
 
 ### Crypto-erasure
 

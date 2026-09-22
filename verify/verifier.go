@@ -82,6 +82,21 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 		(input.ToSeq > 0 && input.HeadSeq == 0)
 	report.HeadSeq = input.HeadSeq
 
+	// Compare the stream's latest checkpoint against the head the caller
+	// claims, before anything else. This has to run ahead of the empty-range
+	// return below, or the case it exists for -- every event deleted and the
+	// head zeroed -- returns Valid true on the way past.
+	if v.checkpoints != nil && v.signer != nil {
+		checked, ok, err := v.checkClaimedHead(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		report.CheckpointHeadChecked, report.CheckpointHeadOK = checked, ok
+		if checked && !ok {
+			report.Valid = false
+		}
+	}
+
 	// Detect gaps in the sequence range.
 	gaps, err := v.store.Gaps(ctx, input.StreamID, fromSeq, toSeq)
 	if err != nil {
@@ -178,11 +193,12 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 	// things have to hold: the signature is genuine, the events still hash to
 	// what it recorded, and it follows its predecessor without a gap.
 	if v.checkpoints != nil && v.signer != nil {
-		results, covered, err := v.verifyCheckpoints(ctx, input, fromSeq, toSeq, events)
+		results, covered, checked, err := v.verifyCheckpoints(ctx, input, fromSeq, toSeq, events)
 		if err != nil {
 			return nil, err
 		}
 		report.Checkpoints = results
+		report.CheckpointsChecked = checked
 		for _, r := range results {
 			// SignatureValid is always determinate: the tamper check and the
 			// signer call between them always resolve one way or the other,
@@ -236,16 +252,18 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 // when it does not have them" contract exists for.
 func (v *Verifier) verifyCheckpoints(
 	ctx context.Context, input *Input, fromSeq, toSeq uint64, events []*audit.Event,
-) ([]CheckpointResult, []Coverage, error) {
+) ([]CheckpointResult, []Coverage, bool, error) {
 	cps, err := v.checkpoints.CheckpointsInRange(ctx, input.StreamID, fromSeq, toSeq)
 	if err != nil {
 		if errors.Is(err, checkpoint.ErrUnsupported) {
-			return nil, nil, nil
+			// The store cannot hold checkpoints, so nothing was checked --
+			// as opposed to checked and found empty.
+			return nil, nil, false, nil
 		}
-		return nil, nil, fmt.Errorf("verify: checkpoints in range: %w", err)
+		return nil, nil, false, fmt.Errorf("verify: checkpoints in range: %w", err)
 	}
 	if len(cps) == 0 {
-		return nil, nil, nil
+		return nil, nil, true, nil
 	}
 
 	bySeq := make(map[uint64]*audit.Event, len(events))
@@ -327,7 +345,62 @@ func (v *Verifier) verifyCheckpoints(
 		prev = cp
 	}
 
-	return results, covered, nil
+	return results, covered, true, nil
+}
+
+// checkClaimedHead asks the one question the in-range checkpoint checks
+// structurally cannot: does a signed checkpoint say this chain once reached
+// further than the head the caller is claiming?
+//
+// Everything else in this file works inside [fromSeq, toSeq], and toSeq
+// resolves from that same claimed head. Rewrite the head down to hide a
+// truncated tail and every checkpoint covering the removed events falls
+// outside the range, so none is ever fetched. Delete the events, zero the
+// head, and verification used to hand back Valid true, Verified 0 while
+// LatestCheckpoint in the same store still said ToSeq 5.
+//
+// Four things about how this compares:
+//
+//   - It runs before the empty-range early return, or a total wipe escapes
+//     on the way past.
+//   - It compares against input.HeadSeq, the head being claimed, and never
+//     against the resolved toSeq. A caller verifying sequences 1 to 5 of a
+//     15-event stream has bounded its own range on purpose and must not be
+//     told the chain is broken for it.
+//   - It reports "checked" separately from "ok", so a caller can tell a
+//     clean comparison from no checkpoint to compare against.
+//   - ErrNotFound and ErrUnsupported are no opinion, not failure. A stream
+//     with no checkpoint and a backend that holds none both verify exactly
+//     as they did before checkpoints existed.
+//
+// Only a checkpoint whose signature still verifies gets to contradict the
+// head. An unverifiable row proves nothing about where the chain stood, and
+// treating one as proof would hand anyone who can insert into
+// chronicle_checkpoints a way to fail every verification of a healthy log
+// forever. A forged row that lands inside the verified range is still
+// reported, by verifyCheckpoints, as the signature failure it is.
+//
+// There is no false positive to trade against here. Retention purges from
+// the front of a stream and never lowers HeadSeq, so latest.ToSeq >
+// input.HeadSeq can only hold if events left the tail.
+func (v *Verifier) checkClaimedHead(ctx context.Context, input *Input) (checked, ok bool, err error) {
+	latest, err := v.checkpoints.LatestCheckpoint(ctx, input.StreamID)
+	switch {
+	case err == nil:
+	case errors.Is(err, checkpoint.ErrNotFound), errors.Is(err, checkpoint.ErrUnsupported):
+		return false, false, nil
+	default:
+		return false, false, fmt.Errorf("verify: latest checkpoint: %w", err)
+	}
+
+	if checkpoint.CanonicalPayload(latest) != latest.SignedPayload {
+		return false, false, nil
+	}
+	if verifyErr := v.signer.Verify(ctx, []byte(latest.SignedPayload), latest.Signature, latest.SignKeyID); verifyErr != nil {
+		return false, false, nil
+	}
+
+	return true, latest.ToSeq <= input.HeadSeq, nil
 }
 
 // upgradeCoverage raises the portion of each existing span that a fully-valid

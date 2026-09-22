@@ -116,6 +116,32 @@ type Report struct {
 
 	// Checkpoints is what each covering checkpoint asserted and whether it held.
 	Checkpoints []CheckpointResult `json:"checkpoints,omitempty"`
+
+	// CheckpointsChecked is whether this verification consulted a checkpoint
+	// store at all. It is false for a verifier built without one, and for a
+	// backend that refuses to hold checkpoints.
+	//
+	// Checkpoints omits itself when empty, so without this an auditor cannot
+	// tell "this stream has no checkpoints" from "nothing looked". Those are
+	// very different answers to give someone asking whether a log can be
+	// trusted.
+	CheckpointsChecked bool `json:"checkpoints_checked"`
+
+	// CheckpointHeadOK is whether the stream's latest checkpoint is
+	// consistent with the head the caller claimed. False means a signed
+	// checkpoint asserts the chain once reached a sequence past that head, so
+	// events have been removed from the tail and the head row moved down to
+	// hide it.
+	//
+	// Read it only when CheckpointHeadChecked is true, for the same reason as
+	// HeadMatch/HeadChecked.
+	CheckpointHeadOK bool `json:"checkpoint_head_ok"`
+
+	// CheckpointHeadChecked is whether that comparison actually ran. It is
+	// false when there is no checkpoint store, no checkpoint for this stream,
+	// or no checkpoint whose signature still verifies -- all of which are
+	// "no opinion", not "consistent".
+	CheckpointHeadChecked bool `json:"checkpoint_head_checked"`
 }
 
 // CheckpointResult is what one covering checkpoint asserted and whether it holds.

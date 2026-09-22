@@ -200,11 +200,14 @@ func TestRotatedKeyStillVerifiesOldEvents(t *testing.T) {
 // though the events and the pin were rewritten together (see
 // checkpoint_tamper_test.go's TestRewriteAfterACheckpointIsProvable), and
 // deleting one checkpoint out of several is itself detectable
-// (TestDeletingAMiddleCheckpointIsDetected). It does not close all of it: the
-// same attacker who can rewrite chronicle_events and chronicle_streams can
-// also delete the checkpoint that would have caught them, or delete every
-// checkpoint a stream has, and VerifyChain alone does not notice either
-// (TestTruncationBeyondTheLastCheckpointIsNotDetected,
+// (TestDeletingAMiddleCheckpointIsDetected). Truncating the tail and moving
+// the head down to hide it is caught too, as long as the covering checkpoint
+// is still in the table for VerifyChain to compare against
+// (TestTruncationIsDetectedWhileTheCheckpointSurvives). It does not close
+// all of it: the same attacker who can rewrite chronicle_events and
+// chronicle_streams can also delete the checkpoint that would have caught
+// them, or delete every checkpoint a stream has, and VerifyChain alone does
+// not notice either (TestTruncationBeyondADeletedCheckpointIsNotDetected,
 // TestDeletingEveryCheckpointDropsCoverageNotValidity). What is left is
 // exactly the "outside the database" evidence this comment already named:
 // external anchoring, still the next piece of work.
