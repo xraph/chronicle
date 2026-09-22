@@ -51,4 +51,21 @@ var (
 		"chronicle: tamper_evidence.digest is hmac but no key source was configured; " +
 			"set tamper_evidence.keys.provider and path, or pass extension.WithKeyProvider",
 	)
+
+	// ErrStoreCannotReceiveHasher is returned when tamper_evidence.digest is
+	// hmac and the store passed to WithStore has no way to be given the
+	// resulting chain after construction.
+	//
+	// WithStore bypasses buildStoreFromGroveDB, which is the only place a
+	// pg/sqlite store otherwise gets WithHasher. Left alone, such a store
+	// keeps re-linking every event under its own default plain chain while
+	// Chronicle writes HMAC digests -- silently, since the writes still
+	// succeed -- which is exactly the downgrade WithHasher exists to close,
+	// reached through a documented, public option.
+	ErrStoreCannotReceiveHasher = errors.New(
+		"chronicle: tamper_evidence.digest is hmac but the store passed to WithStore " +
+			"cannot be given the chain after construction; build it with WithHasher(chain) " +
+			"yourself before calling WithStore, or drop WithStore and let chronicle build " +
+			"the pg/sqlite store with the chain already wired in",
+	)
 )

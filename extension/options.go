@@ -13,6 +13,16 @@ import (
 type Option func(*Extension)
 
 // WithStore provides the composite store for the extension.
+//
+// Bypasses the extension's own store construction (WithGroveDatabase /
+// WithGroveKV / auto-discovery), so under tamper_evidence.digest: hmac,
+// Register needs to give this store the configured chain itself: it does so
+// via an optional SetHasher(*hash.Chain) method, which both pgstore.Store
+// and sqlitestore.Store implement. A store of another type that recomputes
+// digests on write and does not implement that method will fail Register
+// with [ErrStoreCannotReceiveHasher] rather than silently keep writing under
+// its own default plain chain; build it with that backend's own WithHasher
+// option before passing it here if it has one.
 func WithStore(s store.Store) Option {
 	return func(e *Extension) { e.opts.store = s }
 }

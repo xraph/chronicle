@@ -55,6 +55,15 @@ func WithHasher(h *hash.Chain) Option {
 	return func(s *Store) { s.hasher = h }
 }
 
+// SetHasher replaces the chain the store re-links with after construction.
+//
+// This exists for a store built directly (e.g. passed to
+// extension.WithStore) rather than through New with WithHasher: it lets a
+// caller who already holds the Store give it the chain later, which is what
+// lets that path be brought up to the configured digest scheme instead of
+// silently staying on the default plain one.
+func (s *Store) SetHasher(h *hash.Chain) { s.hasher = h }
+
 // New creates a new grove ORM store with the given database connection.
 //
 // Without WithHasher, Append re-links under a zero-value hash.Chain, which is

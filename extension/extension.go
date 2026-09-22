@@ -112,6 +112,13 @@ func (e *Extension) Register(fapp forge.App) error {
 		return err
 	}
 
+	// Captured before store resolution: only a store the operator supplied
+	// directly bypasses buildStoreFromGroveDB (and so never received
+	// WithHasher). A grove-discovered mongo/redis store never gets one
+	// either, but by design -- those backends don't recompute on write -- so
+	// the fixup below must not apply to it.
+	operatorStore := e.opts.store
+
 	// Build the hash chain before the store, not after Chronicle. The SQL
 	// backends re-derive the sequence and prev_hash under a row lock and
 	// therefore recompute the digest themselves; if they were left on a
@@ -155,6 +162,24 @@ func (e *Extension) Register(fapp forge.App) error {
 			e.Logger().Info("chronicle: auto-discovered grove.DB from container",
 				forge.F("driver", db.Driver().Name()),
 			)
+		}
+	}
+
+	// An operator-supplied store bypassed buildStoreFromGroveDB, so under an
+	// HMAC config it is still sitting on whatever hasher it was built with --
+	// its own zero-value plain chain for pgstore/sqlitestore, since WithStore
+	// gives the extension no chance to pass WithHasher at construction. That
+	// store would silently re-link every event under an unkeyed digest while
+	// Chronicle writes HMAC ones, which is exactly the bug WithHasher exists
+	// to close, reachable through this one documented option. If the store
+	// can take the chain after construction, give it the same one the store
+	// and Chronicle below share; if it can't, refuse rather than start a
+	// deployment that believes it is keyed and isn't.
+	if operatorStore != nil && e.config.TamperEvidence.Digest == "hmac" {
+		if hasherStore, ok := e.opts.store.(interface{ SetHasher(*hash.Chain) }); ok {
+			hasherStore.SetHasher(e.hashChain)
+		} else {
+			return ErrStoreCannotReceiveHasher
 		}
 	}
 
@@ -633,7 +658,11 @@ func (e *Extension) buildHashChain() (*hash.Chain, error) {
 		}
 	}
 
-	if e.keyProvider == nil && e.config.TamperEvidence.Keys.Provider == "file" {
+	// Gated on Digest == "hmac" too: without it, a plain (or unset) deployment
+	// that still has a stale tamper_evidence.keys.provider: file block left
+	// over from an earlier config would fail startup trying to read a keyset
+	// nothing is ever going to use.
+	if e.keyProvider == nil && e.config.TamperEvidence.Digest == "hmac" && e.config.TamperEvidence.Keys.Provider == "file" {
 		p, err := keys.NewFileProvider(e.config.TamperEvidence.Keys.Path)
 		if err != nil {
 			return nil, err
