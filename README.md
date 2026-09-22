@@ -399,9 +399,12 @@ rewrite every event to the unkeyed scheme and rewrite the stream's pin to
 match. Verification accepts that, because both halves of the evidence live in
 the same database and whoever controls it controls both.
 `TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints` pins that limit
-too. Closing it needs a signature held somewhere Chronicle cannot reach, which
-is what signed checkpoints and external anchoring are for. That work is
-specified in `specs/2026-09-22-tamper-evidence-design.md` and is not built yet.
+too. Closing it needs a signature held somewhere Chronicle cannot reach.
+Signed checkpoints, covered below, are the first half of that, and they exist
+now. On their own they only get you so far: a local checkpoint still lives in
+the same database as the events, so an attacker with that same write access
+can delete it too. External anchoring is what reaches the rest, and that part
+isn't built yet.
 
 So read keying as narrowing who can carry the attack out, not ending it. It
 defends against someone who can write `chronicle_events` but not
@@ -409,6 +412,66 @@ defends against someone who can write `chronicle_events` but not
 halves have to hold. Reach the stream row too and the pin moves with the events,
 which is the case above. Get hold of a key and every digest recomputes cleanly,
 which is what revoking it is for.
+
+#### Checkpoints
+
+Turn checkpointing on and Chronicle periodically signs a statement about
+where a stream's chain stood. That statement is what makes a later rewrite of
+anything before it provable, even when the events and the stream's pin get
+rewritten together.
+
+```yaml
+chronicle:
+  checkpoints:
+    enabled: true
+    every_events: 1000       # checkpoint once a stream gains this many events
+    every_interval: 1h       # or at least this often, whichever comes first
+    signer:
+      provider: file
+      path: /etc/chronicle/checkpoint-signer.json
+```
+
+Leave `signer.provider` empty and Chronicle takes the signing key from
+whatever `keys.Provider` you already passed to `WithKeyProvider` in code, as
+long as it resolves `UseCheckpointSig`. Give it neither and checkpointing
+refuses to start rather than silently signing nothing.
+
+`every_interval` matters more than `every_events` looks like it should. The
+gap between two checkpoints is exactly how long an attacker can rewrite
+without a signature standing in the way, so a quiet stream that never hits
+the event count still needs the interval to bound that window.
+
+Sign a checkpoint over a range and rewriting any event inside it stops
+passing verification. The checkpoint already asserted, under a key nobody
+but the signer holds, what the chain hashed to at that point, and
+recomputing the row after it's been changed can't reproduce that hash.
+`TestRewriteAfterACheckpointIsProvable` pins this.
+
+Checkpoints chain to each other too, each one carrying the digest of the one
+before it. Delete one from the middle of a run and the next checkpoint can no
+longer show a clean line back to the one before the gap, which is how a
+missing checkpoint gets caught. `TestDeletingAMiddleCheckpointIsDetected`
+pins that.
+
+None of this reaches past the newest checkpoint still standing, and that's
+the real limit to know about. A checkpoint lives in `chronicle_checkpoints`,
+the same database as the events it watches over. Anyone who can rewrite
+events can also delete the checkpoint that would have caught them, or delete
+the newest one along with everything recorded after the checkpoint before
+it, then update the stream's own head to match. Verification has nothing
+left to compare against past where the chain now ends, and no way to know
+that end is a lie. `TestTruncationBeyondTheLastCheckpointIsNotDetected` pins
+that gap.
+
+Deleting every checkpoint a stream has is milder. Nothing gets tampered
+with, so `Valid` stays true. But no span of the coverage ladder can claim
+`LevelSigned` anymore, because nothing survived to have signed it.
+`TestDeletingEveryCheckpointDropsCoverageNotValidity` pins that too.
+
+Closing the truncation gap needs a signature held somewhere that write
+access to Chronicle's own database can't reach: external anchoring,
+publishing a checkpoint, or just its hash, somewhere an attacker with a SQL
+shell can't also edit. That's the next piece of work.
 
 ### Crypto-erasure
 

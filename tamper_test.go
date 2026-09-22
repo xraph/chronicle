@@ -192,6 +192,22 @@ func TestRotatedKeyStillVerifiesOldEvents(t *testing.T) {
 // checkpoint anchored somewhere the attacker's database write access does
 // not reach. That is Axis 2, not this one. This test exists so nobody reads
 // the three tests above it as a stronger guarantee than they make.
+//
+// Axis 2 has since landed, in two parts, and only the first is in this repo
+// yet. A local checkpoint -- signed, but stored in chronicle_checkpoints,
+// the same database as everything else here -- closes part of this gap: if
+// one survives covering the tampered range, the rewrite is provable even
+// though the events and the pin were rewritten together (see
+// checkpoint_tamper_test.go's TestRewriteAfterACheckpointIsProvable), and
+// deleting one checkpoint out of several is itself detectable
+// (TestDeletingAMiddleCheckpointIsDetected). It does not close all of it: the
+// same attacker who can rewrite chronicle_events and chronicle_streams can
+// also delete the checkpoint that would have caught them, or delete every
+// checkpoint a stream has, and VerifyChain alone does not notice either
+// (TestTruncationBeyondTheLastCheckpointIsNotDetected,
+// TestDeletingEveryCheckpointDropsCoverageNotValidity). What is left is
+// exactly the "outside the database" evidence this comment already named:
+// external anchoring, still the next piece of work.
 func TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints(t *testing.T) {
 	ctx := context.Background()
 	key := make([]byte, 32)
