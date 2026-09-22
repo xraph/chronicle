@@ -44,4 +44,11 @@ var (
 			"registered in the container; add the forge auth extension so the " +
 			"provider can be resolved",
 	)
+
+	// ErrKeyProviderRequired is returned when a keyed digest is configured with
+	// no key source.
+	ErrKeyProviderRequired = errors.New(
+		"chronicle: tamper_evidence.digest is hmac but no key source was configured; " +
+			"set tamper_evidence.keys.provider and path, or pass extension.WithKeyProvider",
+	)
 )

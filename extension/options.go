@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/xraph/chronicle/crypto"
+	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/sink"
 	"github.com/xraph/chronicle/store"
 )
@@ -134,6 +135,17 @@ func WithGroveDatabase(name string) Option {
 		e.config.GroveDatabase = name
 		e.useGrove = true
 	}
+}
+
+// WithDigestScheme sets the digest scheme, "plain" or "hmac".
+func WithDigestScheme(scheme string) Option {
+	return func(e *Extension) { e.config.TamperEvidence.Digest = scheme }
+}
+
+// WithKeyProvider supplies key material directly, for deployments resolving
+// keys from a KMS rather than a file.
+func WithKeyProvider(p keys.Provider) Option {
+	return func(e *Extension) { e.keyProvider = p }
 }
 
 // WithGroveKV sets the name of the grove/kv.Store to resolve from the DI container.

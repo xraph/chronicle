@@ -120,3 +120,44 @@ func TestCryptoErasureWithKeyStoreStarts(t *testing.T) {
 		t.Fatal("expected a Chronicle instance")
 	}
 }
+
+func TestTamperEvidenceValidateRejectsHMACWithoutKeys(t *testing.T) {
+	cfg := extension.TamperEvidenceConfig{Digest: "hmac"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted digest: hmac with no key source, want an error")
+	}
+}
+
+func TestTamperEvidenceValidateAcceptsPlain(t *testing.T) {
+	cfg := extension.TamperEvidenceConfig{}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected the default plain config: %v", err)
+	}
+}
+
+func TestTamperEvidenceValidateRejectsUnknownDigest(t *testing.T) {
+	cfg := extension.TamperEvidenceConfig{Digest: "sha1"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted an unknown digest, want an error")
+	}
+}
+
+// TestExtensionAcceptsKeyProviderSuppliedDirectly pins a case
+// TamperEvidenceConfig.Validate cannot see by itself: KeyConfig.Provider's doc
+// comment says empty means "take a keys.Provider from WithKeyProvider", but
+// Validate only inspects the Keys config fields, so on its own it would reject
+// this deployment with ErrKeyProviderRequired even though a real provider is
+// in hand. The extension has to recognize that case at Register rather than
+// force every HMAC deployment through a file-backed keyset.
+func TestExtensionAcceptsKeyProviderSuppliedDirectly(t *testing.T) {
+	ext := extension.New(
+		extension.WithStore(memory.New()),
+		extension.WithUnauthenticatedAPI(),
+		extension.WithDigestScheme("hmac"),
+		extension.WithKeyProvider(stubKeyProvider{key: make([]byte, 32), activeID: "k1"}),
+	)
+
+	if err := ext.Register(forge.New(forge.WithAppName("t"))); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+}

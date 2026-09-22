@@ -27,6 +27,8 @@ import (
 	chronicledash "github.com/xraph/chronicle/dashboard"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/handler"
+	"github.com/xraph/chronicle/hash"
+	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/sink"
 	"github.com/xraph/chronicle/store"
@@ -73,6 +75,17 @@ type Extension struct {
 	useGrove       bool
 	useGroveKV     bool
 
+	// keyProvider supplies key material for a keyed digest scheme. It can be
+	// set directly via [WithKeyProvider], or built from TamperEvidence.Keys
+	// during Register when the config names a "file" provider.
+	keyProvider keys.Provider
+
+	// hashChain is built once, in Register, before the store is constructed.
+	// It is handed to both the SQL store (so Append re-links under the
+	// configured scheme instead of quietly downgrading to plain) and to
+	// Chronicle (via WithDigestScheme/WithKeyProvider). See buildHashChain.
+	hashChain *hash.Chain
+
 	cancel context.CancelFunc
 }
 
@@ -98,6 +111,18 @@ func (e *Extension) Register(fapp forge.App) error {
 	if err := e.loadConfiguration(); err != nil {
 		return err
 	}
+
+	// Build the hash chain before the store, not after Chronicle. The SQL
+	// backends re-derive the sequence and prev_hash under a row lock and
+	// therefore recompute the digest themselves; if they were left on a
+	// default plain chain they would silently overwrite every keyed digest
+	// Chronicle computed. So this has to be resolved (and validated) here,
+	// once, and shared with both consumers below.
+	chain, err := e.buildHashChain()
+	if err != nil {
+		return err
+	}
+	e.hashChain = chain
 
 	// Resolve store from grove DI if configured.
 	// DB takes precedence over KV when both are configured.
@@ -194,6 +219,15 @@ func (e *Extension) init(fapp forge.App) error {
 	if e.config.EnableCryptoErasure {
 		chronicleOpts = append(chronicleOpts, chronicle.WithCryptoErasure(true))
 	}
+	// TamperEvidence was already validated and e.keyProvider resolved by
+	// buildHashChain in Register, before the store was constructed; this just
+	// tells Chronicle the same scheme and provider the store was given.
+	if e.config.TamperEvidence.Digest == "hmac" {
+		chronicleOpts = append(chronicleOpts,
+			chronicle.WithDigestScheme(hash.SchemeHMAC),
+			chronicle.WithKeyProvider(e.keyProvider),
+		)
+	}
 
 	// Create Chronicle.
 	c, err := chronicle.New(chronicleOpts...)
@@ -236,6 +270,7 @@ func (e *Extension) init(fapp forge.App) error {
 		Retention:      e.enforcer,
 		Logger:         logger,
 		Guards:         guards,
+		HashChain:      e.hashChain,
 	}, fapp.Router())
 
 	// Register HTTP routes unless disabled.
@@ -356,6 +391,7 @@ func (e *Extension) DashboardContributor() contributor.LocalContributor {
 			EnableCryptoErasure: e.config.EnableCryptoErasure,
 			BasePath:            e.config.BasePath,
 			AllowMutations:      e.config.DashboardMutations,
+			HashChain:           e.hashChain,
 		},
 	)
 }
@@ -552,18 +588,67 @@ func (e *Extension) resolveGroveKV(fapp forge.App) (*kv.Store, error) {
 	return kvStore, nil
 }
 
-// buildStoreFromGroveDB constructs the appropriate store backend
-// based on the grove driver type (pg, sqlite, mongo).
+// buildStoreFromGroveDB constructs the appropriate store backend based on the
+// grove driver type (pg, sqlite, mongo).
+//
+// pg and sqlite recompute the digest inside Append (they re-derive the
+// sequence and prev_hash under a row lock, and the sequence is part of the
+// hashed content), so they take the same hash chain Chronicle was configured
+// with; otherwise they would quietly re-link every event under an unkeyed
+// digest. mongo does not recompute on write, so it is not given a hasher.
 func (e *Extension) buildStoreFromGroveDB(db *grove.DB) (store.Store, error) {
 	driverName := db.Driver().Name()
 	switch driverName {
 	case "pg":
-		return pgstore.New(db), nil
+		return pgstore.New(db, pgstore.WithHasher(e.hashChain)), nil
 	case "sqlite":
-		return sqlitestore.New(db), nil
+		return sqlitestore.New(db, sqlitestore.WithHasher(e.hashChain)), nil
 	case "mongo":
 		return mongostore.New(db), nil
 	default:
 		return nil, fmt.Errorf("chronicle: unsupported grove driver %q", driverName)
 	}
+}
+
+// buildHashChain validates TamperEvidence, resolves a key provider from
+// config when one was not supplied programmatically, and constructs the
+// *hash.Chain both the store and Chronicle will use.
+//
+// Validation happens here, at Register time, rather than the first Record or
+// Append, so a misconfigured deployment refuses to start instead of writing
+// digests an operator believes are keyed.
+func (e *Extension) buildHashChain() (*hash.Chain, error) {
+	if err := e.config.TamperEvidence.Validate(); err != nil {
+		// Validate only inspects TamperEvidence.Keys, so it cannot see a
+		// keys.Provider supplied directly via WithKeyProvider -- the
+		// documented way to satisfy KeyConfig.Provider == "" (see its doc
+		// comment). Swallow exactly that false positive; every other error
+		// Validate returns (an unknown digest, a file provider with no path)
+		// still applies regardless of e.keyProvider.
+		suppliedDirectly := e.keyProvider != nil &&
+			e.config.TamperEvidence.Keys.Provider == "" &&
+			e.config.TamperEvidence.Keys.Path == ""
+		if !errors.Is(err, ErrKeyProviderRequired) || !suppliedDirectly {
+			return nil, err
+		}
+	}
+
+	if e.keyProvider == nil && e.config.TamperEvidence.Keys.Provider == "file" {
+		p, err := keys.NewFileProvider(e.config.TamperEvidence.Keys.Path)
+		if err != nil {
+			return nil, err
+		}
+		e.keyProvider = p
+	}
+
+	scheme := hash.SchemePlain
+	if e.config.TamperEvidence.Digest == "hmac" {
+		scheme = hash.SchemeHMAC
+	}
+
+	chain, err := hash.NewChain(scheme, e.keyProvider)
+	if err != nil {
+		return nil, fmt.Errorf("chronicle: %w", err)
+	}
+	return chain, nil
 }

@@ -1,6 +1,9 @@
 package extension
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Config holds the Chronicle extension configuration.
 // Fields can be set programmatically via Option functions or loaded from
@@ -43,6 +46,10 @@ type Config struct {
 
 	// Auth controls who may call the admin API.
 	Auth AuthConfig `json:"auth" mapstructure:"auth" yaml:"auth"`
+
+	// TamperEvidence selects how the hash chain resists rewriting: plain
+	// (default) or HMAC-keyed. See [TamperEvidenceConfig].
+	TamperEvidence TamperEvidenceConfig `json:"tamper_evidence" mapstructure:"tamper_evidence" yaml:"tamper_evidence"`
 
 	// DashboardMutations permits the dashboard's write actions: creating and
 	// deleting retention policies, running enforcement, and generating reports.
@@ -91,6 +98,50 @@ type AuthConfig struct {
 	// explicit acknowledgement that any caller reaching these routes can purge
 	// audit history.
 	AllowUnauthenticated bool `json:"allow_unauthenticated" mapstructure:"allow_unauthenticated" yaml:"allow_unauthenticated"`
+}
+
+// TamperEvidenceConfig selects how the hash chain resists rewriting.
+//
+// The default leaves the chain unkeyed, which is reproducible by anyone who can
+// write to the store. Setting digest to hmac makes a digest depend on key
+// material the database does not hold.
+type TamperEvidenceConfig struct {
+	// Digest is "plain" (default) or "hmac".
+	Digest string `json:"digest" mapstructure:"digest" yaml:"digest"`
+
+	// Keys configures where the HMAC key comes from.
+	Keys KeyConfig `json:"keys" mapstructure:"keys" yaml:"keys"`
+}
+
+// KeyConfig points at key material.
+type KeyConfig struct {
+	// Provider is "file", or empty to take a keys.Provider from [WithKeyProvider].
+	Provider string `json:"provider" mapstructure:"provider" yaml:"provider"`
+
+	// Path is the keyset file, for the file provider.
+	Path string `json:"path" mapstructure:"path" yaml:"path"`
+}
+
+// Validate checks that a keyed digest has somewhere to get its key.
+//
+// Refusing here rather than at the first event means a misconfigured deployment
+// fails at startup instead of writing unkeyed digests an operator believes are
+// keyed.
+func (c TamperEvidenceConfig) Validate() error {
+	switch c.Digest {
+	case "", "plain":
+		return nil
+	case "hmac":
+		if c.Keys.Provider == "" && c.Keys.Path == "" {
+			return ErrKeyProviderRequired
+		}
+		if c.Keys.Provider == "file" && c.Keys.Path == "" {
+			return fmt.Errorf("chronicle: tamper_evidence.keys.provider is file but no path was given")
+		}
+		return nil
+	default:
+		return fmt.Errorf("chronicle: unknown tamper_evidence.digest %q; want plain or hmac", c.Digest)
+	}
 }
 
 // Configured reports whether an auth provider was named.
