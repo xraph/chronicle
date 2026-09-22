@@ -143,11 +143,25 @@ and rotated. Conflate them and someone exercises their right to erasure and you
 can no longer verify a five-year-old event.
 
 ```go
+type Use string
+
+const (
+    UseHMAC          Use = "hmac"            // symmetric, for SchemeHMAC digests
+    UseCheckpointSig Use = "checkpoint-sig"  // ed25519, for signing checkpoints
+)
+
 type Provider interface {
     Current(ctx context.Context, use Use) (key []byte, keyID string, err error)
     ByID(ctx context.Context, keyID string) (key []byte, err error)
 }
 ```
+
+One interface covers both uses, and the two YAML blocks (`keys:` and
+`checkpoints.signer:`) each configure a provider for one of them. They are kept
+separate in config because the material differs: one is a 32-byte symmetric key
+and the other is an ed25519 keypair, and a deployment will usually want them in
+different KMS keys or different files. `ByID` does not take a `Use`, so key IDs
+have to be unique across both.
 
 `Current` writes, `ByID` verifies old artifacts. That pair is what makes
 rotation work, and it's what `crypto.KeyStore` lacks: it returns the subject ID
@@ -256,7 +270,10 @@ adjusts canonicalisation and silently invalidates every historical signature,
 and a few hundred bytes per checkpoint buys you out of that conversation
 forever.
 
-`prev_checkpoint` chains checkpoints to each other. With the continuity rule
+`prev_checkpoint` holds the SHA-256 of the preceding checkpoint's
+`signed_payload`, not of its row or its signature, so the link survives a
+re-signing under a rotated key. It chains checkpoints to each other. With the
+continuity rule
 that `from_seq` equals the previous `to_seq + 1`, deleting a checkpoint from the
 middle becomes detectable locally. Deleting the newest one isn't, and that's
 exactly the job anchoring does, so checkpoints cover gaps in the middle and
@@ -304,8 +321,14 @@ published checkpoint and only signed above that. One boolean flattens all of it
 into a green tick, and that flattening is what makes an auditor stop trusting
 the tool.
 
+The four levels are an ordered ladder, and a range reports the highest level it
+satisfies. A stream running HMAC with signed and fetched anchors reports
+`anchored`, not three separate levels. Each level implies the ones below it,
+so `signed` on an unkeyed chain and `signed` on an HMAC chain are distinguished
+by `Note` rather than by a separate level.
+
 ```go
-type Level string // unkeyed | keyed | signed | anchored
+type Level string // unkeyed < keyed < signed < anchored
 
 type Coverage struct {
     FromSeq, ToSeq uint64
