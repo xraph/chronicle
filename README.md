@@ -489,11 +489,21 @@ with, so `Valid` stays true. But no span of the coverage ladder can claim
 What still gets through is deleting the covering checkpoint along with the
 events it covers. The newest surviving checkpoint then ends exactly where the
 rewritten head says it should, the comparison agrees, and it's right to,
-given what's left to compare against. Closing that needs a signature held
-somewhere write access to Chronicle's own database can't reach. External
-anchoring, publishing a checkpoint or just its hash somewhere an attacker
-with a SQL shell can't also edit, is what does it, and it's the next piece of
-work. `TestTruncationBeyondADeletedCheckpointIsNotDetected` pins the gap.
+given what's left to compare against.
+
+You don't have to delete the row to get that, either. Blanking or corrupting
+its `signature` column does the same job for less work. The head comparison
+only lets a checkpoint contradict you if its signature still verifies, so a
+corrupted one drops straight out of it, and the row already sits past the
+rewritten head, which keeps it out of the range checks too. Nothing reports a
+signature failure, because nothing fetched the row to find one. `Valid` comes
+back true either way.
+
+Closing this needs a signature held somewhere write access to Chronicle's own
+database can't reach. External anchoring, publishing a checkpoint or just its
+hash somewhere an attacker with a SQL shell can't also edit, is what does it,
+and it's the next piece of work.
+`TestTruncationBeyondADeletedCheckpointIsNotDetected` pins the deletion half.
 
 ### Crypto-erasure
 
