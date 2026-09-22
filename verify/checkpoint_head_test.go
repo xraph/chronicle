@@ -69,6 +69,39 @@ func TestBoundedSubRangeDoesNotTripTheHeadComparison(t *testing.T) {
 	}
 }
 
+// TestABoundedRangeWithNoClaimedHeadDoesNotTripTheComparison is the
+// _examples input shape: a StreamID, a FromSeq, a ToSeq, no scope and no
+// head. All five VerifyChain calls across _examples/basic, _examples/gdpr,
+// _examples/forge and _examples/hash-chain are written exactly this way, and
+// Input.HeadSeq documents HeadSeq 0 as "the caller does not hold the stream
+// row" rather than as a claim that the chain ends at zero.
+//
+// Comparing a checkpoint against that zero condemned every such call on any
+// stream that had ever been checkpointed: latest.ToSeq <= 0 is false for all
+// of them, so an intact chain came back Valid false, CheckpointHeadOK false.
+// A false tamper verdict from an audit tool, which is the same harm the rest
+// of this branch exists to remove.
+func TestABoundedRangeWithNoClaimedHeadDoesNotTripTheComparison(t *testing.T) {
+	ctx := context.Background()
+	streamID := id.NewStreamID()
+	events := buildChain(t, streamID, 15)
+	cps, signer := checkpointsOverThree(t, streamID, events)
+
+	v := verify.NewVerifierWithCheckpoints(fakeStore{events: events[2:7]}, nil, cps, signer)
+	report, err := v.VerifyChain(ctx, &verify.Input{StreamID: streamID, FromSeq: 3, ToSeq: 7})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("an untouched, checkpointed chain verified as invalid through the call shape every "+
+			"example uses: %+v", report)
+	}
+	if report.CheckpointHeadChecked {
+		t.Errorf("the head comparison ran against a caller that claimed no head; there is nothing "+
+			"there for a checkpoint to contradict: %+v", report)
+	}
+}
+
 // TestNoCheckpointLeavesTheHeadComparisonUnchecked pins "no opinion". A
 // stream nothing has checkpointed yet must verify exactly as it did before
 // checkpoints existed, and the report has to say the comparison did not run

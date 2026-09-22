@@ -446,3 +446,32 @@ func TestHMACChainWithASeparateCheckpointKeysetVerifiesClean(t *testing.T) {
 		t.Fatalf("Chronicle.VerifyChain disagreed with the admin API on an untouched chain: %+v", direct)
 	}
 }
+
+// TestBoundedVerifyWithNoScopeStillPassesOnAnIntactChain walks the exact
+// path an operator takes from the examples: an extension with
+// checkpoints.enabled, one checkpoint taken, and a bounded VerifyChain call
+// carrying a StreamID and a range but no scope and no head.
+//
+// The scope-less call skips the head fill in Chronicle.VerifyChain, by
+// design: chronicle.go's own doc promises that caller "the old, narrower
+// behaviour: no head anchoring, no downgrade detection". What it must not
+// get is a hard Valid false because a checkpoint ends past a head it never
+// claimed.
+func TestBoundedVerifyWithNoScopeStillPassesOnAnIntactChain(t *testing.T) {
+	ext, h, _, streamID := setupCheckpointedExtension(t)
+	takeCheckpointThroughTheAPI(t, h, streamID)
+
+	report, err := ext.Chronicle().VerifyChain(context.Background(), &verify.Input{
+		StreamID: streamID, FromSeq: 2, ToSeq: 4,
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("a bounded, scope-less verification of an untouched checkpointed chain reported "+
+			"invalid: %+v", report)
+	}
+	if report.CheckpointHeadChecked {
+		t.Errorf("the head comparison ran against a caller that claimed no head: %+v", report)
+	}
+}

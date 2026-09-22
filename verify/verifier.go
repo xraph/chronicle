@@ -359,7 +359,7 @@ func (v *Verifier) verifyCheckpoints(
 // head, and verification used to hand back Valid true, Verified 0 while
 // LatestCheckpoint in the same store still said ToSeq 5.
 //
-// Four things about how this compares:
+// Five things about how this compares:
 //
 //   - It runs before the empty-range early return, or a total wipe escapes
 //     on the way past.
@@ -367,6 +367,8 @@ func (v *Verifier) verifyCheckpoints(
 //     against the resolved toSeq. A caller verifying sequences 1 to 5 of a
 //     15-event stream has bounded its own range on purpose and must not be
 //     told the chain is broken for it.
+//   - It only compares when the caller actually claimed a head, or asked
+//     about the whole chain. See the guard below.
 //   - It reports "checked" separately from "ok", so a caller can tell a
 //     clean comparison from no checkpoint to compare against.
 //   - ErrNotFound and ErrUnsupported are no opinion, not failure. A stream
@@ -384,6 +386,23 @@ func (v *Verifier) verifyCheckpoints(
 // the front of a stream and never lowers HeadSeq, so latest.ToSeq >
 // input.HeadSeq can only hold if events left the tail.
 func (v *Verifier) checkClaimedHead(ctx context.Context, input *Input) (checked, ok bool, err error) {
+	// A caller that bounded its own range and supplied no head has claimed
+	// nothing for a checkpoint to contradict. HeadSeq 0 is not "the chain
+	// ends at zero" for that caller, it is "I do not hold the stream row",
+	// which Input.HeadSeq documents and which every _examples file does:
+	// StreamID, FromSeq, ToSeq, no scope, no head. Comparing against it
+	// anyway failed every such call on any stream that has ever been
+	// checkpointed, which is a false tamper verdict on an intact chain.
+	//
+	// A bare Input{StreamID} is the opposite case and still compares.
+	// FromSeq 0 means genesis and ToSeq 0 means the stream's head, so that
+	// caller is asking about the whole chain up to whatever head the stream
+	// claims, and a claimed head of zero is a real claim. That is exactly
+	// the shape a total wipe leaves behind: no events, head row zeroed.
+	if input.HeadSeq == 0 && (input.FromSeq > 0 || input.ToSeq > 0) {
+		return false, false, nil
+	}
+
 	latest, err := v.checkpoints.LatestCheckpoint(ctx, input.StreamID)
 	switch {
 	case err == nil:
