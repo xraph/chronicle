@@ -442,10 +442,14 @@ without a signature standing in the way, so a quiet stream that never hits
 the event count still needs the interval to bound that window.
 
 Sign a checkpoint over a range and rewriting any event inside it stops
-passing verification. The checkpoint already asserted, under a key nobody
-but the signer holds, what the chain hashed to at that point, and
+passing verification, but only once the range you verify actually reaches
+the checkpoint's `ToSeq`. The checkpoint already asserted, under a key
+nobody but the signer holds, what the chain hashed to at that point, and
 recomputing the row after it's been changed can't reproduce that hash.
-`TestRewriteAfterACheckpointIsProvable` pins this.
+Verify a narrower range that stops short of `ToSeq` and that comparison
+never runs at all: `HashChecked` stays false, and a relinked rewrite inside
+the part you skipped passes clean. `TestRewriteAfterACheckpointIsProvable`
+pins the ordinary case, where the range does reach it.
 
 Checkpoints chain to each other too, each one carrying the digest of the one
 before it. Delete one from the middle of a run and the next checkpoint can no
@@ -453,25 +457,35 @@ longer show a clean line back to the one before the gap, which is how a
 missing checkpoint gets caught. `TestDeletingAMiddleCheckpointIsDetected`
 pins that.
 
-None of this reaches past the newest checkpoint still standing, and that's
-the real limit to know about. A checkpoint lives in `chronicle_checkpoints`,
-the same database as the events it watches over. Anyone who can rewrite
-events can also delete the checkpoint that would have caught them, or delete
-the newest one along with everything recorded after the checkpoint before
-it, then update the stream's own head to match. Verification has nothing
-left to compare against past where the chain now ends, and no way to know
-that end is a lie. `TestTruncationBeyondTheLastCheckpointIsNotDetected` pins
-that gap.
+None of this reaches past the newest checkpoint still standing, and the
+reason is more specific than "a checkpoint can be deleted too." Verification
+only ever asks the checkpoint store for what falls inside the range you're
+checking, and the top of that range comes from the head you claim. A
+checkpoint whose starting sequence sits past that claimed head gets excluded
+before its signature or its hash is looked at, on every backend. So once
+someone rewrites the stream's own head to hide a truncated tail, a checkpoint
+covering the truncated events is never fetched, whether its row still exists
+in `chronicle_checkpoints` or was deleted along with everything else.
+Deleting the checkpoint isn't what defeats detection here. Rewriting the head
+is, and it works whether or not the checkpoint survives it.
+`TestTruncationBeyondTheLastCheckpointIsNotDetected` pins both variants side
+by side.
 
 Deleting every checkpoint a stream has is milder. Nothing gets tampered
 with, so `Valid` stays true. But no span of the coverage ladder can claim
 `LevelSigned` anymore, because nothing survived to have signed it.
 `TestDeletingEveryCheckpointDropsCoverageNotValidity` pins that too.
 
-Closing the truncation gap needs a signature held somewhere that write
-access to Chronicle's own database can't reach: external anchoring,
-publishing a checkpoint, or just its hash, somewhere an attacker with a SQL
-shell can't also edit. That's the next piece of work.
+That leaves two different problems wearing one name. Comparing the latest
+checkpoint's `ToSeq` against the head you're claiming would catch the case
+where the checkpoint row is still there, using a store method every backend
+already implements. Chronicle doesn't run that comparison today, so don't
+read this section as saying it does. The harder case, where the checkpoint
+row is gone too, needs more than that: a signature held somewhere that write
+access to Chronicle's own database can't reach. External anchoring,
+publishing a checkpoint or just its hash somewhere an attacker with a SQL
+shell can't also edit, is what closes that one, and it's the next piece of
+work.
 
 ### Crypto-erasure
 
