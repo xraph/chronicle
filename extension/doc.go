@@ -15,8 +15,9 @@
 //     the Forge router (unless disabled), and provides [chronicle.Emitter] in
 //     the DI container
 //  3. [Extension.Start](ctx) — run store migrations (unless disabled) and launch
-//     the background retention scheduler
-//  4. [Extension.Stop](ctx) — cancel the retention scheduler context
+//     the background schedulers: retention, and checkpointing when the
+//     checkpoints block is enabled
+//  4. [Extension.Stop](ctx) — cancel the schedulers' shared context
 //  5. [Extension.Health](ctx) — delegates to store.Ping for readiness probes
 //
 // # Store Requirement

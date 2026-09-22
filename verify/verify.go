@@ -101,11 +101,21 @@ type Report struct {
 	// head hash. False on a truncated chain.
 	HeadMatch bool `json:"head_match"`
 
-	// HeadChecked is whether the tail was actually compared to a recorded
-	// head. It is false whenever HeadMatch's zero value cannot be trusted:
-	// no head was supplied, or the range was Partial and the comparison was
-	// skipped. Read HeadMatch only when HeadChecked is true -- otherwise
-	// "false" means "not checked", not "checked and mismatched".
+	// HeadChecked is whether the tail was compared to a recorded head, or
+	// the range resolved empty against a stream that claims one.
+	//
+	// It is false whenever HeadMatch's zero value cannot be trusted: no head
+	// was supplied, or the range was Partial and the comparison was skipped.
+	// Read HeadMatch only when HeadChecked is true -- otherwise "false" means
+	// "not checked", not "checked and mismatched".
+	//
+	// The one case where true does not mean two hashes were compared is an
+	// empty resolved range with a non-zero HeadSeq. There is no tail to
+	// compare, and the report is already invalid: a stream that claims a head
+	// and produced no events in range cannot have been verified up to it. So
+	// HeadChecked true with HeadMatch false says the tail did not reach the
+	// claimed head, which is exactly what happened, rather than pretending a
+	// comparison ran.
 	HeadChecked bool `json:"head_checked"`
 
 	// HeadSeq is the stream's recorded head at verification time.
