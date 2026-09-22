@@ -48,6 +48,8 @@ type EventModel struct {
 	ErasureID       string         `grove:"erasure_id"         bson:"erasure_id,omitempty"`
 	Timestamp       time.Time      `grove:"timestamp"          bson:"timestamp"`
 	CreatedAt       time.Time      `grove:"created_at"         bson:"created_at"`
+	HashScheme      string         `grove:"hash_scheme"        bson:"hash_scheme,omitempty"`
+	HashKeyID       string         `grove:"hash_key_id"        bson:"hash_key_id,omitempty"`
 }
 
 func toEvent(m *EventModel) (*audit.Event, error) {
@@ -85,6 +87,8 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		ErasedAt:        m.ErasedAt,
 		ErasureID:       m.ErasureID,
 		Timestamp:       m.Timestamp,
+		HashScheme:      m.HashScheme,
+		HashKeyID:       m.HashKeyID,
 	}, nil
 }
 
@@ -114,6 +118,8 @@ func fromEvent(e *audit.Event) *EventModel {
 		ErasureID:       e.ErasureID,
 		Timestamp:       e.Timestamp,
 		CreatedAt:       time.Now().UTC(),
+		HashScheme:      e.HashScheme,
+		HashKeyID:       e.HashKeyID,
 	}
 }
 
@@ -138,13 +144,15 @@ func toEventSlice(models []EventModel) ([]*audit.Event, error) {
 type StreamModel struct {
 	grove.BaseModel `grove:"table:chronicle_streams"`
 
-	ID        string    `grove:"id,pk"      bson:"_id"`
-	AppID     string    `grove:"app_id"     bson:"app_id"`
-	TenantID  string    `grove:"tenant_id"  bson:"tenant_id"`
-	HeadHash  string    `grove:"head_hash"  bson:"head_hash"`
-	HeadSeq   uint64    `grove:"head_seq"   bson:"head_seq"`
-	CreatedAt time.Time `grove:"created_at" bson:"created_at"`
-	UpdatedAt time.Time `grove:"updated_at" bson:"updated_at"`
+	ID          string    `grove:"id,pk"        bson:"_id"`
+	AppID       string    `grove:"app_id"       bson:"app_id"`
+	TenantID    string    `grove:"tenant_id"    bson:"tenant_id"`
+	HeadHash    string    `grove:"head_hash"    bson:"head_hash"`
+	HeadSeq     uint64    `grove:"head_seq"     bson:"head_seq"`
+	CreatedAt   time.Time `grove:"created_at"   bson:"created_at"`
+	UpdatedAt   time.Time `grove:"updated_at"   bson:"updated_at"`
+	Scheme      string    `grove:"scheme"       bson:"scheme"`
+	SchemeSince uint64    `grove:"scheme_since" bson:"scheme_since"`
 }
 
 func toStream(m *StreamModel) (*stream.Stream, error) {
@@ -158,23 +166,27 @@ func toStream(m *StreamModel) (*stream.Stream, error) {
 			CreatedAt: m.CreatedAt,
 			UpdatedAt: m.UpdatedAt,
 		},
-		ID:       streamID,
-		AppID:    m.AppID,
-		TenantID: m.TenantID,
-		HeadHash: m.HeadHash,
-		HeadSeq:  m.HeadSeq,
+		ID:          streamID,
+		AppID:       m.AppID,
+		TenantID:    m.TenantID,
+		HeadHash:    m.HeadHash,
+		HeadSeq:     m.HeadSeq,
+		Scheme:      m.Scheme,
+		SchemeSince: m.SchemeSince,
 	}, nil
 }
 
 func fromStream(st *stream.Stream) *StreamModel {
 	return &StreamModel{
-		ID:        st.ID.String(),
-		AppID:     st.AppID,
-		TenantID:  st.TenantID,
-		HeadHash:  st.HeadHash,
-		HeadSeq:   st.HeadSeq,
-		CreatedAt: st.CreatedAt,
-		UpdatedAt: st.UpdatedAt,
+		ID:          st.ID.String(),
+		AppID:       st.AppID,
+		TenantID:    st.TenantID,
+		HeadHash:    st.HeadHash,
+		HeadSeq:     st.HeadSeq,
+		CreatedAt:   st.CreatedAt,
+		UpdatedAt:   st.UpdatedAt,
+		Scheme:      st.Scheme,
+		SchemeSince: st.SchemeSince,
 	}
 }
 

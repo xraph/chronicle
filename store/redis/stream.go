@@ -14,24 +14,28 @@ import (
 
 // streamModel is the JSON representation stored in Redis.
 type streamModel struct {
-	ID        string    `json:"id"`
-	AppID     string    `json:"app_id"`
-	TenantID  string    `json:"tenant_id"`
-	HeadHash  string    `json:"head_hash"`
-	HeadSeq   uint64    `json:"head_seq"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+	AppID       string    `json:"app_id"`
+	TenantID    string    `json:"tenant_id"`
+	HeadHash    string    `json:"head_hash"`
+	HeadSeq     uint64    `json:"head_seq"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Scheme      string    `json:"scheme"`
+	SchemeSince uint64    `json:"scheme_since"`
 }
 
 func toStreamModel(st *stream.Stream) *streamModel {
 	return &streamModel{
-		ID:        st.ID.String(),
-		AppID:     st.AppID,
-		TenantID:  st.TenantID,
-		HeadHash:  st.HeadHash,
-		HeadSeq:   st.HeadSeq,
-		CreatedAt: st.CreatedAt,
-		UpdatedAt: st.UpdatedAt,
+		ID:          st.ID.String(),
+		AppID:       st.AppID,
+		TenantID:    st.TenantID,
+		HeadHash:    st.HeadHash,
+		HeadSeq:     st.HeadSeq,
+		CreatedAt:   st.CreatedAt,
+		UpdatedAt:   st.UpdatedAt,
+		Scheme:      st.Scheme,
+		SchemeSince: st.SchemeSince,
 	}
 }
 
@@ -45,11 +49,13 @@ func fromStreamModel(m *streamModel) (*stream.Stream, error) {
 			CreatedAt: m.CreatedAt,
 			UpdatedAt: m.UpdatedAt,
 		},
-		ID:       streamID,
-		AppID:    m.AppID,
-		TenantID: m.TenantID,
-		HeadHash: m.HeadHash,
-		HeadSeq:  m.HeadSeq,
+		ID:          streamID,
+		AppID:       m.AppID,
+		TenantID:    m.TenantID,
+		HeadHash:    m.HeadHash,
+		HeadSeq:     m.HeadSeq,
+		Scheme:      m.Scheme,
+		SchemeSince: m.SchemeSince,
 	}, nil
 }
 

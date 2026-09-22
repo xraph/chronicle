@@ -281,6 +281,34 @@ ALTER TABLE chronicle_retention_policies_old RENAME TO chronicle_retention_polic
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "record_hash_scheme",
+			Version: "20240101000006",
+			Comment: "Record the digest scheme per event and pin it per stream",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// chronicle_events and chronicle_streams are never rebuilt by an
+				// earlier migration, so plain ADD COLUMN is safe here. Note the
+				// rebuild of chronicle_retention_policies above: anything added
+				// to a rebuilt table has to go in its CREATE, not its copy list.
+				_, err := exec.Exec(ctx, `
+ALTER TABLE chronicle_events  ADD COLUMN hash_scheme  TEXT NOT NULL DEFAULT '';
+ALTER TABLE chronicle_events  ADD COLUMN hash_key_id  TEXT NOT NULL DEFAULT '';
+ALTER TABLE chronicle_streams ADD COLUMN scheme       TEXT NOT NULL DEFAULT 'chronicle/v2';
+ALTER TABLE chronicle_streams ADD COLUMN scheme_since INTEGER NOT NULL DEFAULT 0;
+UPDATE chronicle_streams SET scheme_since = head_seq + 1 WHERE scheme_since = 0;
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE chronicle_streams DROP COLUMN scheme_since;
+ALTER TABLE chronicle_streams DROP COLUMN scheme;
+ALTER TABLE chronicle_events  DROP COLUMN hash_key_id;
+ALTER TABLE chronicle_events  DROP COLUMN hash_scheme;
+`)
+				return err
+			},
+		},
 	)
 	return g
 }()

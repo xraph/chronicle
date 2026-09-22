@@ -66,6 +66,8 @@ type EventModel struct {
 	ErasureID       string         `grove:"erasure_id"`
 	Timestamp       time.Time      `grove:"timestamp"`
 	CreatedAt       time.Time      `grove:"created_at"`
+	HashScheme      string         `grove:"hash_scheme"`
+	HashKeyID       string         `grove:"hash_key_id"`
 }
 
 func toEvent(m *EventModel) (*audit.Event, error) {
@@ -103,6 +105,8 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		ErasedAt:        m.ErasedAt,
 		ErasureID:       m.ErasureID,
 		Timestamp:       m.Timestamp,
+		HashScheme:      m.HashScheme,
+		HashKeyID:       m.HashKeyID,
 	}, nil
 }
 
@@ -132,6 +136,8 @@ func fromEvent(e *audit.Event) *EventModel {
 		ErasureID:       e.ErasureID,
 		Timestamp:       e.Timestamp,
 		CreatedAt:       time.Now().UTC(),
+		HashScheme:      e.HashScheme,
+		HashKeyID:       e.HashKeyID,
 	}
 }
 
@@ -143,13 +149,15 @@ func fromEvent(e *audit.Event) *EventModel {
 type StreamModel struct {
 	grove.BaseModel `grove:"table:chronicle_streams,alias:s"`
 
-	ID        string    `grove:"id,pk"`
-	AppID     string    `grove:"app_id"`
-	TenantID  string    `grove:"tenant_id"`
-	HeadHash  string    `grove:"head_hash"`
-	HeadSeq   int64     `grove:"head_seq"`
-	CreatedAt time.Time `grove:"created_at"`
-	UpdatedAt time.Time `grove:"updated_at"`
+	ID          string    `grove:"id,pk"`
+	AppID       string    `grove:"app_id"`
+	TenantID    string    `grove:"tenant_id"`
+	HeadHash    string    `grove:"head_hash"`
+	HeadSeq     int64     `grove:"head_seq"`
+	CreatedAt   time.Time `grove:"created_at"`
+	UpdatedAt   time.Time `grove:"updated_at"`
+	Scheme      string    `grove:"scheme"`
+	SchemeSince int64     `grove:"scheme_since"`
 }
 
 func toStream(m *StreamModel) (*stream.Stream, error) {
@@ -163,23 +171,27 @@ func toStream(m *StreamModel) (*stream.Stream, error) {
 			CreatedAt: m.CreatedAt,
 			UpdatedAt: m.UpdatedAt,
 		},
-		ID:       streamID,
-		AppID:    m.AppID,
-		TenantID: m.TenantID,
-		HeadHash: m.HeadHash,
-		HeadSeq:  safeUint64(m.HeadSeq),
+		ID:          streamID,
+		AppID:       m.AppID,
+		TenantID:    m.TenantID,
+		HeadHash:    m.HeadHash,
+		HeadSeq:     safeUint64(m.HeadSeq),
+		Scheme:      m.Scheme,
+		SchemeSince: safeUint64(m.SchemeSince),
 	}, nil
 }
 
 func fromStream(st *stream.Stream) *StreamModel {
 	return &StreamModel{
-		ID:        st.ID.String(),
-		AppID:     st.AppID,
-		TenantID:  st.TenantID,
-		HeadHash:  st.HeadHash,
-		HeadSeq:   safeInt64(st.HeadSeq),
-		CreatedAt: st.CreatedAt,
-		UpdatedAt: st.UpdatedAt,
+		ID:          st.ID.String(),
+		AppID:       st.AppID,
+		TenantID:    st.TenantID,
+		HeadHash:    st.HeadHash,
+		HeadSeq:     safeInt64(st.HeadSeq),
+		CreatedAt:   st.CreatedAt,
+		UpdatedAt:   st.UpdatedAt,
+		Scheme:      st.Scheme,
+		SchemeSince: safeInt64(st.SchemeSince),
 	}
 }
 

@@ -56,6 +56,8 @@ type EventModel struct {
 	ErasureID       string `grove:"erasure_id"`
 	Timestamp       string `grove:"timestamp"`  // TEXT RFC3339Nano
 	CreatedAt       string `grove:"created_at"` // TEXT RFC3339Nano
+	HashScheme      string `grove:"hash_scheme"`
+	HashKeyID       string `grove:"hash_key_id"`
 }
 
 func toEvent(m *EventModel) (*audit.Event, error) {
@@ -104,6 +106,8 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		Erased:          m.Erased != 0,
 		ErasureID:       m.ErasureID,
 		Timestamp:       ts,
+		HashScheme:      m.HashScheme,
+		HashKeyID:       m.HashKeyID,
 	}
 
 	if m.ErasedAt != "" {
@@ -160,6 +164,8 @@ func fromEvent(e *audit.Event) *EventModel {
 		ErasureID:       e.ErasureID,
 		Timestamp:       e.Timestamp.UTC().Format(time.RFC3339Nano),
 		CreatedAt:       now().Format(time.RFC3339Nano),
+		HashScheme:      e.HashScheme,
+		HashKeyID:       e.HashKeyID,
 	}
 }
 
@@ -184,13 +190,15 @@ func toEventSlice(models []EventModel) ([]*audit.Event, error) {
 type StreamModel struct {
 	grove.BaseModel `grove:"table:chronicle_streams,alias:s"`
 
-	ID        string `grove:"id,pk"`
-	AppID     string `grove:"app_id"`
-	TenantID  string `grove:"tenant_id"`
-	HeadHash  string `grove:"head_hash"`
-	HeadSeq   uint64 `grove:"head_seq"`
-	CreatedAt string `grove:"created_at"` // TEXT RFC3339Nano
-	UpdatedAt string `grove:"updated_at"` // TEXT RFC3339Nano
+	ID          string `grove:"id,pk"`
+	AppID       string `grove:"app_id"`
+	TenantID    string `grove:"tenant_id"`
+	HeadHash    string `grove:"head_hash"`
+	HeadSeq     uint64 `grove:"head_seq"`
+	CreatedAt   string `grove:"created_at"` // TEXT RFC3339Nano
+	UpdatedAt   string `grove:"updated_at"` // TEXT RFC3339Nano
+	Scheme      string `grove:"scheme"`
+	SchemeSince uint64 `grove:"scheme_since"`
 }
 
 func toStream(m *StreamModel) (*stream.Stream, error) {
@@ -214,23 +222,27 @@ func toStream(m *StreamModel) (*stream.Stream, error) {
 			CreatedAt: createdAt,
 			UpdatedAt: updatedAt,
 		},
-		ID:       streamID,
-		AppID:    m.AppID,
-		TenantID: m.TenantID,
-		HeadHash: m.HeadHash,
-		HeadSeq:  m.HeadSeq,
+		ID:          streamID,
+		AppID:       m.AppID,
+		TenantID:    m.TenantID,
+		HeadHash:    m.HeadHash,
+		HeadSeq:     m.HeadSeq,
+		Scheme:      m.Scheme,
+		SchemeSince: m.SchemeSince,
 	}, nil
 }
 
 func fromStream(st *stream.Stream) *StreamModel {
 	return &StreamModel{
-		ID:        st.ID.String(),
-		AppID:     st.AppID,
-		TenantID:  st.TenantID,
-		HeadHash:  st.HeadHash,
-		HeadSeq:   st.HeadSeq,
-		CreatedAt: st.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt: st.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		ID:          st.ID.String(),
+		AppID:       st.AppID,
+		TenantID:    st.TenantID,
+		HeadHash:    st.HeadHash,
+		HeadSeq:     st.HeadSeq,
+		CreatedAt:   st.CreatedAt.UTC().Format(time.RFC3339Nano),
+		UpdatedAt:   st.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		Scheme:      st.Scheme,
+		SchemeSince: st.SchemeSince,
 	}
 }
 

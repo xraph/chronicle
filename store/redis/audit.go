@@ -41,6 +41,8 @@ type eventModel struct {
 	ErasureID       string         `json:"erasure_id,omitempty"`
 	Timestamp       time.Time      `json:"timestamp"`
 	CreatedAt       time.Time      `json:"created_at"`
+	HashScheme      string         `json:"hash_scheme,omitempty"`
+	HashKeyID       string         `json:"hash_key_id,omitempty"`
 }
 
 func toEventModel(e *audit.Event) *eventModel {
@@ -69,6 +71,8 @@ func toEventModel(e *audit.Event) *eventModel {
 		ErasureID:       e.ErasureID,
 		Timestamp:       e.Timestamp,
 		CreatedAt:       now(),
+		HashScheme:      e.HashScheme,
+		HashKeyID:       e.HashKeyID,
 	}
 }
 
@@ -107,6 +111,8 @@ func fromEventModel(m *eventModel) (*audit.Event, error) {
 		ErasedAt:        m.ErasedAt,
 		ErasureID:       m.ErasureID,
 		Timestamp:       m.Timestamp,
+		HashScheme:      m.HashScheme,
+		HashKeyID:       m.HashKeyID,
 	}, nil
 }
 

@@ -235,5 +235,38 @@ ALTER TABLE chronicle_retention_policies DROP COLUMN IF EXISTS tenant_id;
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "record_hash_scheme",
+			Version: "20240101000006",
+			Comment: "Record the digest scheme per event and pin it per stream",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Non-volatile defaults, so Postgres 11+ takes the metadata-only
+				// path and does not rewrite the events table.
+				_, err := exec.Exec(ctx, `
+ALTER TABLE chronicle_events
+    ADD COLUMN IF NOT EXISTS hash_scheme TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS hash_key_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE chronicle_streams
+    ADD COLUMN IF NOT EXISTS scheme       TEXT   NOT NULL DEFAULT 'chronicle/v2',
+    ADD COLUMN IF NOT EXISTS scheme_since BIGINT NOT NULL DEFAULT 0;
+
+-- Every event that already exists predates the pin, so put the pin just past
+-- the current head. Those rows keep verifying under the tolerant path and
+-- everything written from now on is resolved strictly.
+UPDATE chronicle_streams SET scheme_since = head_seq + 1 WHERE scheme_since = 0;
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE chronicle_streams DROP COLUMN IF EXISTS scheme_since;
+ALTER TABLE chronicle_streams DROP COLUMN IF EXISTS scheme;
+ALTER TABLE chronicle_events DROP COLUMN IF EXISTS hash_key_id;
+ALTER TABLE chronicle_events DROP COLUMN IF EXISTS hash_scheme;
+`)
+				return err
+			},
+		},
 	)
 }
