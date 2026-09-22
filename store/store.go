@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/retention"
@@ -22,6 +23,7 @@ type Store interface {
 	erasure.Store
 	retention.Store
 	compliance.ReportStore
+	checkpoint.Store
 
 	// Migrate runs all schema migrations.
 	Migrate(ctx context.Context) error

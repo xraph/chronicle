@@ -17,6 +17,7 @@ import (
 	"github.com/xraph/grove/kv/drivers/redisdriver"
 
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/retention"
@@ -40,6 +41,7 @@ var (
 	_ erasure.Store          = (*Store)(nil)
 	_ retention.Store        = (*Store)(nil)
 	_ compliance.ReportStore = (*Store)(nil)
+	_ checkpoint.Store       = (*Store)(nil)
 )
 
 // New creates a new Redis store backed by Grove KV.

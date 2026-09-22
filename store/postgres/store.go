@@ -11,6 +11,7 @@ import (
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/hash"
@@ -36,6 +37,7 @@ var (
 	_ erasure.Store          = (*Store)(nil)
 	_ retention.Store        = (*Store)(nil)
 	_ compliance.ReportStore = (*Store)(nil)
+	_ checkpoint.Store       = (*Store)(nil)
 )
 
 // Option configures a Store constructed by New.

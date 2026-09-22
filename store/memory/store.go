@@ -12,6 +12,7 @@ import (
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/id"
@@ -28,18 +29,20 @@ var (
 	_ erasure.Store          = (*Store)(nil)
 	_ retention.Store        = (*Store)(nil)
 	_ compliance.ReportStore = (*Store)(nil)
+	_ checkpoint.Store       = (*Store)(nil)
 )
 
 // Store is an in-memory implementation of all Chronicle store interfaces.
 type Store struct {
-	mu       sync.RWMutex
-	events   []*audit.Event
-	streams  []*stream.Stream
-	erasures []*erasure.Erasure
-	policies []*retention.Policy
-	archives []*retention.Archive
-	reports  []*compliance.Report
-	closed   bool
+	mu          sync.RWMutex
+	events      []*audit.Event
+	streams     []*stream.Stream
+	erasures    []*erasure.Erasure
+	policies    []*retention.Policy
+	archives    []*retention.Archive
+	reports     []*compliance.Report
+	checkpoints []*checkpoint.Checkpoint
+	closed      bool
 }
 
 // New creates a new in-memory store.
@@ -824,6 +827,154 @@ func (s *Store) DeleteReport(_ context.Context, reportID id.ID) error {
 		}
 	}
 	return chronicle.ErrReportNotFound
+}
+
+// ──────────────────────────────────────────────────
+// checkpoint.Store
+// ──────────────────────────────────────────────────
+
+// cloneCheckpoint returns an independent copy of a checkpoint.
+//
+// As with cloneEvent, a caller adjusting a field on a returned checkpoint
+// must not rewrite the persisted record: a checkpoint is a signed statement,
+// and handing out a live pointer would let a read corrupt what a later
+// verification relies on. Signature is a byte slice, so it is copied
+// explicitly rather than relying on the struct copy, which would otherwise
+// leave both copies pointing at the same backing array.
+func cloneCheckpoint(cp *checkpoint.Checkpoint) *checkpoint.Checkpoint {
+	if cp == nil {
+		return nil
+	}
+
+	clone := *cp
+
+	if cp.Signature != nil {
+		clone.Signature = make([]byte, len(cp.Signature))
+		copy(clone.Signature, cp.Signature)
+	}
+
+	return &clone
+}
+
+// cloneCheckpoints copies a slice of checkpoints.
+func cloneCheckpoints(cps []*checkpoint.Checkpoint) []*checkpoint.Checkpoint {
+	out := make([]*checkpoint.Checkpoint, 0, len(cps))
+	for _, cp := range cps {
+		out = append(out, cloneCheckpoint(cp))
+	}
+	return out
+}
+
+// AppendCheckpoint persists a checkpoint. Checkpoints are append-only: there
+// is no update or delete, since a checkpoint that could be revised would
+// assert nothing.
+func (s *Store) AppendCheckpoint(_ context.Context, cp *checkpoint.Checkpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// A duplicate (stream, to_seq) is made structurally impossible here rather
+	// than relied on lock discipline elsewhere: two checkpointers racing on one
+	// stream is expected, and the loser of the race must get ErrExists cleanly
+	// instead of silently overwriting or duplicating an entry.
+	streamIDStr := cp.StreamID.String()
+	for _, existing := range s.checkpoints {
+		if existing.StreamID.String() == streamIDStr && existing.ToSeq == cp.ToSeq {
+			return checkpoint.ErrExists
+		}
+	}
+
+	s.checkpoints = append(s.checkpoints, cloneCheckpoint(cp))
+	return nil
+}
+
+// LatestCheckpoint returns the checkpoint with the highest ToSeq for a
+// stream.
+func (s *Store) LatestCheckpoint(_ context.Context, streamID id.ID) (*checkpoint.Checkpoint, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	idStr := streamID.String()
+	var latest *checkpoint.Checkpoint
+	for _, cp := range s.checkpoints {
+		if cp.StreamID.String() != idStr {
+			continue
+		}
+		if latest == nil || cp.ToSeq > latest.ToSeq {
+			latest = cp
+		}
+	}
+	if latest == nil {
+		return nil, checkpoint.ErrNotFound
+	}
+	return cloneCheckpoint(latest), nil
+}
+
+// CheckpointsInRange returns every checkpoint whose range overlaps
+// [fromSeq, toSeq], ascending by ToSeq.
+//
+// Overlap rather than containment: a caller verifying sequences 150 to 160
+// still needs the checkpoint covering 101 to 200, because that is the one
+// whose signed assertion those events fall under. Containment would silently
+// return nothing for a range that sits inside a wider checkpoint.
+func (s *Store) CheckpointsInRange(
+	_ context.Context, streamID id.ID, fromSeq, toSeq uint64,
+) ([]*checkpoint.Checkpoint, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	idStr := streamID.String()
+	var result []*checkpoint.Checkpoint
+	for _, cp := range s.checkpoints {
+		if cp.StreamID.String() != idStr {
+			continue
+		}
+		if cp.FromSeq > toSeq || cp.ToSeq < fromSeq {
+			continue
+		}
+		result = append(result, cp)
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].ToSeq < result[j].ToSeq
+	})
+
+	return cloneCheckpoints(result), nil
+}
+
+// GetCheckpoint returns one checkpoint by ID.
+func (s *Store) GetCheckpoint(_ context.Context, checkpointID id.ID) (*checkpoint.Checkpoint, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	idStr := checkpointID.String()
+	for _, cp := range s.checkpoints {
+		if cp.ID.String() == idStr {
+			return cloneCheckpoint(cp), nil
+		}
+	}
+	return nil, checkpoint.ErrNotFound
+}
+
+// ListCheckpoints returns a stream's checkpoints, newest first.
+func (s *Store) ListCheckpoints(
+	_ context.Context, streamID id.ID, opts checkpoint.ListOpts,
+) ([]*checkpoint.Checkpoint, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	idStr := streamID.String()
+	var matched []*checkpoint.Checkpoint
+	for _, cp := range s.checkpoints {
+		if cp.StreamID.String() == idStr {
+			matched = append(matched, cp)
+		}
+	}
+
+	sort.Slice(matched, func(i, j int) bool {
+		return matched[i].ToSeq > matched[j].ToSeq
+	})
+
+	return cloneCheckpoints(applyListWindow(matched, opts.Offset, opts.Limit)), nil
 }
 
 // ──────────────────────────────────────────────────
