@@ -99,6 +99,13 @@ func (s *Sealer) Seal(event *audit.Event) error {
 		}
 	}
 
+	if event.UserAgent != "" {
+		event.UserAgent, err = s.sealString(key, event.UserAgent)
+		if err != nil {
+			return fmt.Errorf("crypto: seal user agent: %w", err)
+		}
+	}
+
 	if len(event.Metadata) > 0 {
 		plaintext, marshalErr := json.Marshal(event.Metadata)
 		if marshalErr != nil {
@@ -167,6 +174,13 @@ func (s *Sealer) Open(event *audit.Event) error {
 		}
 	}
 
+	if isSealedString(event.UserAgent) {
+		event.UserAgent, err = s.openString(key, event.UserAgent)
+		if err != nil {
+			return fmt.Errorf("crypto: open user agent: %w", err)
+		}
+	}
+
 	if sealed, ok := sealedMetadata(event.Metadata); ok {
 		plaintext, openErr := s.openBytes(key, sealed)
 		if openErr != nil {
@@ -218,7 +232,7 @@ func (s *Sealer) OpenAll(events []*audit.Event) error {
 
 // IsSealed reports whether any of the event's payload fields hold ciphertext.
 func IsSealed(event *audit.Event) bool {
-	if isSealedString(event.Reason) || isSealedString(event.IP) {
+	if isSealedString(event.Reason) || isSealedString(event.IP) || isSealedString(event.UserAgent) {
 		return true
 	}
 	_, ok := sealedMetadata(event.Metadata)
@@ -260,6 +274,9 @@ func markErased(event *audit.Event) {
 	}
 	if isSealedString(event.IP) {
 		event.IP = ErasedMarker
+	}
+	if isSealedString(event.UserAgent) {
+		event.UserAgent = ErasedMarker
 	}
 	if _, ok := sealedMetadata(event.Metadata); ok {
 		event.Metadata = nil

@@ -290,3 +290,25 @@ func TestIsSealedDetectsCiphertext(t *testing.T) {
 		t.Error("a sealed event should report sealed")
 	}
 }
+
+func TestSealCoversUserAgent(t *testing.T) {
+	sealer := crypto.NewSealer(crypto.NewInMemoryKeyStore())
+	event := sealableEvent()
+	event.UserAgent = "curl/8.0"
+
+	if err := sealer.Seal(event); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if strings.Contains(event.UserAgent, "curl/8.0") {
+		t.Fatalf("UserAgent still holds plaintext: %q", event.UserAgent)
+	}
+	if !crypto.IsSealed(event) {
+		t.Fatal("IsSealed should be true")
+	}
+	if err := sealer.Open(event); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if event.UserAgent != "curl/8.0" {
+		t.Errorf("UserAgent after Open = %q", event.UserAgent)
+	}
+}
