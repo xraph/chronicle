@@ -137,7 +137,21 @@ func (c *Checkpointer) CheckpointStream(ctx context.Context, st StreamHead) (*Ch
 		ToHash:         st.HeadHash,
 		EventCount:     int64(len(events)),
 		PrevCheckpoint: prev,
-		CreatedAt:      time.Now().UTC(),
+
+		// Truncated to millisecond, not left at time.Now's nanosecond
+		// resolution, because CreatedAt is part of the signed payload
+		// (CanonicalPayload renders it via RFC3339Nano) and a verifier
+		// recomputes that payload from a checkpoint it read back from the
+		// store. Postgres's TIMESTAMPTZ keeps microseconds and Mongo's BSON
+		// keeps milliseconds, so a nanosecond-precision timestamp signed here
+		// comes back truncated on those backends, the recomputed payload
+		// differs from what was signed, and a healthy checkpoint reports as
+		// edited-after-signing. Millisecond is exactly representable in both,
+		// so truncating to it here makes the round trip lossless on every
+		// backend, including sqlite's RFC3339Nano text column. Do not remove
+		// this truncation to "restore precision" -- there is no backend that
+		// stores it.
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
 	}
 
 	// Render and sign before storing. The stored payload is what a verifier

@@ -123,6 +123,171 @@ func TestDeletedMiddleCheckpointBreaksContinuity(t *testing.T) {
 	}
 }
 
+// TestUntrackedFieldEditIsCaughtBySignedPayloadComparison proves the
+// recompute-vs-stored comparison in verifyCheckpoints is load-bearing on its
+// own, not merely redundant with signer.Verify. TestForgedCheckpointSignatureIsRejected
+// regenerates SignedPayload after mutating the row, so that test's mismatch
+// is always caught downstream by the signature check, whichever branch runs
+// first. Here the attacker edits EventCount -- a field CanonicalPayload
+// covers but that neither HashMatch nor ContinuityOK ever look at -- and
+// leaves SignedPayload and Signature untouched. The signature still verifies
+// against the (untouched, genuinely signed) stored payload, so only the
+// comparison between that stored payload and what the row's current fields
+// recompute to can catch the edit.
+func TestUntrackedFieldEditIsCaughtBySignedPayloadComparison(t *testing.T) {
+	ctx := context.Background()
+	streamID := id.NewStreamID()
+	events := buildChain(t, streamID, 5)
+	cps, signer := checkpointOver(t, streamID, events)
+
+	// SignedPayload and Signature are left exactly as signed; only the row's
+	// own EventCount now lies about what CanonicalPayload would render.
+	cps.list[0].EventCount = 99
+
+	v := verify.NewVerifierWithCheckpoints(fakeStore{events: events}, nil, cps, signer)
+	report, err := v.VerifyChain(ctx, &verify.Input{
+		StreamID: streamID, HeadSeq: 5, HeadHash: events[4].Hash,
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if report.Valid {
+		t.Fatal("a checkpoint whose EventCount was edited without updating SignedPayload reported Valid")
+	}
+	if report.Checkpoints[0].SignatureValid {
+		t.Error("SignatureValid is true although the stored payload no longer matches the row's own fields")
+	}
+}
+
+// TestBoundedSubRangeInsideAValidCheckpointDoesNotReportTampering guards
+// against a false positive on a healthy chain: CheckpointsInRange overlaps
+// rather than contains, so verifying a narrow sub-range can surface a
+// checkpoint whose own ToSeq sits outside the fetched events, and whose
+// immediate predecessor was never fetched either (there was no reason to,
+// nothing in [fromSeq,toSeq] needed it). Neither of those is evidence the
+// chain was rewritten; they are just outside what this particular
+// verification call looked at.
+//
+// This is the review's Finding 2, reproduced with the exact shape it
+// described: a healthy 15-event, 3-checkpoint (1-5, 6-10, 11-15) stream,
+// asked only about sequence 12. Because fakeStore ignores its from/to
+// arguments and always returns whatever events slice it was built with (a
+// known, pre-existing simplification -- see coverage_test.go's buildChain
+// doc), this test constructs fakeStore with only event 12 in it, which is
+// exactly what a real store's EventRange(streamID, 12, 12) would return.
+func TestBoundedSubRangeInsideAValidCheckpointDoesNotReportTampering(t *testing.T) {
+	ctx := context.Background()
+	streamID := id.NewStreamID()
+	events := buildChain(t, streamID, 15)
+	cps, signer := checkpointsOverThree(t, streamID, events) // 1-5, 6-10, 11-15
+
+	v := verify.NewVerifierWithCheckpoints(fakeStore{events: []*audit.Event{events[11]}}, nil, cps, signer)
+	report, err := v.VerifyChain(ctx, &verify.Input{
+		StreamID: streamID, FromSeq: 12, ToSeq: 12, HeadSeq: 15,
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("a bounded sub-range inside a healthy checkpointed chain reported invalid: %+v", report)
+	}
+	if len(report.Checkpoints) != 1 {
+		t.Fatalf("got %d checkpoint results, want the one (11-15) overlapping seq 12", len(report.Checkpoints))
+	}
+	if report.Checkpoints[0].HashChecked {
+		t.Error("HashChecked is true although to_seq (15) was never fetched for this sub-range verification")
+	}
+	if report.Checkpoints[0].ContinuityChecked {
+		t.Error("ContinuityChecked is true although this checkpoint's predecessor was never fetched")
+	}
+}
+
+// TestCheckpointDoesNotUpgradeCoverageBelowTheSchemesPin is the review's
+// Finding 3 test. Events 1-3 predate the stream's HMAC pin at seq 4 and are
+// plain, unkeyed digests; events 4-5 are genuinely HMAC-keyed. A single
+// checkpoint signs over the whole range. Coverage for 1-3 must stay at
+// unkeyed even though the checkpoint's signature is genuine and its ToHash
+// matches: the checkpoint only proves nothing changed after it was taken, not
+// that the unkeyed digests underneath were ever tamper-evident to begin with.
+// Only 4-5, which rest on a real key the store does not hold, may be raised
+// to signed.
+func TestCheckpointDoesNotUpgradeCoverageBelowTheSchemesPin(t *testing.T) {
+	ctx := context.Background()
+	streamID := id.NewStreamID()
+
+	key := make([]byte, 32)
+	provider := stubProvider{key: key, activeID: "hmac-1"}
+	hmacChain, err := hash.NewChain(hash.SchemeHMAC, provider)
+	if err != nil {
+		t.Fatalf("NewChain: %v", err)
+	}
+	var plainChain hash.Chain
+
+	events := make([]*audit.Event, 0, 5)
+	prevHash := ""
+	for i := 1; i <= 5; i++ {
+		event := &audit.Event{
+			ID:        id.NewAuditID(),
+			StreamID:  streamID,
+			Sequence:  uint64(i),
+			Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			AppID:     "app1",
+			TenantID:  "tenant1",
+			Action:    "login",
+			Resource:  "session",
+			Category:  "auth",
+			Outcome:   audit.OutcomeSuccess,
+			Severity:  audit.SeverityInfo,
+			PrevHash:  prevHash,
+		}
+
+		var (
+			digest, keyID string
+			scheme        hash.Scheme
+		)
+		if i < 4 {
+			digest, keyID, err = plainChain.Compute(ctx, prevHash, event)
+			scheme = plainChain.Scheme()
+		} else {
+			digest, keyID, err = hmacChain.Compute(ctx, prevHash, event)
+			scheme = hmacChain.Scheme()
+		}
+		if err != nil {
+			t.Fatalf("Compute event %d: %v", i, err)
+		}
+		event.Hash = digest
+		event.HashScheme = string(scheme)
+		event.HashKeyID = keyID
+
+		events = append(events, event)
+		prevHash = digest
+	}
+
+	cps, signer := checkpointOver(t, streamID, events)
+
+	v := verify.NewVerifierWithCheckpoints(fakeStore{events: events}, hmacChain, cps, signer)
+	report, err := v.VerifyChain(ctx, &verify.Input{
+		StreamID: streamID, HeadSeq: 5, HeadHash: events[4].Hash,
+		Pin: hash.Pin{Scheme: hash.SchemeHMAC, Since: 4},
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("report unexpectedly invalid: %+v", report)
+	}
+	if len(report.Coverage) != 2 {
+		t.Fatalf("coverage = %+v, want two spans (below and at/above the pin)", report.Coverage)
+	}
+	below, above := report.Coverage[0], report.Coverage[1]
+	if below.FromSeq != 1 || below.ToSeq != 3 || below.Level != verify.LevelUnkeyed {
+		t.Errorf("below-pin span = %+v, want 1-3 at %q", below, verify.LevelUnkeyed)
+	}
+	if above.FromSeq != 4 || above.ToSeq != 5 || above.Level != verify.LevelSigned {
+		t.Errorf("at/above-pin span = %+v, want 4-5 at %q", above, verify.LevelSigned)
+	}
+}
+
 // buildChainWithActor is buildChain with an attacker-controlled UserID on
 // every event, so it produces a chain that relinks perfectly (each event's
 // PrevHash genuinely matches the previous event's Hash) but hashes

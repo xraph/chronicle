@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
@@ -185,11 +184,27 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 		}
 		report.Checkpoints = results
 		for _, r := range results {
-			if !r.SignatureValid || !r.HashMatch || !r.ContinuityOK {
+			// SignatureValid is always determinate: the tamper check and the
+			// signer call between them always resolve one way or the other,
+			// so a false here is always a genuine failure. HashMatch and
+			// ContinuityOK are different -- CheckpointsInRange's overlap
+			// contract can hand back a checkpoint whose ToSeq or predecessor
+			// this verification never fetched, in which case those fields
+			// sit at their false zero value without ever having been
+			// checked. Only flip Valid for those two when *Checked says the
+			// check actually ran; otherwise a narrow sub-range verification
+			// would report tampering on a chain nothing is wrong with.
+			if !r.SignatureValid {
+				report.Valid = false
+			}
+			if r.HashChecked && !r.HashMatch {
+				report.Valid = false
+			}
+			if r.ContinuityChecked && !r.ContinuityOK {
 				report.Valid = false
 			}
 		}
-		report.Coverage = upgradeCoverage(report.Coverage, covered)
+		report.Coverage = upgradeCoverage(report.Coverage, covered, input.Pin.Since)
 	}
 
 	return report, nil
@@ -201,12 +216,18 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 // CheckpointsInRange overlaps rather than contains, so a checkpoint returned
 // here may extend beyond the requested range (verifying 150-160 can surface
 // the checkpoint covering 101-200: that is the assertion those events fall
-// under). When a checkpoint's ToSeq lands outside the fetched events, its
+// under), and its immediate predecessor may not have been fetched at all
+// (nothing in [fromSeq,toSeq] needed it). Neither is evidence of tampering on
+// its own. When a checkpoint's ToSeq lands outside the fetched events, its
 // hash cannot be re-confirmed from what this call already has in hand, so
-// HashMatch is reported false with a note rather than silently assumed true;
-// such a checkpoint also does not contribute to the returned covered spans,
-// so a caller verifying an inner sub-range does not get LevelSigned for a
-// boundary it never actually checked.
+// HashMatch stays at its false zero value and HashChecked stays false rather
+// than silently assuming a match; the same goes for ContinuityOK and
+// ContinuityChecked when no fetched predecessor exists to compare against.
+// A checkpoint left unconfirmed this way also does not contribute to the
+// returned covered spans, so a caller verifying an inner sub-range does not
+// get LevelSigned for a boundary it never actually checked -- but nor does
+// VerifyChain flip Valid false for it; see the *Checked-gated loop in
+// VerifyChain that consumes these results.
 //
 // ErrUnsupported from the store (a backend, such as redis, that implements
 // the interface but refuses every call) is treated the same as "no
@@ -253,6 +274,7 @@ func (v *Verifier) verifyCheckpoints(
 		}
 
 		if event, ok := bySeq[cp.ToSeq]; ok {
+			res.HashChecked = true
 			res.HashMatch = event.Hash == cp.ToHash
 			if !res.HashMatch && res.Note == "" {
 				res.Note = "chain hash at to_seq no longer matches what the checkpoint recorded"
@@ -264,12 +286,26 @@ func (v *Verifier) verifyCheckpoints(
 		switch {
 		case cp.FromSeq == 1 && cp.PrevCheckpoint == "":
 			// A stream's first checkpoint has nothing to chain to.
+			res.ContinuityChecked = true
 			res.ContinuityOK = true
-		case prev != nil && cp.FromSeq == prev.ToSeq+1 && cp.PrevCheckpoint == checkpoint.Digest(prev.SignedPayload):
-			res.ContinuityOK = true
-		default:
-			if res.Note == "" {
+		case prev != nil:
+			// The immediate predecessor was also fetched by this
+			// verification, so continuity can actually be evaluated.
+			res.ContinuityChecked = true
+			res.ContinuityOK = cp.FromSeq == prev.ToSeq+1 && cp.PrevCheckpoint == checkpoint.Digest(prev.SignedPayload)
+			if !res.ContinuityOK && res.Note == "" {
 				res.Note = "does not continue from the previous checkpoint without a gap"
+			}
+		default:
+			// Neither this checkpoint's own first-checkpoint case nor a
+			// fetched predecessor to compare against: CheckpointsInRange's
+			// overlap contract can return a checkpoint without also
+			// returning the one immediately before it (nothing in the
+			// requested range needed it). Continuity is simply unknown here,
+			// not broken -- ContinuityChecked stays false and Valid must not
+			// be flipped for it.
+			if res.Note == "" {
+				res.Note = "predecessor checkpoint not in the verified range; continuity not checked"
 			}
 		}
 
@@ -298,27 +334,36 @@ func (v *Verifier) verifyCheckpoints(
 // checkpoint covers to LevelSigned, splitting a span where a checkpoint
 // covers only part of it.
 //
-// A span resolved tolerantly below the stream's scheme pin is left alone
-// regardless of checkpoint coverage: a signature over an unkeyed digest only
-// proves that digest was not changed after the checkpoint was taken. It says
-// nothing about whether the digest was ever tamper-evident to begin with, so
-// it cannot lift a pre-migration span to the same assurance a keyed span gets.
-func upgradeCoverage(existing, covered []Coverage) []Coverage {
+// pinSince is input.Pin.Since, the same boundary gradeCoverage used to decide
+// which spans predate the stream's scheme pin. A span entirely below it is
+// left alone regardless of checkpoint coverage: a signature over an unkeyed
+// digest only proves that digest was not changed after the checkpoint was
+// taken. It says nothing about whether the digest was ever tamper-evident to
+// begin with, so it cannot lift a pre-migration span to the same assurance a
+// keyed span gets. Reading pinSince directly, rather than pattern-matching
+// gradeCoverage's Note text, keeps the two functions correct as a pair
+// without coupling them through prose that a later wording change could
+// silently break.
+func upgradeCoverage(existing, covered []Coverage, pinSince uint64) []Coverage {
 	if len(covered) == 0 {
 		return existing
 	}
 
 	out := make([]Coverage, 0, len(existing))
 	for _, span := range existing {
-		out = append(out, upgradeSpan(span, covered)...)
+		out = append(out, upgradeSpan(span, covered, pinSince)...)
 	}
 	return out
 }
 
 // upgradeSpan splits one coverage span against the checkpoint-covered ranges,
 // in ascending order, raising the overlapping portion(s) to LevelSigned.
-func upgradeSpan(span Coverage, covered []Coverage) []Coverage {
-	if strings.Contains(span.Note, "resolved tolerantly") {
+//
+// gradeCoverage only ever produces a span that sits entirely below pinSince
+// or entirely at/above it, never a mix, so checking the span's own ToSeq
+// against pinSince is enough to tell which one this is.
+func upgradeSpan(span Coverage, covered []Coverage, pinSince uint64) []Coverage {
+	if span.ToSeq < pinSince {
 		return []Coverage{span}
 	}
 

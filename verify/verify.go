@@ -130,11 +130,33 @@ type CheckpointResult struct {
 
 	// HashMatch is whether the event now at ToSeq still hashes to the recorded
 	// ToHash. False means the chain was rewritten after this checkpoint.
+	//
+	// Read it only when HashChecked is true. CheckpointsInRange overlaps
+	// rather than contains, so a covering checkpoint's ToSeq can land outside
+	// the range this verification actually fetched; when that happens
+	// HashMatch stays at its false zero value, and HashChecked says so, so a
+	// caller cannot mistake "not checked" for "checked and mismatched".
 	HashMatch bool `json:"hash_match"`
+
+	// HashChecked is whether HashMatch was actually evaluated against a
+	// fetched event, as opposed to left at its zero value because ToSeq fell
+	// outside the verified range.
+	HashChecked bool `json:"hash_checked"`
 
 	// ContinuityOK is whether this checkpoint follows the previous one without
 	// a gap. False means a checkpoint was removed.
+	//
+	// Read it only when ContinuityChecked is true, for the same reason as
+	// HashMatch/HashChecked: a checkpoint's immediate predecessor may not be
+	// part of what this verification fetched, in which case continuity
+	// cannot be determined from what is in hand.
 	ContinuityOK bool `json:"continuity_ok"`
+
+	// ContinuityChecked is whether ContinuityOK was actually evaluated. It is
+	// true for a stream's first checkpoint (FromSeq 1, empty PrevCheckpoint,
+	// which is continuous by definition) and for any checkpoint whose
+	// immediate predecessor was also fetched by this verification.
+	ContinuityChecked bool `json:"continuity_checked"`
 
 	Note string `json:"note,omitempty"`
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
@@ -211,4 +212,78 @@ func TestConcurrentCheckpointersProduceExactlyOne(t *testing.T) {
 	if len(f.cps) != 1 {
 		t.Errorf("%d checkpoints stored, want 1", len(f.cps))
 	}
+}
+
+// TestCreatedAtRoundTripsBackendPrecision is the direct proof for the review
+// defect against Task 6: CanonicalPayload renders CreatedAt via
+// time.RFC3339Nano, but no real backend stores nanoseconds back losslessly --
+// Postgres's TIMESTAMPTZ keeps microseconds and Mongo's BSON keeps
+// milliseconds. A CreatedAt signed at full, unrounded resolution comes back
+// truncated on those backends, so a verifier's recomputation of
+// CanonicalPayload from the read-back row mismatches what was actually
+// signed, on a checkpoint nobody touched.
+func TestCreatedAtRoundTripsBackendPrecision(t *testing.T) {
+	ctx := context.Background()
+	signer, _ := newSigner(t, false)
+
+	// This first subtest shows the defect directly, independent of whether
+	// CheckpointStream itself still has the bug: it hand-builds a checkpoint
+	// the way CheckpointStream used to, at time.Now's native nanosecond
+	// resolution -- this is the reviewer's own worked example, reproduced
+	// exactly (...123456789 signed, ...123456 read back).
+	t.Run("nanosecond precision does not survive a Postgres round trip", func(t *testing.T) {
+		cp := &checkpoint.Checkpoint{
+			ID: id.NewCheckpointID(), StreamID: id.NewStreamID(),
+			AppID: "app", FromSeq: 1, ToSeq: 10, ToHash: "head", EventCount: 10,
+			CreatedAt: time.Date(2026, 9, 22, 10, 0, 0, 123456789, time.UTC),
+		}
+		cp.SignedPayload = checkpoint.CanonicalPayload(cp)
+		sig, keyID, alg, err := signer.Sign(ctx, []byte(cp.SignedPayload))
+		if err != nil {
+			t.Fatalf("Sign: %v", err)
+		}
+		cp.Signature, cp.SignKeyID, cp.Algorithm = sig, keyID, alg
+
+		// Simulate reading the row back from Postgres: TIMESTAMPTZ keeps
+		// microseconds, so the nanosecond remainder is gone.
+		readBack := *cp
+		readBack.CreatedAt = cp.CreatedAt.Truncate(time.Microsecond)
+
+		if checkpoint.CanonicalPayload(&readBack) == cp.SignedPayload {
+			t.Fatal("expected the nanosecond-precision payload to fail to round-trip through microsecond " +
+				"truncation; if this now passes, Postgres's driver or column type changed and this test's " +
+				"premise needs revisiting")
+		}
+		// A verifier comparing CanonicalPayload(&readBack) against
+		// cp.SignedPayload would, on this mismatch, wrongly report the row
+		// as edited after signing -- exactly the false positive the review
+		// found, reproduced here without going anywhere near a database.
+	})
+
+	// This second subtest proves the fix: CheckpointStream now truncates
+	// CreatedAt to millisecond at creation, which is exactly representable
+	// in both Postgres's microseconds and Mongo's milliseconds, so the round
+	// trip through either is lossless.
+	t.Run("millisecond-truncated CreatedAt survives Postgres and Mongo precision", func(t *testing.T) {
+		f := &fakeStores{}
+		st := seed(f, id.NewStreamID(), 10)
+		cp, err := checkpoint.NewCheckpointer(f, f, signer, nil).CheckpointStream(ctx, st)
+		if err != nil {
+			t.Fatalf("CheckpointStream: %v", err)
+		}
+
+		postgres := *cp
+		postgres.CreatedAt = cp.CreatedAt.Truncate(time.Microsecond)
+		if checkpoint.CanonicalPayload(&postgres) != cp.SignedPayload {
+			t.Errorf("CreatedAt did not survive a simulated Postgres (microsecond) round trip: %v vs %v",
+				postgres.CreatedAt, cp.CreatedAt)
+		}
+
+		mongo := *cp
+		mongo.CreatedAt = cp.CreatedAt.Truncate(time.Millisecond)
+		if checkpoint.CanonicalPayload(&mongo) != cp.SignedPayload {
+			t.Errorf("CreatedAt did not survive a simulated Mongo (millisecond) round trip: %v vs %v",
+				mongo.CreatedAt, cp.CreatedAt)
+		}
+	})
 }
