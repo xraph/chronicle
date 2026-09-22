@@ -964,9 +964,11 @@ The columns backing these fields arrive in Task 4. Until then the values round-t
 
 **Files:**
 - Modify: `stream/stream.go` (the `Stream` struct)
-- Modify: `chronicle.go` (the `StreamInfo` struct, and the `Record` and `resolveStream` bodies)
+- Modify: `chronicle.go` (the `StreamInfo` struct, and the `resolveStream` body)
+- Modify: `store/adapter.go` (both stream conversions)
 - Modify: `store/memory/store.go`
 - Test: `store/memory/scheme_test.go`
+- Test: `store/adapter_test.go`
 
 **Interfaces:**
 - Consumes: `hash.Scheme`, `hash.Pin` from Task 2.
@@ -975,25 +977,24 @@ The columns backing these fields arrive in Task 4. Until then the values round-t
 
 - [ ] **Step 1: Write the failing test**
 
-Create `store/memory/scheme_test.go`:
+Create `store/memory/scheme_test.go`. Note the package: `store/memory/store_test.go` is an internal test (`package memory`), so match it.
 
 ```go
-package memory_test
+package memory
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
-	"github.com/xraph/chronicle/store/memory"
+	"github.com/xraph/chronicle/stream"
 )
 
 func TestEventSchemeFieldsRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	s := memory.New()
+	s := New()
 
 	eventID := id.NewAuditID()
 	if err := s.Append(ctx, &audit.Event{
@@ -1025,19 +1026,21 @@ func TestEventSchemeFieldsRoundTrip(t *testing.T) {
 	}
 }
 
+// Backends speak stream.Stream. chronicle.StreamInfo is the adapter's language;
+// see store/adapter_test.go for that side.
 func TestStreamSchemePinRoundTrips(t *testing.T) {
 	ctx := context.Background()
-	s := memory.New()
+	s := New()
 
-	info := &chronicle.StreamInfo{
+	st := &stream.Stream{
 		ID:          id.NewStreamID(),
 		AppID:       "app",
 		TenantID:    "tenant",
 		Scheme:      "chronicle/v3",
 		SchemeSince: 84301,
 	}
-	if err := s.CreateStreamInfo(ctx, info); err != nil {
-		t.Fatalf("CreateStreamInfo: %v", err)
+	if err := s.CreateStream(ctx, st); err != nil {
+		t.Fatalf("CreateStream: %v", err)
 	}
 
 	got, err := s.GetStreamByScope(ctx, "app", "tenant")
@@ -1053,9 +1056,51 @@ func TestStreamSchemePinRoundTrips(t *testing.T) {
 }
 ```
 
+Create `store/adapter_test.go`. This is the test that matters most in this task: the adapter enumerates stream fields by hand in both directions, so a field added to both structs still does not reach Chronicle until the adapter copies it. Every real backend reaches Chronicle through here.
+
+```go
+package store_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/xraph/chronicle"
+	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/store"
+	"github.com/xraph/chronicle/store/memory"
+)
+
+func TestAdapterCarriesTheSchemePinBothWays(t *testing.T) {
+	ctx := context.Background()
+	a := store.NewAdapter(memory.New())
+
+	if err := a.CreateStreamInfo(ctx, &chronicle.StreamInfo{
+		ID:          id.NewStreamID(),
+		AppID:       "app",
+		TenantID:    "tenant",
+		Scheme:      "chronicle/v3",
+		SchemeSince: 7,
+	}); err != nil {
+		t.Fatalf("CreateStreamInfo: %v", err)
+	}
+
+	got, err := a.GetStreamByScope(ctx, "app", "tenant")
+	if err != nil {
+		t.Fatalf("GetStreamByScope: %v", err)
+	}
+	if got.Scheme != "chronicle/v3" {
+		t.Errorf("Scheme = %q, want chronicle/v3; the adapter dropped the pin", got.Scheme)
+	}
+	if got.SchemeSince != 7 {
+		t.Errorf("SchemeSince = %d, want 7; the adapter dropped the pin", got.SchemeSince)
+	}
+}
+```
+
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `go test ./store/memory/ -run 'Scheme' -v`
+Run: `go test ./store/memory/ ./store/ -run 'Scheme|Adapter' -v`
 Expected: build failure, `unknown field HashScheme in struct literal`.
 
 - [ ] **Step 3: Write the implementation**
@@ -1090,18 +1135,45 @@ In `chronicle.go`, `resolveStream` pins a newly created stream to the chain's sc
 	}
 ```
 
-In `store/memory/store.go`, carry the two new stream fields through `CreateStreamInfo`, `GetStreamByScope`, and any `StreamInfo` to `stream.Stream` conversion. Events are stored as whole `*audit.Event` values, so the event fields need no change beyond confirming `cloneEvents` copies the struct (it does; it is a value copy).
+In `store/adapter.go`, add the two fields to BOTH conversions. `GetStreamByScope` builds a `chronicle.StreamInfo` field by field, and `CreateStreamInfo` builds a `stream.Stream` field by field, so a field missing from either one is silently dropped:
+
+```go
+	return &chronicle.StreamInfo{
+		ID:          s.ID,
+		AppID:       s.AppID,
+		TenantID:    s.TenantID,
+		HeadHash:    s.HeadHash,
+		HeadSeq:     s.HeadSeq,
+		Scheme:      s.Scheme,
+		SchemeSince: s.SchemeSince,
+	}, nil
+```
+
+```go
+	s := &stream.Stream{
+		Entity:      chronicle.NewEntity(),
+		ID:          info.ID,
+		AppID:       info.AppID,
+		TenantID:    info.TenantID,
+		HeadHash:    info.HeadHash,
+		HeadSeq:     info.HeadSeq,
+		Scheme:      info.Scheme,
+		SchemeSince: info.SchemeSince,
+	}
+```
+
+In `store/memory/store.go`, confirm `CreateStream` and `GetStreamByScope` store and return the whole `stream.Stream` value. If either copies field by field, add the two fields there too. Events are stored as whole `*audit.Event` values, so the event fields need no change beyond confirming `cloneEvents` copies the struct (it does; it is a value copy).
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `go test ./store/memory/ ./audit/ ./stream/ ./... -count=1`
+Run: `go test ./... -count=1`
 Expected: PASS across the module.
 
 - [ ] **Step 5: Build, vet, and commit**
 
 ```bash
 go build ./... && go vet ./...
-git add stream/stream.go chronicle.go store/memory/
+git add stream/stream.go chronicle.go store/adapter.go store/adapter_test.go store/memory/
 git commit -m "feat(audit): record the digest scheme and key on events and streams"
 ```
 
@@ -1123,19 +1195,19 @@ git commit -m "feat(audit): record the digest scheme and key on events and strea
 
 - [ ] **Step 1: Write the failing test**
 
-Create `store/sqlite/scheme_test.go`, following the setup helper already used in `store/sqlite/audit_test.go` (read that file first and reuse its store constructor):
+Create `store/sqlite/scheme_test.go`. `store/sqlite/audit_test.go` is an internal test (`package sqlite`) and its `newTestStore(t) *Store` helper is unexported, so this file must be `package sqlite` too. Backends speak `stream.Stream`, not `chronicle.StreamInfo`.
 
 ```go
-package sqlite_test
+package sqlite
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/stream"
 )
 
 // Existing streams must land in the tolerant window, so every row written
@@ -1144,9 +1216,9 @@ func TestMigrationPinsExistingStreamsAboveTheirHead(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t) // the helper from audit_test.go
 
-	info := &chronicle.StreamInfo{ID: id.NewStreamID(), AppID: "app", TenantID: "t"}
-	if err := s.CreateStreamInfo(ctx, info); err != nil {
-		t.Fatalf("CreateStreamInfo: %v", err)
+	st := &stream.Stream{ID: id.NewStreamID(), AppID: "app", TenantID: "t"}
+	if err := s.CreateStream(ctx, st); err != nil {
+		t.Fatalf("CreateStream: %v", err)
 	}
 
 	got, err := s.GetStreamByScope(ctx, "app", "t")
@@ -1162,14 +1234,14 @@ func TestEventSchemeColumnsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	info := &chronicle.StreamInfo{ID: id.NewStreamID(), AppID: "app", SchemeSince: 1, Scheme: "chronicle/v3"}
-	if err := s.CreateStreamInfo(ctx, info); err != nil {
-		t.Fatalf("CreateStreamInfo: %v", err)
+	st := &stream.Stream{ID: id.NewStreamID(), AppID: "app", Scheme: "chronicle/v3", SchemeSince: 1}
+	if err := s.CreateStream(ctx, st); err != nil {
+		t.Fatalf("CreateStream: %v", err)
 	}
 
 	eventID := id.NewAuditID()
 	if err := s.Append(ctx, &audit.Event{
-		ID: eventID, StreamID: info.ID, Timestamp: time.Now().UTC(),
+		ID: eventID, StreamID: st.ID, Timestamp: time.Now().UTC(),
 		AppID: "app", Action: "login", Resource: "session", Category: "auth",
 		Outcome: audit.OutcomeSuccess, Severity: audit.SeverityInfo,
 		HashScheme: "chronicle/v3", HashKeyID: "hmac-1",
@@ -1333,13 +1405,18 @@ import (
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/hash"
+	"github.com/xraph/chronicle/store"
+	"github.com/xraph/chronicle/store/memory"
 )
+
+// chronicle_test.go has no shared store helper; it builds one inline at each
+// call site. Match that rather than introducing one.
 
 // Accepting the flag without a provider is how a deployment ends up believing
 // its chain is keyed while writing plain digests.
 func TestNewRefusesHMACWithoutKeyProvider(t *testing.T) {
 	_, err := chronicle.New(
-		chronicle.WithStore(newTestStore(t)), // the helper already in chronicle_test.go
+		chronicle.WithStore(store.NewAdapter(memory.New())),
 		chronicle.WithDigestScheme(hash.SchemeHMAC),
 	)
 	if !errors.Is(err, chronicle.ErrHMACKeyUnavailable) {
@@ -1350,7 +1427,7 @@ func TestNewRefusesHMACWithoutKeyProvider(t *testing.T) {
 func TestNewAcceptsHMACWithKeyProvider(t *testing.T) {
 	key := make([]byte, 32)
 	c, err := chronicle.New(
-		chronicle.WithStore(newTestStore(t)),
+		chronicle.WithStore(store.NewAdapter(memory.New())),
 		chronicle.WithDigestScheme(hash.SchemeHMAC),
 		chronicle.WithKeyProvider(stubProvider{key: key, activeID: "hmac-1"}),
 	)
@@ -1363,7 +1440,7 @@ func TestNewAcceptsHMACWithKeyProvider(t *testing.T) {
 }
 
 func TestDefaultSchemeIsPlain(t *testing.T) {
-	c, err := chronicle.New(chronicle.WithStore(newTestStore(t)))
+	c, err := chronicle.New(chronicle.WithStore(store.NewAdapter(memory.New())))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1496,14 +1573,14 @@ func TestAppendRecomputesUnderTheConfiguredScheme(t *testing.T) {
 	ctx := context.Background()
 	s := newHMACTestStore(t) // wraps newTestStore with an HMAC chain; see step 3
 
-	info := &chronicle.StreamInfo{ID: id.NewStreamID(), AppID: "app", Scheme: "chronicle/v3", SchemeSince: 1}
-	if err := s.CreateStreamInfo(ctx, info); err != nil {
-		t.Fatalf("CreateStreamInfo: %v", err)
+	st := &stream.Stream{ID: id.NewStreamID(), AppID: "app", Scheme: "chronicle/v3", SchemeSince: 1}
+	if err := s.CreateStream(ctx, st); err != nil {
+		t.Fatalf("CreateStream: %v", err)
 	}
 
 	eventID := id.NewAuditID()
 	if err := s.Append(ctx, &audit.Event{
-		ID: eventID, StreamID: info.ID, Timestamp: time.Now().UTC(),
+		ID: eventID, StreamID: st.ID, Timestamp: time.Now().UTC(),
 		AppID: "app", Action: "login", Resource: "session", Category: "auth",
 		Outcome: audit.OutcomeSuccess, Severity: audit.SeverityInfo,
 	}); err != nil {
