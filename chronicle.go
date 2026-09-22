@@ -440,6 +440,13 @@ func (c *Chronicle) VerifyEvent(ctx context.Context, eventID id.ID) (bool, error
 //     checkpoint or an external notary) keeps both, rather than having the
 //     value it specifically wanted cross-checked silently replaced.
 //
+// The StreamID fills from the resolved stream too, whenever the caller left
+// it nil. That is the call every doc page shows -- scope in, nothing else --
+// and without it the range query ran against a nil ID and came back empty,
+// which the head fill then turned into a confident report naming every
+// sequence in the stream as a gap. Verifying a healthy five-event stream
+// reported five deleted events.
+//
 // A caller with only a StreamID in hand -- no scope, no stream row -- gets
 // the old, narrower behaviour: no head anchoring, no downgrade detection,
 // matching Input.Pin's documented contract for callers with no stream in
@@ -451,13 +458,20 @@ func (c *Chronicle) VerifyChain(ctx context.Context, input *verify.Input) (*veri
 
 	needsHead := input.HeadSeq == 0 && input.HeadHash == ""
 	needsPin := input.Pin == (hash.Pin{})
-	if input.AppID != "" && (needsHead || needsPin) {
+	// A nil StreamID is a reason to resolve in its own right, not only when
+	// the head or the pin also need filling: a caller who supplied both of
+	// those and no StreamID still has nothing to query events by.
+	needsStream := input.StreamID.IsNil()
+	if input.AppID != "" && (needsHead || needsPin || needsStream) {
 		s, err := c.store.GetStreamByScope(ctx, input.AppID, input.TenantID)
 		if err != nil {
 			return nil, fmt.Errorf("chronicle: resolve stream for verification: %w", err)
 		}
-		if input.StreamID.IsNil() || s.ID == input.StreamID {
+		if needsStream || s.ID == input.StreamID {
 			in := *input
+			if needsStream {
+				in.StreamID = s.ID
+			}
 			if needsHead {
 				in.HeadSeq = s.HeadSeq
 				in.HeadHash = s.HeadHash

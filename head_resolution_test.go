@@ -120,3 +120,85 @@ func TestVerifyChainKeepsACallerSuppliedHeadHash(t *testing.T) {
 			"caller's own HeadHash with the store's", report.HeadSeq)
 	}
 }
+
+// TestVerifyChainResolvesTheStreamIDFromScope covers the call every doc page
+// shows: scope in, nothing else. getting-started, the verification subsystem
+// page, the full example and the GDPR erasure guide all write it exactly
+// this way.
+//
+// It used to report a healthy stream as ruined. The fill resolved the stream
+// and copied its head, its hash and its pin, but never its ID, so the range
+// query ran against a nil stream and came back empty. The head that had just
+// been filled in then made the report specific: Valid false, Verified 0, and
+// every sequence in the stream named as a gap. Before head resolution
+// existed it was obvious nonsense (Gaps:[0]); afterwards it was a confident
+// accusation.
+func TestVerifyChainResolvesTheStreamIDFromScope(t *testing.T) {
+	c := newTestChronicle(t)
+	ctx := context.Background()
+
+	for i := range 5 {
+		event := &audit.Event{
+			Action: "action", Resource: "resource", Category: "cat",
+			AppID: "scope-fill", TenantID: "tenant-fill",
+		}
+		if err := c.Record(ctx, event); err != nil {
+			t.Fatalf("Record event %d: %v", i, err)
+		}
+	}
+
+	report, err := c.VerifyChain(ctx, &verify.Input{
+		AppID:    "scope-fill",
+		TenantID: "tenant-fill",
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("a healthy five-event stream verified as invalid: gaps=%v tampered=%v verified=%d "+
+			"head_match=%v", report.Gaps, report.Tampered, report.Verified, report.HeadMatch)
+	}
+	if report.Verified != 5 {
+		t.Errorf("Verified = %d, want 5: the range query ran against the wrong stream", report.Verified)
+	}
+	if len(report.Gaps) != 0 {
+		t.Errorf("Gaps = %v, want none: these events are all present", report.Gaps)
+	}
+	if !report.HeadChecked || !report.HeadMatch {
+		t.Errorf("HeadChecked=%v HeadMatch=%v, want both true on an intact chain verified to its head",
+			report.HeadChecked, report.HeadMatch)
+	}
+}
+
+// TestVerifyChainResolvesTheStreamIDWithHeadAndPinSupplied is the same fill
+// through the one door that stays shut if the resolve only triggers on a
+// missing head or pin. A caller that supplies both and no StreamID has
+// nothing to query events by either, so the resolve has to run for it too.
+func TestVerifyChainResolvesTheStreamIDWithHeadAndPinSupplied(t *testing.T) {
+	c := newTestChronicle(t)
+	ctx := context.Background()
+
+	var last *audit.Event
+	for i := range 3 {
+		event := &audit.Event{
+			Action: "action", Resource: "resource", Category: "cat",
+			AppID: "scope-both", TenantID: "tenant-both",
+		}
+		if err := c.Record(ctx, event); err != nil {
+			t.Fatalf("Record event %d: %v", i, err)
+		}
+		last = event
+	}
+
+	report, err := c.VerifyChain(ctx, &verify.Input{
+		AppID: "scope-both", TenantID: "tenant-both",
+		HeadSeq: last.Sequence, HeadHash: last.Hash,
+		Pin: hash.Pin{Scheme: hash.SchemePlain, Since: 1},
+	})
+	if err != nil {
+		t.Fatalf("VerifyChain: %v", err)
+	}
+	if !report.Valid || report.Verified != 3 {
+		t.Fatalf("report = %+v, want a valid three-event verification", report)
+	}
+}
