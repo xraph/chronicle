@@ -111,3 +111,21 @@ func TestSQLiteCheckpointsInRangeOverlaps(t *testing.T) {
 		t.Errorf("latest ToSeq = %d, want 300", latest.ToSeq)
 	}
 }
+
+// A missing checkpoint must map to checkpoint.ErrNotFound, not a raw driver
+// error: notFoundOnNoRows has to recognize whichever no-rows sentinel this
+// backend's single-row Scan actually returns.
+func TestSQLiteCheckpointNotFound(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	streamID := id.NewStreamID()
+	seedStreamFor(t, s, streamID)
+
+	if _, err := s.GetCheckpoint(ctx, id.NewCheckpointID()); !errors.Is(err, checkpoint.ErrNotFound) {
+		t.Fatalf("GetCheckpoint on a missing id error = %v, want ErrNotFound", err)
+	}
+
+	if _, err := s.LatestCheckpoint(ctx, streamID); !errors.Is(err, checkpoint.ErrNotFound) {
+		t.Fatalf("LatestCheckpoint on a stream with no checkpoints error = %v, want ErrNotFound", err)
+	}
+}

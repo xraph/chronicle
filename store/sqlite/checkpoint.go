@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/xraph/grove"
+
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/id"
 )
@@ -24,14 +26,19 @@ func isUniqueViolation(err error) bool {
 
 // notFoundOnNoRows maps a no-rows Scan result to checkpoint.ErrNotFound.
 //
-// groveError (store.go) does not apply here: it checks errors.Is(err,
-// grove.ErrNoRows) or the literal string "no rows in result set", but this
-// driver returns sql.ErrNoRows unwrapped, whose message carries a "sql: "
-// prefix, so neither branch ever matches. That bug is tracked and fixed
-// separately (see groveError's doc comment); this checks the sentinel that
-// actually comes back instead of inheriting the broken comparison.
+// groveError (store.go) does not apply here: its string-literal branch checks
+// for "no rows in result set", but this driver's sql.ErrNoRows carries a
+// "sql: " prefix that literal never matches. That bug is tracked and fixed
+// separately (see groveError's doc comment). This checks both sentinels that
+// can actually come back from a single-row Scan on this backend directly,
+// rather than inheriting the broken string comparison: sql.ErrNoRows is what
+// the driver returns today (traced through SelectQuery.Scan ->
+// sqliteRow.Scan -> *sql.Row.Scan, unwrapped), and grove.ErrNoRows is grove's
+// own sentinel for the same condition, which some other code path or a later
+// grove version could return instead. Checking only one leaves the other
+// arriving as a raw, unclassified driver error.
 func notFoundOnNoRows(err error) error {
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, grove.ErrNoRows) {
 		return checkpoint.ErrNotFound
 	}
 	return err
