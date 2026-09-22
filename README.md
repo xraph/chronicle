@@ -3,11 +3,11 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/xraph/chronicle.svg)](https://pkg.go.dev/github.com/xraph/chronicle)
 [![Go Version](https://img.shields.io/badge/go-1.25+-blue)](https://go.dev)
 
-Chronicle is a production-grade audit trail library that records every event into a SHA-256 hash chain, making tampering cryptographically detectable. It is designed for multi-tenant SaaS applications that need SOC2, HIPAA, or GDPR compliance out of the box.
+Chronicle is a production-grade audit trail library that records every event into a SHA-256 hash chain. Key that chain with HMAC and it cannot be recomputed without material your database never holds. It is designed for multi-tenant SaaS applications that need SOC2, HIPAA, or GDPR compliance out of the box.
 
 ## Features
 
-- **Hash chain integrity** — Every event is linked by SHA-256 hashes. Tampering breaks the chain.
+- **Hash chain integrity** — Every event is linked by SHA-256 hashes, optionally keyed with HMAC. Read [Tamper evidence](#tamper-evidence) for what each mode detects, and what neither one does.
 - **GDPR crypto-erasure** — Per-subject AES-256-GCM encryption of the personal payload. Destroy the key and it is irrecoverable, while the operational record and the hash chain stay intact and verifiable.
 - **Multi-tenant scoping** — Events are automatically scoped to app + tenant from context. Cross-tenant queries are impossible.
 - **Compliance reports** — Generate SOC2 Type II, HIPAA, EU AI Act, and custom reports. Export to JSON, CSV, Markdown, or HTML.
@@ -327,6 +327,64 @@ c, _ := chronicle.New(
     chronicle.WithCryptoErasure(false),       // see note below
 )
 ```
+
+### Tamper evidence
+
+The default digest is an unkeyed SHA-256. It catches corruption and accidental
+edits. It does not catch tampering by anyone who can write to your database,
+because the algorithm ships in this repository, so rewriting an event and
+recomputing every digest after it is about twenty lines of work.
+`TestPlainChainDoesNotDetectARewrite` in `tamper_test.go` asserts that directly,
+so the limit is pinned by a test rather than left to inference.
+
+Keying the digest changes who can do that:
+
+```yaml
+chronicle:
+  tamper_evidence:
+    digest: hmac                    # plain (default) | hmac
+    keys:
+      provider: file
+      path: /etc/chronicle/hmac.json
+```
+
+Or programmatically:
+
+```go
+c, _ := chronicle.New(
+    chronicle.WithStore(adapter),
+    chronicle.WithDigestScheme(hash.SchemeHMAC),
+    chronicle.WithKeyProvider(kp),
+)
+```
+
+Set `digest: hmac` without a key source and Chronicle refuses to start. You
+configured a keyed chain, so writing unkeyed digests while you believed
+otherwise is the worse failure.
+
+The keyset is a JSON file holding every key you have used, with one marked
+active per use. Rotating means adding a key and moving the active flag. Retired
+keys stay, because events written under them still have to verify, and
+`Provider.ByID` is what resolves them.
+
+**What keying buys you.** An event's digest can no longer be produced from the
+stored row alone. Each event records the scheme that wrote it and each stream
+records the scheme it is pinned to from which sequence, so an event claiming a
+weaker scheme than its stream promises is reported as tampering rather than
+read as history.
+
+**What it does not buy you.** Someone who can write to your database can still
+rewrite every event to the unkeyed scheme and rewrite the stream's pin to
+match. Verification accepts that, because both halves of the evidence live in
+the same database and whoever controls it controls both.
+`TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints` pins that limit
+too. Closing it needs a signature held somewhere Chronicle cannot reach, which
+is what signed checkpoints and external anchoring are for. That work is
+specified in `specs/2026-09-22-tamper-evidence-design.md` and is not built yet.
+
+So read keying as raising the cost of the attack, not ending it. It stops
+per-event forgery and partial downgrades outright, and it forces anyone else
+into a wholesale rewrite of two tables.
 
 ### Crypto-erasure
 
