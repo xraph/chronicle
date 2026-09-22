@@ -541,6 +541,14 @@ func (e *Extension) mergeWithDefaults(cfg Config) Config {
 
 // mergeConfigurations merges YAML config with programmatic options.
 // YAML config takes precedence for most fields; programmatic bool flags fill gaps.
+//
+// Every field of Config that an Option can set has to appear here. The merge
+// rebuilds the config from the YAML side, so a field nobody copies across is a
+// field the operator silently loses the moment any chronicle YAML block exists,
+// anywhere. That is not a cosmetic loss for the security-bearing ones:
+// WithDigestScheme("hmac") vanishing turns a keyed chain back into an unkeyed
+// one with no error and no warning, and WithAuth vanishing takes an
+// authenticated admin API with it. When you add a field to Config, add it here.
 func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) Config {
 	// Programmatic bool flags override when true.
 	if programmaticConfig.DisableRoutes {
@@ -551,6 +559,12 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	}
 	if programmaticConfig.EnableCryptoErasure {
 		yamlConfig.EnableCryptoErasure = true
+	}
+	if programmaticConfig.DashboardMutations {
+		yamlConfig.DashboardMutations = true
+	}
+	if programmaticConfig.Auth.AllowUnauthenticated {
+		yamlConfig.Auth.AllowUnauthenticated = true
 	}
 
 	// String fields: YAML takes precedence.
@@ -573,6 +587,36 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	}
 	if yamlConfig.RetentionInterval == 0 && programmaticConfig.RetentionInterval != 0 {
 		yamlConfig.RetentionInterval = programmaticConfig.RetentionInterval
+	}
+
+	// Tamper evidence: YAML takes precedence per field, programmatic fills gaps.
+	// Field by field rather than struct by struct, so a YAML block that names
+	// the digest but leaves the key source to a KMS-backed WithKeyProvider still
+	// works, and so does the reverse.
+	if yamlConfig.TamperEvidence.Digest == "" && programmaticConfig.TamperEvidence.Digest != "" {
+		yamlConfig.TamperEvidence.Digest = programmaticConfig.TamperEvidence.Digest
+	}
+	if yamlConfig.TamperEvidence.Keys.Provider == "" && programmaticConfig.TamperEvidence.Keys.Provider != "" {
+		yamlConfig.TamperEvidence.Keys.Provider = programmaticConfig.TamperEvidence.Keys.Provider
+	}
+	if yamlConfig.TamperEvidence.Keys.Path == "" && programmaticConfig.TamperEvidence.Keys.Path != "" {
+		yamlConfig.TamperEvidence.Keys.Path = programmaticConfig.TamperEvidence.Keys.Path
+	}
+
+	// Auth: same rule again. Dropping these silently is how an admin API that
+	// can purge audit history ends up mounted with the authentication its
+	// operator configured quietly removed.
+	if yamlConfig.Auth.Provider == "" && programmaticConfig.Auth.Provider != "" {
+		yamlConfig.Auth.Provider = programmaticConfig.Auth.Provider
+	}
+	if len(yamlConfig.Auth.ReadScopes) == 0 && len(programmaticConfig.Auth.ReadScopes) > 0 {
+		yamlConfig.Auth.ReadScopes = programmaticConfig.Auth.ReadScopes
+	}
+	if len(yamlConfig.Auth.WriteScopes) == 0 && len(programmaticConfig.Auth.WriteScopes) > 0 {
+		yamlConfig.Auth.WriteScopes = programmaticConfig.Auth.WriteScopes
+	}
+	if len(yamlConfig.Auth.AdminScopes) == 0 && len(programmaticConfig.Auth.AdminScopes) > 0 {
+		yamlConfig.Auth.AdminScopes = programmaticConfig.Auth.AdminScopes
 	}
 
 	// Fill remaining zeros with defaults.
