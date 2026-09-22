@@ -1,6 +1,10 @@
 package chronicle
 
-import "time"
+import (
+	"time"
+
+	"github.com/xraph/chronicle/hash"
+)
 
 // Config holds the configuration for a Chronicle instance.
 type Config struct {
@@ -28,6 +32,13 @@ type Config struct {
 
 	// RetentionCheckInterval is how often the retention enforcer runs.
 	RetentionCheckInterval time.Duration
+
+	// DigestScheme selects how each event's digest is computed. The default,
+	// hash.SchemePlain, is unkeyed and reproducible by anyone who can read the
+	// store, so it detects corruption rather than tampering.
+	//
+	// hash.SchemeHMAC requires a key provider; see [ErrHMACKeyUnavailable].
+	DigestScheme hash.Scheme
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -38,5 +49,6 @@ func DefaultConfig() Config {
 		ShutdownTimeout:        30 * time.Second,
 		EnableCryptoErasure:    false,
 		RetentionCheckInterval: 24 * time.Hour,
+		DigestScheme:           hash.SchemePlain,
 	}
 }

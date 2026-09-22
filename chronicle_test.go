@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/crypto"
+	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store"
 	"github.com/xraph/chronicle/store/memory"
@@ -26,6 +27,24 @@ func newTestChronicle(t *testing.T) *chronicle.Chronicle {
 		t.Fatalf("New: %v", err)
 	}
 	return c
+}
+
+// stubProvider is a Provider backed by a fixed key, mirroring the one in
+// hash/scheme_test.go.
+type stubProvider struct {
+	key      []byte
+	activeID string
+}
+
+func (s stubProvider) Current(_ context.Context, _ keys.Use) ([]byte, string, error) {
+	return s.key, s.activeID, nil
+}
+
+func (s stubProvider) ByID(_ context.Context, keyID string) ([]byte, error) {
+	if keyID != s.activeID {
+		return nil, keys.ErrKeyNotFound
+	}
+	return s.key, nil
 }
 
 func TestRecordValidation(t *testing.T) {

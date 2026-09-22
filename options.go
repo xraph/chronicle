@@ -4,6 +4,9 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+
+	"github.com/xraph/chronicle/hash"
+	"github.com/xraph/chronicle/keys"
 )
 
 // Option configures a Chronicle instance.
@@ -72,6 +75,29 @@ func WithCryptoErasure(enabled bool) Option {
 func WithSealer(s EventSealer) Option {
 	return func(c *Chronicle) error {
 		c.sealer = s
+		return nil
+	}
+}
+
+// WithDigestScheme selects how event digests are computed.
+//
+// hash.SchemeHMAC requires [WithKeyProvider]; without one, New returns
+// [ErrHMACKeyUnavailable] rather than accepting a flag that promises a
+// guarantee nothing implements. The two options may be given in either order.
+func WithDigestScheme(s hash.Scheme) Option {
+	return func(c *Chronicle) error {
+		c.config.DigestScheme = s
+		return nil
+	}
+}
+
+// WithKeyProvider supplies the key material for keyed digest schemes.
+//
+// Rotation lives in the provider: retiring a key stops new digests using it
+// while keeping old events verifiable through Provider.ByID.
+func WithKeyProvider(p keys.Provider) Option {
+	return func(c *Chronicle) error {
+		c.keys = p
 		return nil
 	}
 }

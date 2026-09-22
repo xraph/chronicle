@@ -12,6 +12,7 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/verify"
 )
@@ -80,6 +81,7 @@ type Chronicle struct {
 	store  Storer
 	hasher *hash.Chain
 	sealer EventSealer
+	keys   keys.Provider
 	logger log.Logger
 
 	// streamLocks serialises the hash-chain critical section per stream scope,
@@ -136,7 +138,6 @@ func (c *Chronicle) Health(ctx context.Context) error {
 func New(opts ...Option) (*Chronicle, error) {
 	c := &Chronicle{
 		config: DefaultConfig(),
-		hasher: &hash.Chain{},
 		logger: log.NewNoopLogger(),
 	}
 
@@ -151,6 +152,18 @@ func New(opts ...Option) (*Chronicle, error) {
 	if c.config.EnableCryptoErasure && c.sealer == nil {
 		return nil, ErrCryptoErasureUnavailable
 	}
+
+	// Checked after every option has run, because the scheme and the provider
+	// can be supplied in either order.
+	if c.config.DigestScheme == hash.SchemeHMAC && c.keys == nil {
+		return nil, ErrHMACKeyUnavailable
+	}
+
+	hasher, err := hash.NewChain(c.config.DigestScheme, c.keys)
+	if err != nil {
+		return nil, fmt.Errorf("chronicle: %w", err)
+	}
+	c.hasher = hasher
 
 	return c, nil
 }

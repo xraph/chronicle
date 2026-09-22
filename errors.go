@@ -55,4 +55,17 @@ var (
 			"pass chronicle.WithSealer(crypto.NewSealer(keyStore)) so subject " +
 			"payloads are encrypted, or disable enable_crypto_erasure",
 	)
+
+	// ErrHMACKeyUnavailable is returned when a keyed digest scheme is selected
+	// without a key provider to supply the key.
+	//
+	// The reasoning matches ErrCryptoErasureUnavailable: an operator who set
+	// digest: hmac believes their chain cannot be recomputed from the stored
+	// rows alone. Writing unkeyed digests under that belief is worse than
+	// refusing to start.
+	ErrHMACKeyUnavailable = errors.New(
+		"chronicle: digest scheme hmac is selected but no key provider was given; " +
+			"pass chronicle.WithKeyProvider(keys.NewFileProvider(path)) so digests " +
+			"are keyed, or leave the digest scheme unset",
+	)
 )
