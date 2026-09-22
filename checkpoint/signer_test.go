@@ -98,6 +98,29 @@ func TestCanonicalPayloadCoversEveryAssertedField(t *testing.T) {
 	}
 }
 
+// A bare "|" join lets a separator inside a free-text field masquerade as a
+// field boundary: AppID="a", TenantID="b|c" and AppID="a|b", TenantID="c"
+// render identically unless each field's end is fixed independently of its
+// content. AppID and TenantID are free text arriving from caller scope, so
+// this is the reachable case, not a theoretical one.
+func TestCanonicalPayloadIsUnambiguousAcrossFieldBoundaries(t *testing.T) {
+	a := newCheckpoint()
+	a.AppID = "a"
+	a.TenantID = "b|c"
+
+	b := newCheckpoint()
+	b.StreamID = a.StreamID // isolate the boundary shift to AppID/TenantID
+	b.AppID = "a|b"
+	b.TenantID = "c"
+
+	pa := checkpoint.CanonicalPayload(a)
+	pb := checkpoint.CanonicalPayload(b)
+	if pa == pb {
+		t.Fatalf("AppID/TenantID pairs differing only in where the \"|\" falls "+
+			"canonicalized to the same payload: %q", pa)
+	}
+}
+
 func TestSignThenVerifyRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	signer, _ := newSigner(t, false)

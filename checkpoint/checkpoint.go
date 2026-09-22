@@ -65,20 +65,39 @@ type Checkpoint struct {
 //
 // Every field the checkpoint asserts appears here. A field left out is a field
 // an attacker can edit while the signature still verifies.
+//
+// Variable-length string fields are rendered length-prefixed
+// (lengthPrefixed: "<byte-length>:<value>") rather than joined with a bare
+// "|". AppID and TenantID are free text from caller scope, so a bare join
+// lets a "|" inside one value shift where the reader thinks the next field
+// starts: AppID="a", TenantID="b|c" and AppID="a|b", TenantID="c" would
+// otherwise render identically. Length-prefixing fixes each field's end at an
+// exact byte offset instead of at the next "|", so no embedded separator can
+// move a boundary. FromHash, ToHash, PrevCheckpoint, and StreamID get the same
+// treatment on the same reasoning, even though today's callers only produce
+// hex and TypeID strings for them. FromSeq, ToSeq, EventCount, and CreatedAt
+// are left as plain decimal/RFC3339Nano text: none of those formats can
+// contain "|", so they cannot shift a boundary either way.
 func CanonicalPayload(c *Checkpoint) string {
 	return fmt.Sprintf("%s|%s|%s|%s|%d|%d|%s|%s|%d|%s|%s",
 		payloadVersion,
-		c.StreamID.String(),
-		c.AppID,
-		c.TenantID,
+		lengthPrefixed(c.StreamID.String()),
+		lengthPrefixed(c.AppID),
+		lengthPrefixed(c.TenantID),
 		c.FromSeq,
 		c.ToSeq,
-		c.FromHash,
-		c.ToHash,
+		lengthPrefixed(c.FromHash),
+		lengthPrefixed(c.ToHash),
 		c.EventCount,
-		c.PrevCheckpoint,
+		lengthPrefixed(c.PrevCheckpoint),
 		c.CreatedAt.UTC().Format(time.RFC3339Nano),
 	)
+}
+
+// lengthPrefixed renders s as "<byte-length>:<s>" so that a "|" occurring
+// inside s cannot be mistaken by a reader for the payload's field separator.
+func lengthPrefixed(s string) string {
+	return fmt.Sprintf("%d:%s", len(s), s)
 }
 
 // Digest returns the hex SHA-256 of a canonical payload, which is what the next
