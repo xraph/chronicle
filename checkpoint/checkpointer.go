@@ -64,6 +64,15 @@ func NewCheckpointer(events EventReader, store Store, signer Signer, logger log.
 }
 
 // lockStream serialises checkpointing of one stream and returns the unlock.
+//
+// This mirrors Chronicle.lockStream deliberately: same map-of-mutexes shape,
+// same choice to never prune an entry once created. An entry is two words,
+// and the map is bounded by the number of streams a process has checkpointed
+// at least once, not by event volume or checkpoint count, so retaining it for
+// the process lifetime costs little. Dropping an entry while another
+// goroutine still held it would let two checkpointers reacquire distinct
+// mutexes for the same stream, defeating the point of locking at all; keeping
+// the entry avoids having to prove that race can't happen.
 func (c *Checkpointer) lockStream(streamID id.ID) func() {
 	key := streamID.String()
 

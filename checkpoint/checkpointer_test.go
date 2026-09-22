@@ -164,13 +164,25 @@ func TestCheckpointStreamWithNothingNew(t *testing.T) {
 }
 
 // The shape that produced a duplicate-and-panic bug elsewhere in this repo: a
-// background ticker and a handler racing. The database uniqueness constraint is
-// the backstop, so exactly one wins and the loser reports cleanly.
+// background ticker and an operator-triggered run, each with its OWN
+// Checkpointer instance (separate processes, or a ticker's Checkpointer next
+// to a handler's), racing on the same stream. Four separate instances here,
+// not four goroutines sharing one, is the point: a single Checkpointer's
+// per-stream mutex only ever contends with itself, so it cannot be what
+// arbitrates this race. What decides it is the shared store's uniqueness
+// check, the stand-in here for a real UNIQUE(stream_id, to_seq) constraint.
+// Exactly one instance's AppendCheckpoint wins; the rest see ErrExists (if
+// they read the head before the winner wrote) or ErrNothingToCheckpoint (if
+// they read after).
 func TestConcurrentCheckpointersProduceExactlyOne(t *testing.T) {
 	ctx := context.Background()
 	f := &fakeStores{}
 	st := seed(f, id.NewStreamID(), 10)
-	c := newCheckpointer(t, f)
+
+	checkpointers := make([]*checkpoint.Checkpointer, 4)
+	for i := range checkpointers {
+		checkpointers[i] = newCheckpointer(t, f)
+	}
 
 	var wg sync.WaitGroup
 	results := make([]error, 4)
@@ -178,7 +190,7 @@ func TestConcurrentCheckpointersProduceExactlyOne(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, results[i] = c.CheckpointStream(ctx, st)
+			_, results[i] = checkpointers[i].CheckpointStream(ctx, st)
 		}(i)
 	}
 	wg.Wait()
