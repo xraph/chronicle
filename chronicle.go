@@ -300,10 +300,19 @@ func (c *Chronicle) VerifyEvent(ctx context.Context, eventID id.ID) (bool, error
 		return false, err
 	}
 
-	// Verify accepts the legacy hash scheme too, so events written before the
-	// hash coverage was extended are not all reported as tampered.
-	//nolint:staticcheck // Verify is deprecated in favor of VerifyWithPin; this call site is rewired in a later task.
-	return c.hasher.Verify(event.PrevHash, event), nil
+	// Resolve the event's stream so its pin can be supplied. Without a pin, a
+	// downgraded event verifies as an ordinary (weaker-scheme) success instead
+	// of being caught.
+	s, err := c.store.GetStreamByScope(ctx, event.AppID, event.TenantID)
+	if err != nil {
+		return false, fmt.Errorf("chronicle: resolve stream for verification: %w", err)
+	}
+	res, err := c.hasher.VerifyWithPin(ctx, event.PrevHash, event,
+		hash.Pin{Scheme: hash.Scheme(s.Scheme), Since: s.SchemeSince})
+	if err != nil {
+		return false, err
+	}
+	return res.OK, nil
 }
 
 // VerifyChain verifies the integrity of a hash chain for a stream.
@@ -312,7 +321,7 @@ func (c *Chronicle) VerifyChain(ctx context.Context, input *verify.Input) (*veri
 		return nil, ErrNoStore
 	}
 
-	verifier := verify.NewVerifier(c.store)
+	verifier := verify.NewVerifierWithChain(c.store, c.hasher)
 	return verifier.VerifyChain(ctx, input)
 }
 

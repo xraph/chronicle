@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/xraph/chronicle/hash"
 )
@@ -13,11 +14,23 @@ type Verifier struct {
 }
 
 // NewVerifier creates a new Verifier with the given store.
+//
+// It verifies under a zero-value, unkeyed chain, so it cannot recompute an
+// HMAC digest. Callers that have a keyed chain in hand should use
+// NewVerifierWithChain instead.
 func NewVerifier(store Store) *Verifier {
 	return &Verifier{
 		store: store,
 		chain: &hash.Chain{},
 	}
+}
+
+// NewVerifierWithChain creates a Verifier that verifies under a specific chain.
+//
+// A keyed chain needs its key provider to recompute a digest, so a verifier
+// built with NewVerifier (which uses a plain chain) cannot check HMAC events.
+func NewVerifierWithChain(store Store, chain *hash.Chain) *Verifier {
+	return &Verifier{store: store, chain: chain}
 }
 
 // VerifyChain verifies the integrity of a hash chain for a stream within a sequence range.
@@ -60,13 +73,25 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 			expectedPrevHash = events[i-1].Hash
 		}
 
-		// Recompute the hash. Verify accepts the legacy scheme too, so events
-		// written before the hash coverage was extended are not all reported as
-		// tampered after an upgrade.
-		//nolint:staticcheck // Verify is deprecated in favor of VerifyWithPin; this call site is rewired in a later task.
-		if !v.chain.Verify(expectedPrevHash, event) {
+		// Recompute the hash and cross-check the event's claimed scheme against
+		// the stream's pin, so a downgrade is reported as evidence rather than
+		// being collapsed into an ordinary tamper.
+		res, err := v.chain.VerifyWithPin(ctx, expectedPrevHash, event, input.Pin)
+		if err != nil {
+			return nil, fmt.Errorf("verify event %d: %w", event.Sequence, err)
+		}
+		if res.Downgrade {
 			report.Valid = false
-			report.Tampered = append(report.Tampered, event.Sequence)
+			report.Downgrades = append(report.Downgrades, event.Sequence)
+		}
+		if res.Tolerant {
+			report.Tolerant = append(report.Tolerant, event.Sequence)
+		}
+		if !res.OK {
+			report.Valid = false
+			if !containsSeq(report.Tampered, event.Sequence) {
+				report.Tampered = append(report.Tampered, event.Sequence)
+			}
 		}
 
 		// Check chain linkage (except first event).
