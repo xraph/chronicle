@@ -14,6 +14,7 @@ import (
 	chronicledash "github.com/xraph/chronicle/dashboard"
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store/memory"
@@ -385,4 +386,124 @@ func TestRenderVerificationDetectsSchemeDowngrade(t *testing.T) {
 	if !bytes.Contains(buf.Bytes(), []byte("Tampered")) {
 		t.Fatalf("rendered page does not report Tampered; the stream is pinned to chronicle/v3 but event 1's real digest was computed under chronicle/v2, so a pin-aware verifier must flag it as a downgrade. Output:\n%s", buf.String())
 	}
+}
+
+// stubDashboardKeyProvider mirrors the other stub key providers in this
+// codebase (chronicle_test.go, hash/scheme_test.go, store/sqlite/scheme_test.go,
+// handler/handler_test.go, extension/tamper_evidence_test.go): a fixed key
+// behind keys.Provider.
+type stubDashboardKeyProvider struct {
+	key      []byte
+	activeID string
+}
+
+func (s stubDashboardKeyProvider) Current(_ context.Context, _ keys.Use) ([]byte, string, error) {
+	return s.key, s.activeID, nil
+}
+
+func (s stubDashboardKeyProvider) ByID(_ context.Context, keyID string) ([]byte, error) {
+	if keyID != s.activeID {
+		return nil, keys.ErrKeyNotFound
+	}
+	return s.key, nil
+}
+
+// renderVerifyWithChain builds a fresh contributor over mem with the given
+// HashChain (nil is valid: New defaults it to a plain, unkeyed chain) and
+// renders /verify for the given stream/range, returning the rendered HTML.
+func renderVerifyWithChain(t *testing.T, mem *memory.Store, chain *hash.Chain, streamID string) []byte {
+	t.Helper()
+
+	logger := log.NewNoopLogger()
+	engine := compliance.NewEngine(mem, mem, mem, logger)
+	enforcer := retention.NewEnforcer(mem, nil, logger)
+
+	c := chronicledash.New(
+		chronicledash.NewManifest(),
+		mem, engine, enforcer,
+		chronicledash.Config{HashChain: chain},
+	)
+
+	ctx := viewerCtx()
+	component, err := c.RenderPage(ctx, "/verify", contributor.Params{
+		FormData: map[string]string{
+			"action":    "verify",
+			"stream_id": streamID,
+			"from_seq":  "1",
+			"to_seq":    "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RenderPage: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if renderErr := component.Render(ctx, &buf); renderErr != nil {
+		t.Fatalf("Render: %v", renderErr)
+	}
+	return buf.Bytes()
+}
+
+// TestRenderVerificationVerifiesUnderTheConfiguredHMACChain closes a gap
+// TestRenderVerificationDetectsSchemeDowngrade leaves open: that test's
+// downgrade is reported by hash.Chain.VerifyWithPin's rank comparison alone,
+// before any digest is recomputed (see hash/chain.go), so it proves the Pin
+// reached the verifier but nothing about c.config.HashChain. Reverting
+// verify.NewVerifierWithChain back to NewVerifier in
+// dashboard/contributor.go's renderVerification leaves it passing.
+//
+// This test carries a genuine HMAC digest (computed with the same chain the
+// "with" case verifies under) on an event whose stream is pinned to the same
+// scheme it claims, so Pin's rank comparison alone cannot explain a pass:
+// only recomputing under the real keyed chain can.
+func TestRenderVerificationVerifiesUnderTheConfiguredHMACChain(t *testing.T) {
+	mem := memory.New()
+	ctx := context.Background()
+
+	provider := stubDashboardKeyProvider{key: make([]byte, 32), activeID: "hmac-1"}
+	chain, err := hash.NewChain(hash.SchemeHMAC, provider)
+	if err != nil {
+		t.Fatalf("NewChain: %v", err)
+	}
+
+	st := &stream.Stream{
+		ID:          id.NewStreamID(),
+		AppID:       viewerApp,
+		TenantID:    viewerTenant,
+		Scheme:      "chronicle/v3",
+		SchemeSince: 1,
+	}
+	if createErr := mem.CreateStream(ctx, st); createErr != nil {
+		t.Fatalf("create stream: %v", createErr)
+	}
+
+	event := &audit.Event{
+		ID: id.NewAuditID(), StreamID: st.ID, Sequence: 1, Timestamp: time.Now().UTC(),
+		AppID: viewerApp, TenantID: viewerTenant,
+		Action: "login", Resource: "session", Category: "auth",
+	}
+	digest, keyID, err := chain.Compute(ctx, "", event)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	event.Hash = digest
+	event.HashKeyID = keyID
+	event.HashScheme = string(hash.SchemeHMAC)
+	if err := mem.Append(ctx, event); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	t.Run("with the keyed chain, verification succeeds", func(t *testing.T) {
+		out := renderVerifyWithChain(t, mem, chain, st.ID.String())
+		if !bytes.Contains(out, []byte("Valid")) || bytes.Contains(out, []byte("Tampered")) {
+			t.Fatalf("rendered page did not report Valid with no Tampered. Output:\n%s", out)
+		}
+	})
+
+	t.Run("without the keyed chain, verification fails or errors", func(t *testing.T) {
+		out := renderVerifyWithChain(t, mem, nil, st.ID.String())
+		if bytes.Contains(out, []byte("Valid")) {
+			t.Fatalf("rendered page reported Valid with a plain chain that has no key provider and cannot recompute an HMAC digest. Output:\n%s", out)
+		}
+	})
 }

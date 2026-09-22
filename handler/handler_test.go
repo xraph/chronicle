@@ -17,7 +17,9 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/handler"
+	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store/memory"
@@ -816,4 +818,129 @@ func TestVerifyChainDetectsSchemeDowngrade(t *testing.T) {
 	if len(report.Downgrades) != 1 || report.Downgrades[0] != 1 {
 		t.Fatalf("Downgrades = %v, want [1]; stream pinned to chronicle/v3 but event 1 claims chronicle/v2", report.Downgrades)
 	}
+}
+
+// stubHandlerKeyProvider mirrors the stub key providers used elsewhere
+// (chronicle_test.go, hash/scheme_test.go, store/sqlite/scheme_test.go,
+// extension/tamper_evidence_test.go): a fixed key behind keys.Provider.
+type stubHandlerKeyProvider struct {
+	key      []byte
+	activeID string
+}
+
+func (s stubHandlerKeyProvider) Current(_ context.Context, _ keys.Use) ([]byte, string, error) {
+	return s.key, s.activeID, nil
+}
+
+func (s stubHandlerKeyProvider) ByID(_ context.Context, keyID string) ([]byte, error) {
+	if keyID != s.activeID {
+		return nil, keys.ErrKeyNotFound
+	}
+	return s.key, nil
+}
+
+// verifyEventWithChain builds a fresh API over store with the given
+// HashChain (nil is valid: handler.New defaults it to a plain, unkeyed
+// chain) and POSTs /v1/verify for the given stream/range.
+func verifyEventWithChain(t *testing.T, store *memory.Store, chain *hash.Chain, streamID string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	router := forge.NewRouter()
+	api := handler.New(handler.Dependencies{
+		AuditStore:  store,
+		VerifyStore: store,
+		StreamStore: store,
+		Logger:      log.NewNoopLogger(),
+		HashChain:   chain,
+	}, router)
+	api.RegisterRoutes(router)
+
+	body, err := json.Marshal(map[string]any{"stream_id": streamID, "from_seq": 1, "to_seq": 1})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req, err := http.NewRequestWithContext(scopedContext(context.Background()), http.MethodPost, "/v1/verify", bytes.NewBuffer(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	router.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// TestVerifyChainVerifiesUnderTheConfiguredHMACChain closes a gap
+// TestVerifyChainDetectsSchemeDowngrade leaves open: that test's downgrade is
+// reported by hash.Chain.VerifyWithPin's rank comparison alone, before any
+// digest is recomputed (see hash/chain.go), so it proves Pin reached the
+// verifier but nothing about a.deps.HashChain. Deleting HashChain from the
+// Dependencies literal, or reverting verify.NewVerifierWithChain back to
+// NewVerifier, leaves it passing.
+//
+// This test carries a genuine HMAC digest (computed with the same chain the
+// "with" case verifies under) on an event whose stream is pinned to the same
+// scheme it claims, so Pin's rank comparison alone cannot explain a pass:
+// only recomputing under the real keyed chain can.
+func TestVerifyChainVerifiesUnderTheConfiguredHMACChain(t *testing.T) {
+	store := memory.New()
+	ctx := context.Background()
+
+	provider := stubHandlerKeyProvider{key: make([]byte, 32), activeID: "hmac-1"}
+	chain, err := hash.NewChain(hash.SchemeHMAC, provider)
+	if err != nil {
+		t.Fatalf("NewChain: %v", err)
+	}
+
+	st := &stream.Stream{
+		ID:          id.NewStreamID(),
+		AppID:       testAppID,
+		TenantID:    testTenantID,
+		Scheme:      "chronicle/v3",
+		SchemeSince: 1,
+	}
+	if createErr := store.CreateStream(ctx, st); createErr != nil {
+		t.Fatalf("create stream: %v", createErr)
+	}
+
+	event := &audit.Event{
+		ID: id.NewAuditID(), StreamID: st.ID, Sequence: 1, Timestamp: time.Now().UTC(),
+		AppID: testAppID, TenantID: testTenantID,
+		Action: "login", Resource: "session", Category: "auth",
+	}
+	digest, keyID, err := chain.Compute(ctx, "", event)
+	if err != nil {
+		t.Fatalf("Compute: %v", err)
+	}
+	event.Hash = digest
+	event.HashKeyID = keyID
+	event.HashScheme = string(hash.SchemeHMAC)
+	if err := store.Append(ctx, event); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	t.Run("with the keyed chain, verification succeeds", func(t *testing.T) {
+		rec := verifyEventWithChain(t, store, chain, st.ID.String())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+		var report verify.Report
+		if unmarshalErr := json.Unmarshal(rec.Body.Bytes(), &report); unmarshalErr != nil {
+			t.Fatalf("decode report: %v", unmarshalErr)
+		}
+		if !report.Valid || len(report.Tampered) != 0 || len(report.Downgrades) != 0 {
+			t.Fatalf("report = %+v, want Valid with no Tampered/Downgrades", report)
+		}
+	})
+
+	t.Run("without the keyed chain, verification fails or errors", func(t *testing.T) {
+		rec := verifyEventWithChain(t, store, nil, st.ID.String())
+		if rec.Code == http.StatusOK {
+			var report verify.Report
+			if unmarshalErr := json.Unmarshal(rec.Body.Bytes(), &report); unmarshalErr == nil && report.Valid {
+				t.Fatalf("report = %+v, want an HTTP error or Valid == false: a plain chain has no key "+
+					"provider and cannot recompute an HMAC digest", report)
+			}
+		}
+	})
 }
