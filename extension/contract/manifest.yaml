@@ -1,0 +1,41 @@
+schemaVersion: 1
+contributor:
+  name: chronicle
+  envelope:
+    supports: [v1]
+    preferred: v1
+  capabilities: [chronicle.read, chronicle.write]
+
+# Each task declares only the intents it registers, so the parity test in
+# manifest_test.go passes at every commit. Every query is capability: read
+# and every command capability: write; loader.Validate enforces that pairing.
+intents:
+  # The viewer's own chain. There is exactly one per app and tenant, so this
+  # takes no input: the stream resolves from scope.
+  - { name: streams.mine, kind: query, version: 1, capability: read }
+  # Every chain inside the viewer's own app (or own tenant), for operators
+  # who look after more than one tenant. It never crosses an app boundary.
+  # Deliberately absent from the React plugin's nav.
+  - { name: streams.list, kind: query, version: 1, capability: read }
+  # Both are queries -- verification has no side effects of its own -- but
+  # their results must NOT be cached by the client keyed on (stream, from,
+  # to) or on the event ID. A verdict is only true of the row's state at the
+  # moment it ran: the same range or the same event can be rewritten a
+  # moment later, and a cached "valid" would keep saying so after the row no
+  # longer is. They are lazy on the client (an explicit run, not a mount-time
+  # fetch), which is why plan B adds an `enabled` option to useQuery rather
+  # than making these commands.
+  - { name: verify.run,   kind: query, version: 1, capability: read }
+  - { name: verify.event, kind: query, version: 1, capability: read }
+  # The viewer's own chain's signed checkpoints. checkpoints.list carries no
+  # total -- see CheckpointListResponse's doc in handlers_checkpoints.go --
+  # only hasMore, computed by fetching one row past the requested page.
+  - { name: checkpoints.list,   kind: query, version: 1, capability: read }
+  - { name: checkpoints.detail, kind: query, version: 1, capability: read }
+  # Write, not admin: taking a checkpoint creates a record and destroys
+  # nothing. It is the one write that makes future verification stronger. A
+  # new checkpoint changes what a subsequent verification can prove, so
+  # verify.run is invalidated alongside the obvious two: a cached report
+  # taken before it is stale in a way the operator would otherwise not see.
+  - { name: checkpoints.take, kind: command, version: 1, capability: write,
+      invalidates: [checkpoints.list, streams.mine, verify.run] }

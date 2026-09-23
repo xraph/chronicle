@@ -100,6 +100,24 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 	}, nil
 }
 
+// bucketExpr returns the $group _id expression for a time bucket field: a
+// $dateTrunc to the requested unit, formatted back to a string with
+// $dateToString rather than left as a date. Every backend hands the
+// dashboard contract the same string shape this way, so the contract layer
+// needs no per-backend branch on the value's type.
+func bucketExpr(field string) bson.M {
+	unit := "day"
+	format := "%Y-%m-%d"
+	if field == "hour" {
+		unit = "hour"
+		format = "%Y-%m-%dT%H:00:00Z"
+	}
+	return bson.M{"$dateToString": bson.M{
+		"format": format,
+		"date":   bson.M{"$dateTrunc": bson.M{"date": "$timestamp", "unit": unit, "timezone": "UTC"}},
+	}}
+}
+
 // Aggregate returns grouped event statistics.
 func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.AggregateResult, error) {
 	// Validate the grouping fields BEFORE building the pipeline, so no
@@ -128,9 +146,15 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 		match["timestamp"] = ts
 	}
 
-	// Build group key.
+	// Build group key. Bucket fields (day/hour) truncate the timestamp field
+	// instead of projecting a same-named field, since no "day" or "hour"
+	// field exists on the document.
 	groupID := bson.M{}
 	for _, field := range q.GroupBy {
+		if audit.IsBucketField(field) {
+			groupID[field] = bucketExpr(field)
+			continue
+		}
 		groupID[field] = "$" + field
 	}
 

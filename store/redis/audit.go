@@ -253,6 +253,19 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 	}, nil
 }
 
+// bucketKey formats an event's timestamp into the bucket string the other
+// backends produce through their own date truncation. Redis has no
+// aggregation engine: Aggregate already scans events and counts in Go, so
+// bucketing is a formatting step on each scanned event rather than a query
+// change. Keeping the format identical across all four backends is what lets
+// the contract layer stay backend-agnostic.
+func bucketKey(field string, ts time.Time) string {
+	if field == "hour" {
+		return ts.UTC().Format("2006-01-02T15:00:00Z")
+	}
+	return ts.UTC().Format("2006-01-02")
+}
+
 // Aggregate returns grouped event statistics.
 func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.AggregateResult, error) {
 	// Validate the grouping fields before touching redis.
@@ -318,6 +331,8 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 				parts = append(parts, m.Severity)
 			case "resource":
 				parts = append(parts, m.Resource)
+			case "day", "hour":
+				parts = append(parts, bucketKey(field, m.Timestamp))
 			default:
 				return nil, fmt.Errorf("unsupported group_by field: %s", field)
 			}

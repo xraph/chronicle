@@ -192,6 +192,29 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 	}, nil
 }
 
+// selectExpr renders one group_by field for the SELECT and GROUP BY clauses.
+// Bucket fields become a strftime truncation, everything else is the
+// whitelisted column. Both come from ResolveGroupBy, so neither is caller
+// input.
+//
+// timestamp is stored as TEXT written with time.RFC3339Nano (see
+// EventModel.Timestamp / fromEvent in models.go), so strftime reads it
+// directly as an ISO-8601 string; there is no 'unixepoch' modifier to add.
+// RFC3339Nano omits the fractional part entirely on an exact second and
+// otherwise emits up to nine digits, but strftime's '%Y-%m-%dT%H:00:00Z'
+// format only reads the Y/m/d/H fields, so that variable-width fraction
+// never affects the bucket.
+func selectExpr(field, column string) string {
+	switch field {
+	case "day":
+		return "strftime('%Y-%m-%d', " + column + ")"
+	case "hour":
+		return "strftime('%Y-%m-%dT%H:00:00Z', " + column + ")"
+	default:
+		return column
+	}
+}
+
 // Aggregate returns grouped event statistics.
 func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.AggregateResult, error) {
 	// Resolve the grouping columns BEFORE building any SQL. An identifier
@@ -231,12 +254,18 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// Safe: every element of columns is a constant from audit's whitelist.
-	columnList := strings.Join(columns, ", ")
+	// Safe: every element of columns is a constant from audit's whitelist, and
+	// q.GroupBy[i] pairs with columns[i] one-for-one (see audit.ResolveGroupBy),
+	// so selectExpr only ever sees the field name that produced that column.
+	exprs := make([]string, len(columns))
+	for i, column := range columns {
+		exprs[i] = selectExpr(q.GroupBy[i], column)
+	}
+	exprList := strings.Join(exprs, ", ")
 
 	query := fmt.Sprintf(
 		"SELECT %s, COUNT(*) as count FROM chronicle_events %s GROUP BY %s ORDER BY count DESC",
-		columnList, whereClause, columnList,
+		exprList, whereClause, exprList,
 	)
 
 	rows, err := s.sdb.Query(ctx, query, args...)
