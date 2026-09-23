@@ -1,0 +1,19 @@
+schemaVersion: 1
+contributor:
+  name: chronicle
+  envelope:
+    supports: [v1]
+    preferred: v1
+  capabilities: [chronicle.read, chronicle.write]
+
+# Each task declares only the intents it registers, so the parity test in
+# manifest_test.go passes at every commit. Every query is capability: read
+# and every command capability: write; loader.Validate enforces that pairing.
+intents:
+  # The viewer's own chain. There is exactly one per app and tenant, so this
+  # takes no input: the stream resolves from scope.
+  - { name: streams.mine, kind: query, version: 1, capability: read }
+  # Every chain inside the viewer's own app (or own tenant), for operators
+  # who look after more than one tenant. It never crosses an app boundary.
+  # Deliberately absent from the React plugin's nav.
+  - { name: streams.list, kind: query, version: 1, capability: read }
