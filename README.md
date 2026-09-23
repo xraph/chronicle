@@ -353,7 +353,7 @@ Or programmatically:
 ```go
 c, _ := chronicle.New(
     chronicle.WithStore(adapter),
-    chronicle.WithDigestScheme(hash.SchemeHMAC),
+    chronicle.WithDigestScheme(hash.SchemeHMACV5),
     chronicle.WithKeyProvider(kp),
 )
 ```
@@ -393,6 +393,50 @@ Everything below the new boundary keeps verifying under the scheme it was
 written with. Chronicle only ever moves a pin up. Point a plain-configured
 process at a stream already pinned to `hmac` and it refuses to record, because a
 pin that drops on its own looks exactly like an attacker lowering it.
+
+Upgrading a deployment that already writes `hmac` needs a stop then start, not
+a rolling restart. An older process does not recognise `chronicle/v5`, and an
+unrecognised scheme ranks below every one it does know, so it reads the pin the
+new process just set as weaker than its own and pulls it back down to
+`chronicle/v3`. The two versions then take turns moving the pin while events
+land under both. The same goes for any scheme change, including turning `hmac`
+on for the first time.
+
+#### Digest schemes
+
+Every event records which scheme produced it, so upgrading never invalidates
+what is already stored. There are five:
+
+| scheme | digest | content | status |
+| --- | --- | --- | --- |
+| `chronicle/v1` | SHA-256 | legacy field set | verify-only |
+| `chronicle/v2` | SHA-256 | delimiter-joined | verify-only |
+| `chronicle/v3` | HMAC-SHA256 | delimiter-joined | verify-only |
+| `chronicle/v4` | SHA-256 | length-prefixed | written when `digest: plain` |
+| `chronicle/v5` | HMAC-SHA256 | length-prefixed | written when `digest: hmac` |
+
+v2 and v3 joined their fields with a bare `|` and escaped nothing, so content
+could move across a separator without changing the bytes being hashed. A user ID
+of `alice` beside an address of `10.0.0.9|attacker-note` hashes to exactly the
+same digest as a user ID of `alice|10.0.0.9` beside an address of
+`attacker-note`. Same digest, different answer to who acted and from where.
+
+Keying did not help there. The MAC covered those same ambiguous bytes, so that
+one rewrite was the single tampering move that worked without the key. v4 and v5
+length-prefix every field, so a reader can find where each one ends without
+trusting what is inside it.
+
+Events written before v4 keep their recorded scheme and keep verifying under it.
+They also keep that weakness, and there is no fixing it after the fact. You
+cannot re-digest them without the key, and re-digesting them with the key would
+destroy whatever the old digests were worth as evidence. Read a `chronicle/v2`
+or `chronicle/v3` row as evidence that something was recorded, not as proof of
+precisely what. `TestDelimiterJoinedContentCollides` in `hash/` holds the
+collision open so nobody has to take that on trust.
+
+Chronicle will not write v1, v2 or v3. Configure one and it fails at startup
+naming the replacement, rather than accepting a setting that promises evidence
+it cannot deliver.
 
 **What it does not buy you.** Someone who can write to your database can still
 rewrite every event to the unkeyed scheme and rewrite the stream's pin to

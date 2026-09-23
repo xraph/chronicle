@@ -315,9 +315,9 @@ func TestDashboardReadsStillWorkWithMutationsDisabled(t *testing.T) {
 // TestRenderVerificationDetectsSchemeDowngrade pins that the dashboard's
 // verify page, like POST /v1/verify, actually uses the stream's pin.
 //
-// The event below carries a correct chronicle/v2 digest (computed with the
+// The event below carries a correct chronicle/v4 digest (computed with the
 // same plain chain the page recomputes under) for a stream pinned to
-// chronicle/v3 from sequence 1. Recomputing the digest alone says it matches:
+// chronicle/v5 from sequence 1. Recomputing the digest alone says it matches:
 // only cross-checking the claimed scheme against the stream's pin exposes
 // that it was written under a weaker algorithm than the stream promises,
 // which is what hash/chain.go's VerifyWithPin calls a downgrade rather than
@@ -332,7 +332,7 @@ func TestRenderVerificationDetectsSchemeDowngrade(t *testing.T) {
 		ID:          id.NewStreamID(),
 		AppID:       viewerApp,
 		TenantID:    viewerTenant,
-		Scheme:      "chronicle/v3",
+		Scheme:      "chronicle/v5",
 		SchemeSince: 1,
 	}
 	if err := ds.store.CreateStream(context.Background(), st); err != nil {
@@ -384,7 +384,7 @@ func TestRenderVerificationDetectsSchemeDowngrade(t *testing.T) {
 	}
 
 	if !bytes.Contains(buf.Bytes(), []byte("Tampered")) {
-		t.Fatalf("rendered page does not report Tampered; the stream is pinned to chronicle/v3 but event 1's real digest was computed under chronicle/v2, so a pin-aware verifier must flag it as a downgrade. Output:\n%s", buf.String())
+		t.Fatalf("rendered page does not report Tampered; the stream is pinned to chronicle/v5 but event 1's real digest was computed under chronicle/v4, so a pin-aware verifier must flag it as a downgrade. Output:\n%s", buf.String())
 	}
 }
 
@@ -470,7 +470,7 @@ func TestRenderVerificationVerifiesUnderTheConfiguredHMACChain(t *testing.T) {
 		ID:          id.NewStreamID(),
 		AppID:       viewerApp,
 		TenantID:    viewerTenant,
-		Scheme:      "chronicle/v3",
+		Scheme:      "chronicle/v5",
 		SchemeSince: 1,
 	}
 	if createErr := mem.CreateStream(ctx, st); createErr != nil {

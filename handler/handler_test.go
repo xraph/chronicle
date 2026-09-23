@@ -834,9 +834,9 @@ func TestVerifyChainDefaultsToGenesisThroughHead(t *testing.T) {
 // sequence is at or above pin.Since, and a zero-value Pin has Since 0 and
 // Scheme "", which disables the check entirely (see hash/chain.go).
 //
-// The event below claims the weaker chronicle/v2 scheme while its stream is
-// pinned to chronicle/v3 from sequence 1 -- exactly what an attacker gets by
-// relabeling a tampered event and recomputing under the weaker algorithm.
+// The event below claims the weaker chronicle/v4 scheme while its stream is
+// pinned to chronicle/v5 from sequence 1 -- exactly what an attacker gets by
+// relabeling a tampered event and recomputing under the unkeyed algorithm.
 func TestVerifyChainDetectsSchemeDowngrade(t *testing.T) {
 	ts := newTestSetup(t)
 	ctx := context.Background()
@@ -845,7 +845,7 @@ func TestVerifyChainDetectsSchemeDowngrade(t *testing.T) {
 		ID:          id.NewStreamID(),
 		AppID:       testAppID,
 		TenantID:    testTenantID,
-		Scheme:      "chronicle/v3",
+		Scheme:      "chronicle/v5",
 		SchemeSince: 1,
 	}
 	if err := ts.store.CreateStream(ctx, st); err != nil {
@@ -864,7 +864,7 @@ func TestVerifyChainDetectsSchemeDowngrade(t *testing.T) {
 		Action:     "login",
 		Resource:   "session",
 		Category:   "auth",
-		HashScheme: "chronicle/v2",
+		HashScheme: "chronicle/v4",
 		Hash:       "does-not-matter-for-downgrade-detection",
 	}); err != nil {
 		t.Fatalf("append: %v", err)
@@ -884,7 +884,7 @@ func TestVerifyChainDetectsSchemeDowngrade(t *testing.T) {
 		t.Fatalf("decode report: %v", err)
 	}
 	if len(report.Downgrades) != 1 || report.Downgrades[0] != 1 {
-		t.Fatalf("Downgrades = %v, want [1]; stream pinned to chronicle/v3 but event 1 claims chronicle/v2", report.Downgrades)
+		t.Fatalf("Downgrades = %v, want [1]; stream pinned to chronicle/v5 but event 1 claims chronicle/v4", report.Downgrades)
 	}
 }
 
@@ -964,7 +964,7 @@ func TestVerifyChainVerifiesUnderTheConfiguredHMACChain(t *testing.T) {
 		ID:          id.NewStreamID(),
 		AppID:       testAppID,
 		TenantID:    testTenantID,
-		Scheme:      "chronicle/v3",
+		Scheme:      "chronicle/v5",
 		SchemeSince: 1,
 	}
 	if createErr := store.CreateStream(ctx, st); createErr != nil {

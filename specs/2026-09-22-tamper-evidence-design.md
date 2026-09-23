@@ -97,6 +97,10 @@ const (
 not change, so the reasoning already written into that
 function still holds.
 
+> Superseded. Reusing that content string turned out to be the mistake in this
+> spec. See the addendum at the end: v2 and v3 are verify-only, and the schemes
+> Chronicle writes are `chronicle/v4` and `chronicle/v5`.
+
 `Compute` returns a key ID now, because a digest is only reproducible if you
 know which key generation made it:
 
@@ -537,3 +541,46 @@ unaudited destructive operations, legal hold, or any of the performance work.
 
 Several of those are smaller and more urgent than this. The erasure one
 especially.
+
+---
+
+## Addendum, same day: the content encoding
+
+Both schemes above hash a content string that joins seventeen fields with a bare
+`|` and escapes nothing, so content can move across a separator without changing
+the bytes. A user ID of `alice` beside an address of `10.0.0.9|attacker-note`
+produces the same digest as a user ID of `alice|10.0.0.9` beside an address of
+`attacker-note`.
+
+That breaks the central claim this spec makes for keying. The MAC covers those
+same bytes, so rewriting who acted and from where was the one tampering move
+that never needed the key at all. The spec has it backwards where it says the
+field coverage reasoning still holds: the coverage was right, the encoding of it
+was not.
+
+Two more schemes close it, one per algorithm, because a scheme string has to say
+both which algorithm ran and which content it ran over:
+
+```go
+SchemePlainV4 Scheme = "chronicle/v4" // SHA-256 over length-prefixed content
+SchemeHMACV5  Scheme = "chronicle/v5" // HMAC-SHA256 over the same
+```
+
+Each field is rendered as `<byte-length>:<value>`, the same shape
+`checkpoint.CanonicalPayload` already used, and the content leads with the
+scheme's own name so v4 bytes can never be read as v5 bytes.
+
+`Rank` gains both, ordered legacy, v2, v4, v3, v5. Keying has to outrank
+framing. Put v4 above v3 and a deployment that moves from the keyed scheme to
+the framed unkeyed one reads as strengthening, so the pin advances while the key
+stops being used and nothing reports it.
+
+`NewChain` refuses v2 and v3 the way it already refused v1, naming the
+replacement in the error. The config values are unchanged: `digest: plain` maps
+to v4 and `digest: hmac` maps to v5, so no deployment has to edit anything.
+
+Nothing migrates. `hash_scheme` is an unconstrained text column on all three
+backends, every row keeps the scheme it recorded, and verification dispatches on
+that. Events written before v4 stay forgeable in this one specific way, which
+cannot be fixed after the fact: re-digesting them needs the key, and doing it
+with the key would destroy whatever the originals were worth as evidence.

@@ -103,7 +103,7 @@ func seedStream(t *testing.T, db *grove.DB, scheme hash.Scheme) {
 // sequence is part of the hashed content. If the store built from a
 // tamper_evidence: {digest: hmac} config were left on its default plain
 // chain, Append would silently overwrite every keyed digest with an unkeyed
-// one and stamp hash_scheme = "chronicle/v2", while the operator believes the
+// one and stamp hash_scheme = "chronicle/v4", while the operator believes the
 // chain is keyed -- exactly the bug WithHasher exists to close, one layer
 // down.
 //
@@ -111,8 +111,8 @@ func seedStream(t *testing.T, db *grove.DB, scheme hash.Scheme) {
 // (buildStoreFromGroveDB), the same path a real deployment uses, records one
 // event through the resulting Chronicle instance, and reads the row back
 // through an independent store handle on the same database file to confirm
-// the persisted hash_scheme is chronicle/v3 rather than the store's default
-// chronicle/v2.
+// the persisted hash_scheme is chronicle/v5 rather than the store's default
+// chronicle/v4.
 func TestHMACConfigReachesTheStore(t *testing.T) {
 	db := newSQLiteGroveDB(t)
 
