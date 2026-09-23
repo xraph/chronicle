@@ -32,6 +32,23 @@ var groupByColumns = map[string]string{
 	"outcome":  "outcome",
 	"severity": "severity",
 	"resource": "resource",
+	"day":      "timestamp",
+	"hour":     "timestamp",
+}
+
+// BucketFields are the group_by fields that select a time bucket rather than a
+// column. Each backend renders these as its own truncation expression, so
+// groupByColumns maps them to the timestamp column they truncate.
+var BucketFields = []string{"day", "hour"}
+
+// IsBucketField reports whether a group_by field is a time bucket.
+func IsBucketField(field string) bool {
+	for _, f := range BucketFields {
+		if f == field {
+			return true
+		}
+	}
+	return false
 }
 
 // ResolveGroupBy validates the requested group_by fields and returns the
@@ -91,6 +108,11 @@ func groupFieldPointer(g *AggregateGroup, field string) (*string, error) {
 		return &g.Severity, nil
 	case "resource":
 		return &g.Resource, nil
+	case "day", "hour":
+		// Both bucket fields route to the same field: the backend has already
+		// truncated the timestamp to the requested unit, so this only routes
+		// the value, it does not compute it.
+		return &g.Bucket, nil
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedGroupBy, field)
 	}

@@ -136,3 +136,49 @@ func TestGroupFieldPointerRejectsUnknownField(t *testing.T) {
 		t.Fatal("AssignGroupValue should reject a non-whitelisted field")
 	}
 }
+
+func TestResolveGroupByAcceptsTimeBuckets(t *testing.T) {
+	for _, field := range []string{"day", "hour"} {
+		cols, err := ResolveGroupBy([]string{field})
+		if err != nil {
+			t.Fatalf("ResolveGroupBy(%q): %v", field, err)
+		}
+		if len(cols) != 1 {
+			t.Fatalf("ResolveGroupBy(%q) returned %d columns, want 1", field, len(cols))
+		}
+	}
+}
+
+func TestResolveGroupByStillRejectsUnknownFields(t *testing.T) {
+	// "week" is deliberately not supported. The whitelist is what keeps
+	// group_by out of the SQL string, so widening it by accident is a
+	// injection surface and not merely a feature.
+	if _, err := ResolveGroupBy([]string{"week"}); !errors.Is(err, ErrUnsupportedGroupBy) {
+		t.Fatalf("ResolveGroupBy(week) error = %v, want ErrUnsupportedGroupBy", err)
+	}
+}
+
+func TestResolveGroupByRejectsDuplicateBucket(t *testing.T) {
+	if _, err := ResolveGroupBy([]string{"day", "day"}); !errors.Is(err, ErrDuplicateGroupBy) {
+		t.Fatalf("ResolveGroupBy(day,day) error = %v, want ErrDuplicateGroupBy", err)
+	}
+}
+
+func TestResolveGroupByPreservesRequestOrder(t *testing.T) {
+	// Tasks 3 to 6 zip the returned columns against the requested fields to
+	// recover which bucket unit was asked for, because "day" and "hour" share
+	// the "timestamp" column. That zip is only valid if order is preserved
+	// one-for-one, so this test is what makes it safe to rely on.
+	fields := []string{"category", "day", "outcome"}
+	cols, err := ResolveGroupBy(fields)
+	if err != nil {
+		t.Fatalf("ResolveGroupBy: %v", err)
+	}
+	if len(cols) != len(fields) {
+		t.Fatalf("got %d columns for %d fields; the zip in every backend assumes one-for-one",
+			len(cols), len(fields))
+	}
+	if cols[0] != "category" || cols[1] != "timestamp" || cols[2] != "outcome" {
+		t.Fatalf("columns = %v, want [category timestamp outcome] in request order", cols)
+	}
+}
