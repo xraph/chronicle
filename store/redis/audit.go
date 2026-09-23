@@ -413,15 +413,25 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 
 // Count returns the total number of events matching filters.
 func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
-	// Determine the narrowest index available.
+	// Determine the narrowest index available. exact marks the cases where
+	// that index already narrows by every filter the query sets, so its length
+	// is the answer. The category index spans every app and tenant, so a
+	// TenantID beside a Category has to be post-filtered.
+	//
+	// The other indexes stay post-filtered even when they would match: the
+	// loop below also drops members whose event is gone, and PurgeEvents
+	// deletes the event before it cleans the indexes.
 	zKey := zEventAll
+	exact := false
 	switch {
 	case q.AppID != "" && q.TenantID != "":
 		zKey = zEventScope + q.AppID + ":" + q.TenantID
+		exact = q.Category == ""
 	case q.AppID != "":
 		zKey = zEventApp + q.AppID
 	case q.Category != "":
 		zKey = zEventCategory + q.Category
+		exact = q.TenantID == ""
 	}
 
 	minScore := math.Inf(-1)
@@ -438,11 +448,7 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 		return 0, err
 	}
 
-	// If we used a narrow index that already filters, just count.
-	if q.AppID != "" && q.TenantID != "" && q.Category == "" {
-		return int64(len(ids)), nil
-	}
-	if q.Category != "" && q.AppID == "" {
+	if exact {
 		return int64(len(ids)), nil
 	}
 
