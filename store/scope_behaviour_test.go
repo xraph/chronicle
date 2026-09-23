@@ -2,10 +2,14 @@ package store_test
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/drivers/mongodriver"
@@ -26,18 +30,33 @@ import (
 )
 
 // backends returns every store backend this test can exercise, keyed by
-// name. sqlite needs no external service and always runs. postgres, mongo
-// and redis each open against a DSN named by an environment variable
-// (CHRONICLE_TEST_POSTGRES_DSN, CHRONICLE_TEST_MONGO_DSN,
-// CHRONICLE_TEST_REDIS_DSN) and t.Skip from inside the opener -- not fail --
-// when that variable is unset or the service behind it cannot be reached.
-// This is what "skipping any backend whose service is not running" means in
-// practice: the skip happens per-subtest, so `go test -v` names exactly
-// which backends ran and which were skipped, and running with only sqlite
-// available is an expected, acceptable result rather than a partial failure.
-func backends(t *testing.T) map[string]func(t *testing.T) store.Store {
+// name, paired with an opener that returns the store plus an optional
+// per-stream cleanup func. sqlite needs no external service and always
+// runs. postgres, mongo and redis are each gated by an environment
+// variable naming a DSN (CHRONICLE_TEST_POSTGRES_DSN,
+// CHRONICLE_TEST_MONGO_DSN, CHRONICLE_TEST_REDIS_DSN).
+//
+// An UNSET variable is the only thing that produces a t.Skip: it means
+// nobody asked this backend to run. Once a variable IS set, the caller
+// asked for that backend by name, so every failure past that point --
+// dial, open, ping, migrate -- calls t.Fatalf, not t.Skip, uniformly (no
+// special case for Migrate vs. connect/ping). A skip and a failure look
+// identical to `go test ./...` without -v, and a characterization test
+// exists to record what a live backend actually does: collapsing "nobody
+// asked" and "asked, and it's broken" into the same silent skip would let
+// a broken backend pass as merely untested.
+//
+// The opener's second return value lets the test remove exactly the
+// stream (and its one event) seedEventIn just created, by stream ID, on a
+// backend that persists across runs (postgres, mongo) -- without it, a
+// fixed scope would eventually collide with UNIQUE(app_id, tenant_id) on
+// chronicle_streams, which every SQL-shaped backend enforces. It is nil
+// where store.Store's own append-only surface (see audit.Store's "no
+// Update or Delete exists") is genuinely all there is, or where cleanup
+// happens a different way; each opener explains which and why.
+func backends(t *testing.T) map[string]func(t *testing.T) (store.Store, func(ctx context.Context, streamID id.ID)) {
 	t.Helper()
-	return map[string]func(t *testing.T) store.Store{
+	return map[string]func(t *testing.T) (store.Store, func(ctx context.Context, streamID id.ID)){
 		"sqlite":   openSQLite,
 		"postgres": openPostgres,
 		"mongo":    openMongo,
@@ -46,8 +65,14 @@ func backends(t *testing.T) map[string]func(t *testing.T) store.Store {
 }
 
 // openSQLite opens a migrated, file-backed SQLite store in a fresh temp
-// directory, so nothing here ever collides with another test's data.
-func openSQLite(t *testing.T) store.Store {
+// directory. t.TempDir() removes it when the test ends, so a run's rows
+// never outlive the run and there is nothing for a stream-level cleanup to
+// do. Its cleanup func is always nil by design, not omission: every
+// backend's opener shares this return shape so backends(t) can hold them in
+// one map.
+//
+//nolint:unparam // see the paragraph above: nil here is deliberate.
+func openSQLite(t *testing.T) (store.Store, func(context.Context, id.ID)) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -66,13 +91,14 @@ func openSQLite(t *testing.T) store.Store {
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatalf("migrate sqlite: %v", err)
 	}
-	return s
+	return s, nil
 }
 
 // openPostgres opens a migrated postgres store against
-// CHRONICLE_TEST_POSTGRES_DSN (e.g. "postgres://user:pass@localhost:5432/db?sslmode=disable"),
-// skipping when that variable is unset or the server is unreachable.
-func openPostgres(t *testing.T) store.Store {
+// CHRONICLE_TEST_POSTGRES_DSN. Skips only when that variable is unset;
+// every failure once it is set (dial, open, ping, migrate) is a
+// t.Fatalf, per the rule documented on backends.
+func openPostgres(t *testing.T) (store.Store, func(context.Context, id.ID)) {
 	t.Helper()
 
 	dsn := os.Getenv("CHRONICLE_TEST_POSTGRES_DSN")
@@ -85,28 +111,42 @@ func openPostgres(t *testing.T) store.Store {
 
 	drv := pgdriver.New()
 	if err := drv.Open(dialCtx, dsn); err != nil {
-		t.Skipf("postgres unreachable at CHRONICLE_TEST_POSTGRES_DSN: %v", err)
+		t.Fatalf("open postgres at CHRONICLE_TEST_POSTGRES_DSN: %v", err)
 	}
 	db, err := grove.Open(drv)
 	if err != nil {
-		t.Skipf("grove.Open postgres: %v", err)
+		t.Fatalf("grove.Open postgres: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
 	s := chroniclepostgres.New(db)
 	if err := s.Ping(dialCtx); err != nil {
-		t.Skipf("postgres ping failed: %v", err)
+		t.Fatalf("postgres ping failed: %v", err)
 	}
 	if err := s.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate postgres: %v", err)
 	}
-	return s
+
+	// Precise cleanup by stream ID via the raw driver: store.Store itself
+	// has no Delete, but the pgdriver.PgDB this store was built on does.
+	// Scoped to stream_id, so it can only ever remove rows this run just
+	// created, never another run's or another test's.
+	cleanup := func(ctx context.Context, streamID id.ID) {
+		if _, err := drv.Exec(ctx, "DELETE FROM chronicle_events WHERE stream_id = $1", streamID.String()); err != nil {
+			t.Logf("postgres cleanup: delete events for stream %s: %v", streamID, err)
+		}
+		if _, err := drv.Exec(ctx, "DELETE FROM chronicle_streams WHERE id = $1", streamID.String()); err != nil {
+			t.Logf("postgres cleanup: delete stream %s: %v", streamID, err)
+		}
+	}
+	return s, cleanup
 }
 
-// openMongo opens a migrated mongo store against CHRONICLE_TEST_MONGO_DSN
-// (e.g. "mongodb://localhost:27017/chronicle_test"), skipping when that
-// variable is unset or the server is unreachable.
-func openMongo(t *testing.T) store.Store {
+// openMongo opens a migrated mongo store against CHRONICLE_TEST_MONGO_DSN.
+// Skips only when that variable is unset; every failure once it is set
+// (dial, open, ping, migrate) is a t.Fatalf, per the rule documented on
+// backends.
+func openMongo(t *testing.T) (store.Store, func(context.Context, id.ID)) {
 	t.Helper()
 
 	dsn := os.Getenv("CHRONICLE_TEST_MONGO_DSN")
@@ -119,28 +159,47 @@ func openMongo(t *testing.T) store.Store {
 
 	drv := mongodriver.New()
 	if err := drv.Open(dialCtx, dsn); err != nil {
-		t.Skipf("mongo unreachable at CHRONICLE_TEST_MONGO_DSN: %v", err)
+		t.Fatalf("open mongo at CHRONICLE_TEST_MONGO_DSN: %v", err)
 	}
 	db, err := grove.Open(drv)
 	if err != nil {
-		t.Skipf("grove.Open mongo: %v", err)
+		t.Fatalf("grove.Open mongo: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
 	s := chroniclemongo.New(db)
 	if err := s.Ping(dialCtx); err != nil {
-		t.Skipf("mongo ping failed: %v", err)
+		t.Fatalf("mongo ping failed: %v", err)
 	}
 	if err := s.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate mongo: %v", err)
 	}
-	return s
+
+	// Precise cleanup by stream ID via the raw driver, same reasoning as
+	// openPostgres: store.Store has no Delete, but the *mongo.Collection
+	// this store was built on does. The collection and field names below
+	// (chronicle_events/chronicle_streams, stream_id, _id) mirror
+	// store/mongo/store.go's colEvents/colStreams constants and
+	// store/mongo/models.go's bson tags; they are unexported there, so
+	// this is a deliberate, narrow duplication rather than an import.
+	cleanup := func(ctx context.Context, streamID id.ID) {
+		if _, err := drv.Collection("chronicle_events").DeleteMany(ctx, bson.M{"stream_id": streamID.String()}); err != nil {
+			t.Logf("mongo cleanup: delete events for stream %s: %v", streamID, err)
+		}
+		if _, err := drv.Collection("chronicle_streams").DeleteMany(ctx, bson.M{"_id": streamID.String()}); err != nil {
+			t.Logf("mongo cleanup: delete stream %s: %v", streamID, err)
+		}
+	}
+	return s, cleanup
 }
 
-// openRedis opens a redis store against CHRONICLE_TEST_REDIS_DSN (e.g.
-// "redis://localhost:6379/0"), skipping when that variable is unset or the
-// server is unreachable. Redis has no schema to migrate.
-func openRedis(t *testing.T) store.Store {
+// openRedis opens a redis store against CHRONICLE_TEST_REDIS_DSN. Skips
+// only when that variable is unset; every failure once it is set (dial,
+// open, ping) is a t.Fatalf, per the rule documented on backends. Redis
+// has no schema to migrate. Its cleanup func is always nil by design:
+// redis cleans up via a whole-database FlushDB registered below instead of
+// a per-stream func -- see the comment further down in this function.
+func openRedis(t *testing.T) (store.Store, func(context.Context, id.ID)) {
 	t.Helper()
 
 	dsn := os.Getenv("CHRONICLE_TEST_REDIS_DSN")
@@ -153,27 +212,48 @@ func openRedis(t *testing.T) store.Store {
 
 	drv := redisdriver.New()
 	if err := drv.Open(dialCtx, dsn); err != nil {
-		t.Skipf("redis unreachable at CHRONICLE_TEST_REDIS_DSN: %v", err)
+		t.Fatalf("open redis at CHRONICLE_TEST_REDIS_DSN: %v", err)
 	}
 	kvStore, err := kv.Open(drv)
 	if err != nil {
-		t.Skipf("kv.Open redis: %v", err)
+		t.Fatalf("kv.Open redis: %v", err)
 	}
 	t.Cleanup(func() { _ = kvStore.Close() })
 
 	s := chronicleredis.New(kvStore)
 	if err := s.Ping(dialCtx); err != nil {
-		t.Skipf("redis ping failed: %v", err)
+		t.Fatalf("redis ping failed: %v", err)
 	}
-	return s
+
+	// store/redis's event and stream keys are entity blobs plus several
+	// private sorted-set indexes (by app, by scope, by stream, one global
+	// index). Reconstructing that layout here to delete just this run's
+	// keys would duplicate private internals and silently drift out of
+	// sync with store/redis. CHRONICLE_TEST_REDIS_DSN names a database
+	// dedicated to this test, so flushing it once this subtest ends is
+	// the equivalent cleanup for a KV store: it removes exactly what this
+	// run's chronicle test writes could have created, nothing that
+	// belongs to any other service, because nothing else is pointed at
+	// this database.
+	rdb := redisdriver.UnwrapClient(kvStore)
+	t.Cleanup(func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := rdb.FlushDB(flushCtx).Err(); err != nil {
+			t.Logf("redis cleanup: FlushDB: %v", err)
+		}
+	})
+
+	return s, nil
 }
 
 // seedEventIn creates a fresh stream scoped to appID/tenantID and appends
-// one event into it. Every call mints its own stream ID, so the
-// UNIQUE(stream_id, sequence) constraint postgres, sqlite and mongo all
-// enforce is satisfied trivially -- two calls never share a stream, so they
-// never share a sequence either, regardless of scope.
-func seedEventIn(t *testing.T, s store.Store, appID, tenantID string) {
+// one event into it, returning the stream ID so the caller can register
+// cleanup. Every call mints its own stream ID, so the UNIQUE(stream_id,
+// sequence) constraint postgres, sqlite and mongo all enforce is satisfied
+// trivially -- two calls never share a stream, so they never share a
+// sequence either, regardless of scope.
+func seedEventIn(t *testing.T, s store.Store, appID, tenantID string) id.ID {
 	t.Helper()
 	ctx := context.Background()
 
@@ -203,6 +283,25 @@ func seedEventIn(t *testing.T, s store.Store, appID, tenantID string) {
 	if err := s.Append(ctx, event); err != nil {
 		t.Fatalf("append event for %s/%s: %v", appID, tenantID, err)
 	}
+	return streamID
+}
+
+// newRunSuffix returns a short, random hex token unique to this call, so
+// two runs against the same persistent database (postgres, mongo, redis)
+// never seed the same app/tenant scope. Without it, a fixed "app-1"/
+// "tenant-a" pair collides with UNIQUE(app_id, tenant_id) on
+// chronicle_streams on the second run: CreateStream fails with a
+// duplicate-key error during setup, before the query this test is actually
+// about is ever reached, and a persistent backend fails this test every
+// time after the first for a reason that has nothing to do with what it
+// records.
+func newRunSuffix(t *testing.T) string {
+	t.Helper()
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatalf("generate run suffix: %v", err)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // An empty AppID on a query is not "the current app". This pins what each
@@ -213,48 +312,87 @@ func seedEventIn(t *testing.T, s store.Store, appID, tenantID string) {
 //
 // This asserts observed behaviour, not desired behaviour. If a backend
 // changes, this test failing is the notification.
+//
+// The seeded app and tenant ids carry a per-run random suffix (see
+// newRunSuffix) rather than fixed literals, and every check below matches
+// against those variables rather than hardcoded strings. On a persistent
+// backend (postgres, mongo, redis, once pointed at a real service) the
+// store already holds rows from prior runs by the time this one seeds its
+// own two events, so "empty AppID matches every app" is checked by asking
+// whether THIS run's two apps both came back -- not by counting how many
+// distinct apps are visible in total, which would drift upward with every
+// run that ever touched the database and prove nothing about what an empty
+// AppID does. The same discipline applies to every t.Logf below: each
+// count it prints describes this run's own rows, never a running total.
 func TestEmptyAppIDScopeBehaviour(t *testing.T) {
 	for name, open := range backends(t) {
 		t.Run(name, func(t *testing.T) {
-			s := open(t)
+			s, cleanupStream := open(t)
 			ctx := context.Background()
 
-			seedEventIn(t, s, "app-1", "tenant-a")
-			seedEventIn(t, s, "app-2", "tenant-b")
+			suffix := newRunSuffix(t)
+			app1, tenant1 := "app-1-"+suffix, "tenant-a-"+suffix
+			app2, tenant2 := "app-2-"+suffix, "tenant-b-"+suffix
+
+			stream1 := seedEventIn(t, s, app1, tenant1)
+			stream2 := seedEventIn(t, s, app2, tenant2)
+			if cleanupStream != nil {
+				t.Cleanup(func() {
+					cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					cleanupStream(cleanupCtx, stream1)
+					cleanupStream(cleanupCtx, stream2)
+				})
+			}
 
 			res, err := s.Query(ctx, &audit.Query{Limit: 100})
 			if err != nil {
 				t.Fatalf("Query with empty scope: %v", err)
 			}
 
-			apps := map[string]bool{}
+			// Count only whether THIS run's two apps came back, not how
+			// many distinct apps the result carries in total -- a
+			// persistent backend can carry other apps from other runs,
+			// and that total says nothing about what an empty AppID does.
+			seenApp1, seenApp2 := false, false
+			matched := 0
 			for _, e := range res.Events {
-				apps[e.AppID] = true
+				switch e.AppID {
+				case app1:
+					seenApp1 = true
+					matched++
+				case app2:
+					seenApp2 = true
+					matched++
+				}
 			}
 
-			// Record the answer plainly. Two apps means an empty AppID
-			// matches EVERY app, which is the behaviour the contract's
-			// PERMISSION_DENIED exists to prevent reaching.
-			if len(apps) == 2 {
-				t.Logf("%s: empty AppID returns every app (%d events across %d apps)",
-					name, len(res.Events), len(apps))
+			// Record the answer plainly. Both apps coming back means an
+			// empty AppID matches EVERY app, which is the behaviour the
+			// contract's PERMISSION_DENIED exists to prevent reaching.
+			if seenApp1 && seenApp2 {
+				t.Logf("%s: empty AppID returns every app (this run's %d seeded events, across its 2 apps, both came back)",
+					name, matched)
 			} else {
-				t.Errorf("%s: empty AppID returned %d apps, not the 2 seeded. "+
+				t.Errorf("%s: empty AppID did not return both of this run's seeded apps "+
+					"(app1 seen=%v, app2 seen=%v, %d of this run's events matched). "+
 					"If this backend now scopes an empty AppID to nothing, that is a "+
 					"behaviour change worth knowing about: update this test and check "+
 					"whether extension/contract/scope.go's refusal is still needed",
-					name, len(apps))
+					name, seenApp1, seenApp2, matched)
 			}
 
 			// The same question for tenant, which is the dimension the
-			// contract allows to be empty on purpose.
-			res, err = s.Query(ctx, &audit.Query{AppID: "app-1", Limit: 100})
+			// contract allows to be empty on purpose. app1 carries this
+			// run's random suffix, so this count is always this run's own
+			// single seeded event -- it cannot pick up another run's rows.
+			res, err = s.Query(ctx, &audit.Query{AppID: app1, Limit: 100})
 			if err != nil {
 				t.Fatalf("Query with empty tenant: %v", err)
 			}
-			t.Logf("%s: AppID set and TenantID empty returns %d events", name, len(res.Events))
+			t.Logf("%s: AppID set and TenantID empty returns %d events for this run's app", name, len(res.Events))
 			for _, e := range res.Events {
-				if e.AppID != "app-1" {
+				if e.AppID != app1 {
 					t.Errorf("%s: an empty TenantID reached outside its app, to %q. "+
 						"That is a cross-app leak, not an app-wide view", name, e.AppID)
 				}
