@@ -145,11 +145,6 @@ func (s *Store) SavePolicy(ctx context.Context, p *retention.Policy) error {
 	return nil
 }
 
-// policyScopeKey builds the per-scope uniqueness key for a policy category.
-func policyScopeKey(appID, tenantID, category string) string {
-	return uniquePolicyScope + appID + ":" + tenantID + ":" + category
-}
-
 // GetPolicy returns a retention policy by ID.
 func (s *Store) GetPolicy(ctx context.Context, policyID id.ID) (*retention.Policy, error) {
 	var m policyModel
@@ -237,7 +232,7 @@ func (s *Store) EventsOlderThan(
 	zKey := zEventAll
 	switch {
 	case pq.AppID != "" && pq.TenantID != "":
-		zKey = zEventScope + pq.AppID + ":" + pq.TenantID
+		zKey = eventScopeKey(pq.AppID, pq.TenantID)
 	case pq.AppID != "":
 		zKey = zEventApp + pq.AppID
 	case pq.Category != "*":
@@ -314,7 +309,7 @@ func (s *Store) PurgeEvents(ctx context.Context, eventIDs []id.ID) (int64, error
 		pipe := s.rdb.Pipeline()
 		pipe.ZRem(ctx, zEventAll, m.ID)
 		pipe.ZRem(ctx, zEventStream+m.StreamID, m.ID)
-		pipe.ZRem(ctx, zEventScope+m.AppID+":"+m.TenantID, m.ID)
+		pipe.ZRem(ctx, eventScopeKey(m.AppID, m.TenantID), m.ID)
 		pipe.ZRem(ctx, zEventApp+m.AppID, m.ID)
 		if m.Category != "" {
 			pipe.ZRem(ctx, zEventCategory+m.Category, m.ID)
