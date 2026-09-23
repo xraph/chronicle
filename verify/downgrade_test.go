@@ -45,7 +45,7 @@ func TestVerifyChainReportsDowngrade(t *testing.T) {
 	ctx := context.Background()
 	key := make([]byte, 32)
 	provider := stubProvider{key: key, activeID: "hmac-1"} // mirror hash/scheme_test.go
-	chain, err := hash.NewChain(hash.SchemeHMAC, provider)
+	chain, err := hash.NewChain(hash.SchemeHMACV5, provider)
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -62,13 +62,13 @@ func TestVerifyChainReportsDowngrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
-	event.Hash, event.HashScheme = digest, string(hash.SchemePlain)
+	event.Hash, event.HashScheme = digest, string(hash.SchemePlainV4)
 
 	v := verify.NewVerifierWithChain(fakeStore{events: []*audit.Event{event}}, chain)
 	report, err := v.VerifyChain(ctx, &verify.Input{
 		StreamID: id.NewStreamID(),
 		FromSeq:  1, ToSeq: 20,
-		Pin: hash.Pin{Scheme: hash.SchemeHMAC, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemeHMACV5, Since: 1},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)
@@ -90,7 +90,7 @@ func TestVerifyChainTolerantResolutionDoesNotInvalidate(t *testing.T) {
 	ctx := context.Background()
 	key := make([]byte, 32)
 	provider := stubProvider{key: key, activeID: "hmac-1"}
-	chain, err := hash.NewChain(hash.SchemeHMAC, provider)
+	chain, err := hash.NewChain(hash.SchemeHMACV5, provider)
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -101,20 +101,17 @@ func TestVerifyChainTolerantResolutionDoesNotInvalidate(t *testing.T) {
 		Outcome: audit.OutcomeSuccess, Severity: audit.SeverityInfo,
 	}
 
-	// A pre-migration row: computed under the plain scheme, no HashScheme
-	// recorded, sitting below the pin's Since.
-	var plain hash.Chain
-	digest, _, err := plain.Compute(ctx, "", event)
-	if err != nil {
-		t.Fatalf("Compute: %v", err)
-	}
-	event.Hash, event.HashScheme = digest, ""
+	// A pre-migration row: a legacy digest, no HashScheme recorded, sitting
+	// below the pin's Since. Rows this old are exactly what the tolerant path
+	// exists for, and ComputeLegacy is the only way left to build one -- every
+	// writing scheme has moved on.
+	event.Hash, event.HashScheme = hash.ComputeLegacy("", event), ""
 
 	v := verify.NewVerifierWithChain(fakeStore{events: []*audit.Event{event}}, chain)
 	report, err := v.VerifyChain(ctx, &verify.Input{
 		StreamID: id.NewStreamID(),
 		FromSeq:  1, ToSeq: 20,
-		Pin: hash.Pin{Scheme: hash.SchemeHMAC, Since: 100},
+		Pin: hash.Pin{Scheme: hash.SchemeHMACV5, Since: 100},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)

@@ -182,7 +182,7 @@ func rewriteEventAndRelink(t *testing.T, mem *memory.Store, streamID id.ID, seq 
 			t.Fatalf("relink event %d: %v", events[i].Sequence, computeErr)
 		}
 		events[i].Hash = digest
-		events[i].HashScheme = string(hash.SchemePlain)
+		events[i].HashScheme = string(hash.SchemePlainV4)
 	}
 
 	ids := make([]id.ID, len(events))

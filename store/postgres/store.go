@@ -65,8 +65,8 @@ func (s *Store) SetHasher(h *hash.Chain) { s.hasher = h }
 // New creates a new grove ORM store with the given database connection.
 //
 // Without WithHasher, Append re-links under a zero-value hash.Chain, which is
-// SchemePlain with no key provider -- the same behavior as before this option
-// existed.
+// SchemePlainV4 with no key provider: unkeyed, but with the unambiguous content
+// encoding, so a default-configured store is not writing forgeable digests.
 func New(db *grove.DB, opts ...Option) *Store {
 	s := &Store{
 		db:     db,

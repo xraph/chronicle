@@ -50,7 +50,7 @@ func forgeWithLeakedKey(t *testing.T, events []*audit.Event, key []byte, keyID, 
 	// A chain built directly on a provider that still hands out the leaked key
 	// is exactly what the attacker has: the algorithm ships in this repo, and
 	// the key is the only thing that was ever secret.
-	forger, err := hash.NewChain(hash.SchemeHMAC, fixedKeyProvider{key: key, id: keyID})
+	forger, err := hash.NewChain(hash.SchemeHMACV5, fixedKeyProvider{key: key, id: keyID})
 	if err != nil {
 		t.Fatalf("build forging chain: %v", err)
 	}
@@ -65,7 +65,7 @@ func forgeWithLeakedKey(t *testing.T, events []*audit.Event, key []byte, keyID, 
 			t.Fatalf("forge event %d: %v", i, computeErr)
 		}
 		events[i].Hash = digest
-		events[i].HashScheme = string(hash.SchemeHMAC)
+		events[i].HashScheme = string(hash.SchemeHMACV5)
 		events[i].HashKeyID = resolvedID
 	}
 }
@@ -109,7 +109,7 @@ func TestRetiringALeakedKeyDoesNotStopIt(t *testing.T) {
 	writing := keysetFileProvider(t, []map[string]any{
 		{"id": "hmac-leaked", "use": "hmac", "active": true, "material": b64Key(leaked)},
 	})
-	c, events, streamID := seedChain(t, hash.SchemeHMAC, writing)
+	c, events, streamID := seedChain(t, hash.SchemeHMACV5, writing)
 
 	forgeWithLeakedKey(t, events, leaked, "hmac-leaked", "attacker-was-here")
 	persist(t, c, events)
@@ -122,7 +122,7 @@ func TestRetiringALeakedKeyDoesNotStopIt(t *testing.T) {
 
 	report, err := verifier.VerifyChain(ctx, &verify.Input{
 		StreamID: streamID, FromSeq: 1, ToSeq: uint64(len(events)),
-		Pin: hash.Pin{Scheme: hash.SchemeHMAC, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemeHMACV5, Since: 1},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)
@@ -154,7 +154,7 @@ func TestRevokingALeakedKeyStopsIt(t *testing.T) {
 	writing := keysetFileProvider(t, []map[string]any{
 		{"id": "hmac-leaked", "use": "hmac", "active": true, "material": b64Key(leaked)},
 	})
-	c, events, streamID := seedChain(t, hash.SchemeHMAC, writing)
+	c, events, streamID := seedChain(t, hash.SchemeHMACV5, writing)
 
 	forgeWithLeakedKey(t, events, leaked, "hmac-leaked", "attacker-was-here")
 	persist(t, c, events)
@@ -166,7 +166,7 @@ func TestRevokingALeakedKeyStopsIt(t *testing.T) {
 
 	report, err := verifier.VerifyChain(ctx, &verify.Input{
 		StreamID: streamID, FromSeq: 1, ToSeq: uint64(len(events)),
-		Pin: hash.Pin{Scheme: hash.SchemeHMAC, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemeHMACV5, Since: 1},
 	})
 	if err == nil {
 		t.Fatalf("VerifyChain accepted a chain signed with a revoked key: valid=%v tampered=%v downgrades=%v",
@@ -184,7 +184,7 @@ func reopenWithProvider(t *testing.T, c *chronicle.Chronicle, provider keys.Prov
 
 	reopened, err := chronicle.New(
 		chronicle.WithStore(c.Store()),
-		chronicle.WithDigestScheme(hash.SchemeHMAC),
+		chronicle.WithDigestScheme(hash.SchemeHMACV5),
 		chronicle.WithKeyProvider(provider),
 	)
 	if err != nil {

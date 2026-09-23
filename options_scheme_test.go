@@ -18,7 +18,7 @@ import (
 func TestNewRefusesHMACWithoutKeyProvider(t *testing.T) {
 	_, err := chronicle.New(
 		chronicle.WithStore(store.NewAdapter(memory.New())),
-		chronicle.WithDigestScheme(hash.SchemeHMAC),
+		chronicle.WithDigestScheme(hash.SchemeHMACV5),
 	)
 	if !errors.Is(err, chronicle.ErrHMACKeyUnavailable) {
 		t.Fatalf("New error = %v, want ErrHMACKeyUnavailable", err)
@@ -29,7 +29,7 @@ func TestNewAcceptsHMACWithKeyProvider(t *testing.T) {
 	key := make([]byte, 32)
 	c, err := chronicle.New(
 		chronicle.WithStore(store.NewAdapter(memory.New())),
-		chronicle.WithDigestScheme(hash.SchemeHMAC),
+		chronicle.WithDigestScheme(hash.SchemeHMACV5),
 		chronicle.WithKeyProvider(stubProvider{key: key, activeID: "hmac-1"}),
 	)
 	if err != nil {

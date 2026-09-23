@@ -217,7 +217,7 @@ func TestCheckpointDoesNotUpgradeCoverageBelowTheSchemesPin(t *testing.T) {
 
 	key := make([]byte, 32)
 	provider := stubProvider{key: key, activeID: "hmac-1"}
-	hmacChain, err := hash.NewChain(hash.SchemeHMAC, provider)
+	hmacChain, err := hash.NewChain(hash.SchemeHMACV5, provider)
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestCheckpointDoesNotUpgradeCoverageBelowTheSchemesPin(t *testing.T) {
 	v := verify.NewVerifierWithCheckpoints(fakeStore{events: events}, hmacChain, cps, signer)
 	report, err := v.VerifyChain(ctx, &verify.Input{
 		StreamID: streamID, HeadSeq: 5, HeadHash: events[4].Hash,
-		Pin: hash.Pin{Scheme: hash.SchemeHMAC, Since: 4},
+		Pin: hash.Pin{Scheme: hash.SchemeHMACV5, Since: 4},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)

@@ -82,9 +82,13 @@ func WithSealer(s EventSealer) Option {
 
 // WithDigestScheme selects how event digests are computed.
 //
-// hash.SchemeHMAC requires [WithKeyProvider]; without one, New returns
+// hash.SchemeHMACV5 requires [WithKeyProvider]; without one, New returns
 // [ErrHMACKeyUnavailable] rather than accepting a flag that promises a
 // guarantee nothing implements. The two options may be given in either order.
+//
+// hash.SchemePlain and hash.SchemeHMAC are verify-only and rejected here. They
+// hash an ambiguous content encoding, so a digest written under either can be
+// forged without the key; use hash.SchemePlainV4 or hash.SchemeHMACV5.
 func WithDigestScheme(s hash.Scheme) Option {
 	return func(c *Chronicle) error {
 		c.config.DigestScheme = s

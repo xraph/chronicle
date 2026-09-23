@@ -82,7 +82,7 @@ func TestYAMLConfigKeepsTheProgrammaticDigestScheme(t *testing.T) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMAC)
+	seedStream(t, db, hash.SchemeHMACV5)
 
 	ctx := context.Background()
 	event := &audit.Event{
@@ -99,9 +99,9 @@ func TestYAMLConfigKeepsTheProgrammaticDigestScheme(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.HashScheme != string(hash.SchemeHMAC) {
+	if got.HashScheme != string(hash.SchemeHMACV5) {
 		t.Fatalf("HashScheme = %q, want %q; the YAML merge dropped the configured digest scheme",
-			got.HashScheme, hash.SchemeHMAC)
+			got.HashScheme, hash.SchemeHMACV5)
 	}
 	if got.HashKeyID == "" {
 		t.Error("HashKeyID is empty; the digest was written unkeyed")
@@ -131,7 +131,7 @@ func TestYAMLTamperEvidenceWins(t *testing.T) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMAC)
+	seedStream(t, db, hash.SchemeHMACV5)
 
 	ctx := context.Background()
 	event := &audit.Event{
@@ -148,8 +148,8 @@ func TestYAMLTamperEvidenceWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.HashScheme != string(hash.SchemeHMAC) {
-		t.Fatalf("HashScheme = %q, want %q; the YAML digest setting was ignored", got.HashScheme, hash.SchemeHMAC)
+	if got.HashScheme != string(hash.SchemeHMACV5) {
+		t.Fatalf("HashScheme = %q, want %q; the YAML digest setting was ignored", got.HashScheme, hash.SchemeHMACV5)
 	}
 }
 

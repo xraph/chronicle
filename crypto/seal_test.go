@@ -146,8 +146,10 @@ func TestChainStillVerifiesAfterKeyDestruction(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	// Hash is computed after sealing, exactly as Chronicle.Record does.
+	// Hash is computed after sealing, exactly as Chronicle.Record does, and the
+	// scheme is recorded alongside it, exactly as the stores do.
 	event.Hash, _, _ = chain.Compute(context.Background(), "prev", event)
+	event.HashScheme = string(chain.Scheme())
 
 	if err := keys.Delete(event.SubjectID); err != nil {
 		t.Fatalf("Delete key: %v", err)

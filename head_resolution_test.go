@@ -193,7 +193,7 @@ func TestVerifyChainResolvesTheStreamIDWithHeadAndPinSupplied(t *testing.T) {
 	report, err := c.VerifyChain(ctx, &verify.Input{
 		AppID: "scope-both", TenantID: "tenant-both",
 		HeadSeq: last.Sequence, HeadHash: last.Hash,
-		Pin: hash.Pin{Scheme: hash.SchemePlain, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemePlainV4, Since: 1},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)

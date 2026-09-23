@@ -278,8 +278,8 @@ func TestAcceptedNonRecomputingStoreStillWritesKeyedDigests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.HashScheme != string(hash.SchemeHMAC) {
-		t.Errorf("HashScheme = %q, want %q", got.HashScheme, hash.SchemeHMAC)
+	if got.HashScheme != string(hash.SchemeHMACV5) {
+		t.Errorf("HashScheme = %q, want %q", got.HashScheme, hash.SchemeHMACV5)
 	}
 	if got.HashKeyID != "k1" {
 		t.Errorf("HashKeyID = %q, want k1", got.HashKeyID)
@@ -317,7 +317,7 @@ func TestWithStoreInjectsTheChainWhenTheStoreCanReceiveIt(t *testing.T) {
 	if err := ext.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMAC)
+	seedStream(t, db, hash.SchemeHMACV5)
 
 	event := &audit.Event{
 		AppID:    tamperTestAppID,
@@ -333,9 +333,9 @@ func TestWithStoreInjectsTheChainWhenTheStoreCanReceiveIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.HashScheme != string(hash.SchemeHMAC) {
+	if got.HashScheme != string(hash.SchemeHMACV5) {
 		t.Fatalf("HashScheme = %q, want %q; the store passed to WithStore never received the chain",
-			got.HashScheme, hash.SchemeHMAC)
+			got.HashScheme, hash.SchemeHMACV5)
 	}
 }
 

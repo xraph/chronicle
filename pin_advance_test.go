@@ -100,25 +100,25 @@ func TestTurningHMACOnAdvancesAnExistingStreamsPin(t *testing.T) {
 	backing := store.NewAdapter(memory.New())
 
 	// Era 1: plain.
-	plainChron := openPinChronicle(t, backing, hash.SchemePlain, nil)
+	plainChron := openPinChronicle(t, backing, hash.SchemePlainV4, nil)
 	streamID := recordPinEvents(t, plainChron, "plain", 5)
 
-	if pin := readPin(t, plainChron, streamID); pin.Scheme != hash.SchemePlain {
-		t.Fatalf("pin before the upgrade = %s, want %s", pin.Scheme, hash.SchemePlain)
+	if pin := readPin(t, plainChron, streamID); pin.Scheme != hash.SchemePlainV4 {
+		t.Fatalf("pin before the upgrade = %s, want %s", pin.Scheme, hash.SchemePlainV4)
 	}
 
 	// Era 2: same database, HMAC configured.
 	key := make([]byte, 32)
 	key[0] = 7
 	provider := stubProvider{key: key, activeID: "hmac-1"}
-	hmacChron := openPinChronicle(t, backing, hash.SchemeHMAC, provider)
+	hmacChron := openPinChronicle(t, backing, hash.SchemeHMACV5, provider)
 	recordPinEvents(t, hmacChron, "keyed", 1)
 
 	pin := readPin(t, hmacChron, streamID)
-	if pin.Scheme != hash.SchemeHMAC {
+	if pin.Scheme != hash.SchemeHMACV5 {
 		t.Fatalf("pin after the upgrade = %s, want %s "+
 			"(nothing advanced the stream's scheme, so the keyed chain is invisible to verification)",
-			pin.Scheme, hash.SchemeHMAC)
+			pin.Scheme, hash.SchemeHMACV5)
 	}
 	if pin.Since != 6 {
 		t.Fatalf("pin applies from sequence %d, want 6 (one past the five plain events)", pin.Since)
@@ -133,9 +133,9 @@ func TestTurningHMACOnAdvancesAnExistingStreamsPin(t *testing.T) {
 		t.Fatalf("read %d events, want 6", len(events))
 	}
 	for _, e := range events {
-		want := string(hash.SchemePlain)
+		want := string(hash.SchemePlainV4)
 		if e.Sequence == 6 {
-			want = string(hash.SchemeHMAC)
+			want = string(hash.SchemeHMACV5)
 		}
 		if e.HashScheme != want {
 			t.Errorf("event %d HashScheme = %q, want %q", e.Sequence, e.HashScheme, want)
@@ -189,7 +189,7 @@ func TestTurningHMACOnAdvancesAnExistingStreamsPin(t *testing.T) {
 func TestPinDoesNotMoveWhenTheSchemeIsUnchanged(t *testing.T) {
 	backing := store.NewAdapter(memory.New())
 
-	c := openPinChronicle(t, backing, hash.SchemePlain, nil)
+	c := openPinChronicle(t, backing, hash.SchemePlainV4, nil)
 	streamID := recordPinEvents(t, c, "first", 3)
 
 	before := readPin(t, c, streamID)
@@ -216,15 +216,15 @@ func TestWeakeningTheSchemeIsRefused(t *testing.T) {
 
 	key := make([]byte, 32)
 	provider := stubProvider{key: key, activeID: "hmac-1"}
-	hmacChron := openPinChronicle(t, backing, hash.SchemeHMAC, provider)
+	hmacChron := openPinChronicle(t, backing, hash.SchemeHMACV5, provider)
 	streamID := recordPinEvents(t, hmacChron, "keyed", 3)
 
 	pinned := readPin(t, hmacChron, streamID)
-	if pinned.Scheme != hash.SchemeHMAC {
-		t.Fatalf("setup pin = %s, want %s", pinned.Scheme, hash.SchemeHMAC)
+	if pinned.Scheme != hash.SchemeHMACV5 {
+		t.Fatalf("setup pin = %s, want %s", pinned.Scheme, hash.SchemeHMACV5)
 	}
 
-	plainChron := openPinChronicle(t, backing, hash.SchemePlain, nil)
+	plainChron := openPinChronicle(t, backing, hash.SchemePlainV4, nil)
 
 	recCtx := scope.WithTenantID(scope.WithAppID(context.Background(), pinApp), pinTenant)
 	err := plainChron.Info(recCtx, "login", "session", "after-downgrade").
@@ -260,7 +260,7 @@ func TestPinAdvancesPastEventsHeadSeqDoesNotKnowAbout(t *testing.T) {
 	ctx := context.Background()
 	backing := store.NewAdapter(memory.New())
 
-	plainChron := openPinChronicle(t, backing, hash.SchemePlain, nil)
+	plainChron := openPinChronicle(t, backing, hash.SchemePlainV4, nil)
 	streamID := recordPinEvents(t, plainChron, "plain", 5)
 
 	// Rewind the head the way a crash after the insert would have left it.
@@ -273,7 +273,7 @@ func TestPinAdvancesPastEventsHeadSeqDoesNotKnowAbout(t *testing.T) {
 	}
 
 	key := make([]byte, 32)
-	hmacChron := openPinChronicle(t, backing, hash.SchemeHMAC, stubProvider{key: key, activeID: "hmac-1"})
+	hmacChron := openPinChronicle(t, backing, hash.SchemeHMACV5, stubProvider{key: key, activeID: "hmac-1"})
 	recordPinEvents(t, hmacChron, "keyed", 1)
 
 	if pin := readPin(t, hmacChron, streamID); pin.Since != 6 {
@@ -290,4 +290,92 @@ func hasSeq(list []uint64, seq uint64) bool {
 		}
 	}
 	return false
+}
+
+// schemePinWriter lowers a stream's pin directly, which is how this file builds
+// a stream that a pre-v5 deployment left behind.
+type schemePinWriter interface {
+	UpdateStreamScheme(ctx context.Context, streamID id.ID, scheme string, since uint64) error
+}
+
+// forcePin rewrites a stream's pin behind Chronicle's back, standing in for a
+// database written by an older build of this library.
+func forcePin(t *testing.T, c *chronicle.Chronicle, streamID id.ID, scheme hash.Scheme, since uint64) {
+	t.Helper()
+
+	writer, ok := c.Store().(schemePinWriter)
+	if !ok {
+		t.Fatalf("store %T cannot write the stream pin", c.Store())
+	}
+	if err := writer.UpdateStreamScheme(context.Background(), streamID, string(scheme), since); err != nil {
+		t.Fatalf("UpdateStreamScheme: %v", err)
+	}
+}
+
+// TestDroppingTheKeyToGainTheFramingFixIsRefused is the case hash.Rank's
+// ordering exists to prevent, exercised through the code that consults it.
+//
+// A deployment running chronicle/v3 upgrades this library and, reading that v4
+// fixes a digest collision, configures the plain scheme. Every event it writes
+// from then on is unkeyed and reproducible by anyone who can reach the
+// database. Rank the framing fix above the keyed schemes and reconcileStreamPin
+// waves that through as an upgrade, moving the pin and reporting nothing.
+func TestDroppingTheKeyToGainTheFramingFixIsRefused(t *testing.T) {
+	backing := store.NewAdapter(memory.New())
+
+	key := make([]byte, 32)
+	provider := stubProvider{key: key, activeID: "hmac-1"}
+	seeder := openPinChronicle(t, backing, hash.SchemeHMACV5, provider)
+	streamID := recordPinEvents(t, seeder, "keyed", 2)
+
+	// What the old build left in the database.
+	forcePin(t, seeder, streamID, hash.SchemeHMAC, 1)
+
+	framedButUnkeyed := openPinChronicle(t, backing, hash.SchemePlainV4, nil)
+
+	recCtx := scope.WithTenantID(scope.WithAppID(context.Background(), pinApp), pinTenant)
+	err := framedButUnkeyed.Info(recCtx, "login", "session", "after-key-drop").
+		Category("auth").
+		UserID("user-after-key-drop").
+		Record()
+	if !errors.Is(err, chronicle.ErrSchemeWeakeningRefused) {
+		t.Fatalf("Record returned %v, want ErrSchemeWeakeningRefused; "+
+			"chronicle/v4 is unkeyed and must not displace a chronicle/v3 pin", err)
+	}
+
+	if after := readPin(t, framedButUnkeyed, streamID); after.Scheme != hash.SchemeHMAC {
+		t.Fatalf("pin moved to %s; the refused append lowered the guarantee anyway", after.Scheme)
+	}
+}
+
+// The upgrade that must keep working: same starting point, but configured to
+// the keyed scheme that also fixes the framing.
+func TestUpgradingFromTheAmbiguousKeyedSchemeAdvancesThePin(t *testing.T) {
+	backing := store.NewAdapter(memory.New())
+
+	key := make([]byte, 32)
+	provider := stubProvider{key: key, activeID: "hmac-1"}
+	seeder := openPinChronicle(t, backing, hash.SchemeHMACV5, provider)
+	streamID := recordPinEvents(t, seeder, "keyed", 2)
+
+	forcePin(t, seeder, streamID, hash.SchemeHMAC, 1)
+
+	upgraded := openPinChronicle(t, backing, hash.SchemeHMACV5, provider)
+
+	recCtx := scope.WithTenantID(scope.WithAppID(context.Background(), pinApp), pinTenant)
+	if err := upgraded.Info(recCtx, "login", "session", "after-upgrade").
+		Category("auth").
+		UserID("user-after-upgrade").
+		Record(); err != nil {
+		t.Fatalf("Record after upgrading to %s: %v", hash.SchemeHMACV5, err)
+	}
+
+	pin := readPin(t, upgraded, streamID)
+	if pin.Scheme != hash.SchemeHMACV5 {
+		t.Fatalf("pin = %s, want %s; the upgrade did not take effect on an existing stream",
+			pin.Scheme, hash.SchemeHMACV5)
+	}
+	if pin.Since != 3 {
+		t.Errorf("pin applies from sequence %d, want 3 (one past the two events already there)", pin.Since)
+	}
 }

@@ -794,7 +794,7 @@ func TestVerifyChainDefaultsToGenesisThroughHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
-	event.Hash, event.HashScheme = digest, string(hash.SchemePlain)
+	event.Hash, event.HashScheme = digest, string(hash.SchemePlainV4)
 
 	if err := ts.store.Append(ctx, event); err != nil {
 		t.Fatalf("append: %v", err)
@@ -955,7 +955,7 @@ func TestVerifyChainVerifiesUnderTheConfiguredHMACChain(t *testing.T) {
 	ctx := context.Background()
 
 	provider := stubHandlerKeyProvider{key: make([]byte, 32), activeID: "hmac-1"}
-	chain, err := hash.NewChain(hash.SchemeHMAC, provider)
+	chain, err := hash.NewChain(hash.SchemeHMACV5, provider)
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -982,7 +982,7 @@ func TestVerifyChainVerifiesUnderTheConfiguredHMACChain(t *testing.T) {
 	}
 	event.Hash = digest
 	event.HashKeyID = keyID
-	event.HashScheme = string(hash.SchemeHMAC)
+	event.HashScheme = string(hash.SchemeHMACV5)
 	if err := store.Append(ctx, event); err != nil {
 		t.Fatalf("append: %v", err)
 	}

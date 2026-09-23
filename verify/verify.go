@@ -203,7 +203,7 @@ type CheckpointResult struct {
 // they rest on an unkeyed digest whatever the stream is pinned to now.
 func gradeCoverage(input *Input, fromSeq, toSeq uint64) []Coverage {
 	pinned := LevelUnkeyed
-	if hash.Rank(input.Pin.Scheme) >= hash.Rank(hash.SchemeHMAC) {
+	if hash.Keyed(input.Pin.Scheme) {
 		pinned = LevelKeyed
 	}
 

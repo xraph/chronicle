@@ -54,7 +54,7 @@ func newHMACTestStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	h, err := hash.NewChain(hash.SchemeHMAC, stubProvider{key: make([]byte, 32), activeID: "hmac-1"})
+	h, err := hash.NewChain(hash.SchemeHMACV5, stubProvider{key: make([]byte, 32), activeID: "hmac-1"})
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestEventSchemeColumnsRoundTrip(t *testing.T) {
 	// same call the code under test makes) pins that behavior instead of
 	// mirroring it. What this test actually proves is that whatever Append
 	// does write comes back unchanged through the new columns.
-	wantScheme, wantKeyID := string(hash.SchemePlain), ""
+	wantScheme, wantKeyID := string(hash.SchemePlainV4), ""
 	if got.HashScheme != wantScheme || got.HashKeyID != wantKeyID {
 		t.Errorf("scheme columns = (%q, %q), want (%q, %q)", got.HashScheme, got.HashKeyID, wantScheme, wantKeyID)
 	}
@@ -256,7 +256,7 @@ func TestEventModelCarriesHashKeyID(t *testing.T) {
 		    (id, stream_id, sequence, hash, app_id, action, resource, category, timestamp, hash_scheme, hash_key_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		eventID.String(), st.ID.String(), 1, "h", "app", "login", "session", "auth",
-		"2024-01-01T00:00:00Z", string(hash.SchemeHMAC), "hmac-key-7",
+		"2024-01-01T00:00:00Z", string(hash.SchemeHMACV5), "hmac-key-7",
 	); seedErr != nil {
 		t.Fatalf("seed event: %v", seedErr)
 	}
@@ -268,8 +268,8 @@ func TestEventModelCarriesHashKeyID(t *testing.T) {
 	if got.HashKeyID != "hmac-key-7" {
 		t.Errorf("HashKeyID = %q, want hmac-key-7", got.HashKeyID)
 	}
-	if got.HashScheme != string(hash.SchemeHMAC) {
-		t.Errorf("HashScheme = %q, want %q", got.HashScheme, hash.SchemeHMAC)
+	if got.HashScheme != string(hash.SchemeHMACV5) {
+		t.Errorf("HashScheme = %q, want %q", got.HashScheme, hash.SchemeHMACV5)
 	}
 }
 
@@ -280,7 +280,7 @@ func TestAppendRecomputesUnderTheConfiguredScheme(t *testing.T) {
 	ctx := context.Background()
 	s := newHMACTestStore(t) // wraps newTestStore with an HMAC chain; see step 3
 
-	st := &stream.Stream{ID: id.NewStreamID(), AppID: "app", Scheme: "chronicle/v3", SchemeSince: 1}
+	st := &stream.Stream{ID: id.NewStreamID(), AppID: "app", Scheme: "chronicle/v5", SchemeSince: 1}
 	if err := s.CreateStream(ctx, st); err != nil {
 		t.Fatalf("CreateStream: %v", err)
 	}
@@ -298,8 +298,8 @@ func TestAppendRecomputesUnderTheConfiguredScheme(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.HashScheme != "chronicle/v3" {
-		t.Errorf("HashScheme = %q, want chronicle/v3; Append reverted to an unkeyed digest", got.HashScheme)
+	if got.HashScheme != "chronicle/v5" {
+		t.Errorf("HashScheme = %q, want chronicle/v5; Append reverted to an unkeyed digest", got.HashScheme)
 	}
 	if got.HashKeyID == "" {
 		t.Error("HashKeyID is empty; the key used for the digest was not recorded")
@@ -315,7 +315,7 @@ func TestUpdateStreamSchemeMovesThePin(t *testing.T) {
 
 	streamID := seedStream(t, s, "app", "tenant")
 
-	if err := s.UpdateStreamScheme(ctx, streamID, string(hash.SchemeHMAC), 42); err != nil {
+	if err := s.UpdateStreamScheme(ctx, streamID, string(hash.SchemeHMACV5), 42); err != nil {
 		t.Fatalf("UpdateStreamScheme: %v", err)
 	}
 
@@ -323,14 +323,14 @@ func TestUpdateStreamSchemeMovesThePin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStream: %v", err)
 	}
-	if got.Scheme != string(hash.SchemeHMAC) {
-		t.Errorf("Scheme = %q, want %q", got.Scheme, hash.SchemeHMAC)
+	if got.Scheme != string(hash.SchemeHMACV5) {
+		t.Errorf("Scheme = %q, want %q", got.Scheme, hash.SchemeHMACV5)
 	}
 	if got.SchemeSince != 42 {
 		t.Errorf("SchemeSince = %d, want 42", got.SchemeSince)
 	}
 
-	if err := s.UpdateStreamScheme(ctx, id.NewStreamID(), string(hash.SchemeHMAC), 1); err == nil {
+	if err := s.UpdateStreamScheme(ctx, id.NewStreamID(), string(hash.SchemeHMACV5), 1); err == nil {
 		t.Error("UpdateStreamScheme on an unknown stream returned nil; a silent no-op would hide a lost pin")
 	}
 }

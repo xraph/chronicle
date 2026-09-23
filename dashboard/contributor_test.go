@@ -351,7 +351,7 @@ func TestRenderVerificationDetectsSchemeDowngrade(t *testing.T) {
 		Category:  "auth",
 	}
 
-	plain, err := hash.NewChain(hash.SchemePlain, nil)
+	plain, err := hash.NewChain(hash.SchemePlainV4, nil)
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestRenderVerificationDetectsSchemeDowngrade(t *testing.T) {
 		t.Fatalf("Compute: %v", err)
 	}
 	event.Hash = digest
-	event.HashScheme = string(hash.SchemePlain)
+	event.HashScheme = string(hash.SchemePlainV4)
 
 	if appendErr := ds.store.Append(context.Background(), event); appendErr != nil {
 		t.Fatalf("append: %v", appendErr)
@@ -461,7 +461,7 @@ func TestRenderVerificationVerifiesUnderTheConfiguredHMACChain(t *testing.T) {
 	ctx := context.Background()
 
 	provider := stubDashboardKeyProvider{key: make([]byte, 32), activeID: "hmac-1"}
-	chain, err := hash.NewChain(hash.SchemeHMAC, provider)
+	chain, err := hash.NewChain(hash.SchemeHMACV5, provider)
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestRenderVerificationVerifiesUnderTheConfiguredHMACChain(t *testing.T) {
 	}
 	event.Hash = digest
 	event.HashKeyID = keyID
-	event.HashScheme = string(hash.SchemeHMAC)
+	event.HashScheme = string(hash.SchemeHMACV5)
 	if err := mem.Append(ctx, event); err != nil {
 		t.Fatalf("append: %v", err)
 	}

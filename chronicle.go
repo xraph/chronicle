@@ -162,7 +162,7 @@ func New(opts ...Option) (*Chronicle, error) {
 
 	// Checked after every option has run, because the scheme and the provider
 	// can be supplied in either order.
-	if c.config.DigestScheme == hash.SchemeHMAC && c.keys == nil {
+	if hash.Keyed(c.config.DigestScheme) && c.keys == nil {
 		return nil, ErrHMACKeyUnavailable
 	}
 

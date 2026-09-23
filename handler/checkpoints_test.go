@@ -142,7 +142,7 @@ func seedVerifiableStream(t *testing.T, s *cpSetup) string {
 	if err != nil {
 		t.Fatalf("compute hash: %v", err)
 	}
-	event.Hash, event.HashScheme = digest, string(hash.SchemePlain)
+	event.Hash, event.HashScheme = digest, string(hash.SchemePlainV4)
 
 	if err := s.store.Append(ctx, event); err != nil {
 		t.Fatalf("append event: %v", err)

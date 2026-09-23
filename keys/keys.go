@@ -41,7 +41,7 @@ import (
 type Use string
 
 const (
-	// UseHMAC is the 32-byte symmetric key behind hash.SchemeHMAC.
+	// UseHMAC is the 32-byte symmetric key behind hash.SchemeHMACV5.
 	UseHMAC Use = "hmac"
 
 	// UseCheckpointSig is the ed25519 private key that signs checkpoints.

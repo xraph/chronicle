@@ -310,7 +310,7 @@ func (e *Extension) init(fapp forge.App) error {
 	// tells Chronicle the same scheme and provider the store was given.
 	if e.config.TamperEvidence.Digest == "hmac" {
 		chronicleOpts = append(chronicleOpts,
-			chronicle.WithDigestScheme(hash.SchemeHMAC),
+			chronicle.WithDigestScheme(hash.SchemeHMACV5),
 			chronicle.WithKeyProvider(e.keyProvider),
 		)
 	}
@@ -983,9 +983,9 @@ func (e *Extension) buildHashChain() (*hash.Chain, error) {
 		e.keyProvider = p
 	}
 
-	scheme := hash.SchemePlain
+	scheme := hash.SchemePlainV4
 	if e.config.TamperEvidence.Digest == "hmac" {
-		scheme = hash.SchemeHMAC
+		scheme = hash.SchemeHMACV5
 	}
 
 	chain, err := hash.NewChain(scheme, e.keyProvider)

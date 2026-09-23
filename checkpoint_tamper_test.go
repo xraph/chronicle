@@ -19,7 +19,7 @@ import (
 
 // TestRewriteAfterACheckpointIsProvable is the checkpoint-era counterpart to
 // TestHMACChainDetectsARewrite: this time nothing about the digest scheme
-// catches the rewrite. The chain is unkeyed (hash.SchemePlain), the same
+// catches the rewrite. The chain is unkeyed (hash.SchemePlainV4), the same
 // scheme TestPlainChainDoesNotDetectARewrite proves recomputes cleanly for an
 // attacker who relinks what they change. What catches it here is a signed
 // checkpoint taken before the attack: it already asserted, under a signature
@@ -29,7 +29,7 @@ import (
 // mismatch is what flips the report.
 func TestRewriteAfterACheckpointIsProvable(t *testing.T) {
 	ctx := context.Background()
-	c, events, streamID := seedChain(t, hash.SchemePlain, nil)
+	c, events, streamID := seedChain(t, hash.SchemePlainV4, nil)
 
 	signer := newCheckpointSigner(t)
 	cps := &mutableCheckpointStore{}
@@ -47,7 +47,7 @@ func TestRewriteAfterACheckpointIsProvable(t *testing.T) {
 	v := verify.NewVerifierWithCheckpoints(c.Store(), &hash.Chain{}, cps, signer)
 	report, err := v.VerifyChain(ctx, &verify.Input{
 		StreamID: streamID, FromSeq: 1, ToSeq: uint64(len(events)),
-		Pin: hash.Pin{Scheme: hash.SchemePlain, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemePlainV4, Since: 1},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)
@@ -80,7 +80,7 @@ func TestRewriteAfterACheckpointIsProvable(t *testing.T) {
 // back to the one before it, because the link in between is gone.
 func TestDeletingAMiddleCheckpointIsDetected(t *testing.T) {
 	ctx := context.Background()
-	c, events, streamID := seedChain(t, hash.SchemePlain, nil)
+	c, events, streamID := seedChain(t, hash.SchemePlainV4, nil)
 
 	signer := newCheckpointSigner(t)
 	cps := &mutableCheckpointStore{}
@@ -106,7 +106,7 @@ func TestDeletingAMiddleCheckpointIsDetected(t *testing.T) {
 	v := verify.NewVerifierWithCheckpoints(c.Store(), &hash.Chain{}, cps, signer)
 	report, err := v.VerifyChain(ctx, &verify.Input{
 		StreamID: streamID, FromSeq: 1, ToSeq: 15,
-		Pin: hash.Pin{Scheme: hash.SchemePlain, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemePlainV4, Since: 1},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)
@@ -154,7 +154,7 @@ func (tc truncatedChain) verifyAt(t *testing.T, headSeq uint64, headHash string)
 
 	report, err := tc.verifier.VerifyChain(context.Background(), &verify.Input{
 		StreamID: tc.streamID, FromSeq: 1, HeadSeq: headSeq, HeadHash: headHash,
-		Pin: hash.Pin{Scheme: hash.SchemePlain, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemePlainV4, Since: 1},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)
@@ -182,7 +182,7 @@ func truncateTailBeyondTheLastCheckpoint(t *testing.T, deleteCheckpoint bool) tr
 	t.Helper()
 	ctx := context.Background()
 
-	c, events, streamID := seedChain(t, hash.SchemePlain, nil)
+	c, events, streamID := seedChain(t, hash.SchemePlainV4, nil)
 
 	signer := newCheckpointSigner(t)
 	cps := &mutableCheckpointStore{}
@@ -338,7 +338,7 @@ func TestTruncationBeyondADeletedCheckpointIsNotDetected(t *testing.T) {
 // assurance, it does not manufacture a false positive.
 func TestDeletingEveryCheckpointDropsCoverageNotValidity(t *testing.T) {
 	ctx := context.Background()
-	c, events, streamID := seedChain(t, hash.SchemePlain, nil)
+	c, events, streamID := seedChain(t, hash.SchemePlainV4, nil)
 
 	signer := newCheckpointSigner(t)
 	cps := &mutableCheckpointStore{}
@@ -348,7 +348,7 @@ func TestDeletingEveryCheckpointDropsCoverageNotValidity(t *testing.T) {
 	v := verify.NewVerifierWithCheckpoints(c.Store(), &hash.Chain{}, cps, signer)
 	input := &verify.Input{
 		StreamID: streamID, FromSeq: 1, ToSeq: uint64(len(events)),
-		Pin: hash.Pin{Scheme: hash.SchemePlain, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemePlainV4, Since: 1},
 	}
 
 	// Before touching anything: prove the checkpoint taken above is actually

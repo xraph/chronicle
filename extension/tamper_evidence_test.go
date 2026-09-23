@@ -133,7 +133,7 @@ func TestHMACConfigReachesTheStore(t *testing.T) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMAC)
+	seedStream(t, db, hash.SchemeHMACV5)
 
 	ctx := context.Background()
 	event := &audit.Event{
@@ -158,9 +158,9 @@ func TestHMACConfigReachesTheStore(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 
-	if got.HashScheme != string(hash.SchemeHMAC) {
+	if got.HashScheme != string(hash.SchemeHMACV5) {
 		t.Fatalf("HashScheme = %q, want %q; the store re-linked under a chain the extension did not configure",
-			got.HashScheme, hash.SchemeHMAC)
+			got.HashScheme, hash.SchemeHMACV5)
 	}
 	if got.HashKeyID == "" {
 		t.Error("HashKeyID is empty; the key used for the digest was not recorded")
@@ -186,7 +186,7 @@ func TestPlainConfigReachesTheStore(t *testing.T) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemePlain)
+	seedStream(t, db, hash.SchemePlainV4)
 
 	ctx := context.Background()
 	event := &audit.Event{
@@ -205,9 +205,9 @@ func TestPlainConfigReachesTheStore(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 
-	if got.HashScheme != string(hash.SchemePlain) {
+	if got.HashScheme != string(hash.SchemePlainV4) {
 		t.Fatalf("HashScheme = %q, want %q; an unconfigured deployment must keep writing a plain chain",
-			got.HashScheme, hash.SchemePlain)
+			got.HashScheme, hash.SchemePlainV4)
 	}
 	if got.HashKeyID != "" {
 		t.Errorf("HashKeyID = %q, want empty for a plain digest", got.HashKeyID)
@@ -238,7 +238,7 @@ func setupHMACExtension(t *testing.T) (*extension.Extension, string) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMAC)
+	seedStream(t, db, hash.SchemeHMACV5)
 
 	event := &audit.Event{
 		AppID:    tamperTestAppID,

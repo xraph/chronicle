@@ -94,7 +94,7 @@ func TestCoverageReportsKeyedForAnHMACPin(t *testing.T) {
 	v := verify.NewVerifier(fakeStore{events: events})
 	report, err := v.VerifyChain(ctx, &verify.Input{
 		StreamID: streamID, HeadSeq: 5, HeadHash: events[4].Hash,
-		Pin: hash.Pin{Scheme: hash.SchemePlain, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemePlainV4, Since: 1},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)

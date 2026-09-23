@@ -34,10 +34,15 @@ type Config struct {
 	RetentionCheckInterval time.Duration
 
 	// DigestScheme selects how each event's digest is computed. The default,
-	// hash.SchemePlain, is unkeyed and reproducible by anyone who can read the
-	// store, so it detects corruption rather than tampering.
+	// hash.SchemePlainV4, is unkeyed and reproducible by anyone who can read
+	// the store, so it detects corruption rather than tampering.
 	//
-	// hash.SchemeHMAC requires a key provider; see [ErrHMACKeyUnavailable].
+	// hash.SchemeHMACV5 requires a key provider; see [ErrHMACKeyUnavailable].
+	//
+	// hash.SchemePlain and hash.SchemeHMAC are verify-only. Setting either one
+	// fails at New rather than at the first event, because their content
+	// encoding is ambiguous and a digest written under them can be forged
+	// without the key.
 	DigestScheme hash.Scheme
 }
 
@@ -49,6 +54,6 @@ func DefaultConfig() Config {
 		ShutdownTimeout:        30 * time.Second,
 		EnableCryptoErasure:    false,
 		RetentionCheckInterval: 24 * time.Hour,
-		DigestScheme:           hash.SchemePlain,
+		DigestScheme:           hash.SchemePlainV4,
 	}
 }

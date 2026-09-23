@@ -35,7 +35,7 @@ func rewriteAndRelink(t *testing.T, events []*audit.Event, idx int, newUserID st
 			t.Fatalf("relink: %v", err)
 		}
 		events[i].Hash = digest
-		events[i].HashScheme = string(hash.SchemePlain)
+		events[i].HashScheme = string(hash.SchemePlainV4)
 		events[i].HashKeyID = ""
 	}
 }
@@ -48,14 +48,14 @@ func rewriteAndRelink(t *testing.T, events []*audit.Event, idx int, newUserID st
 // this test failing is how they find out.
 func TestPlainChainDoesNotDetectARewrite(t *testing.T) {
 	ctx := context.Background()
-	c, events, streamID := seedChain(t, hash.SchemePlain, nil)
+	c, events, streamID := seedChain(t, hash.SchemePlainV4, nil)
 
 	rewriteAndRelink(t, events, 2, "attacker-was-not-here")
 	persist(t, c, events)
 
 	report, err := c.VerifyChain(ctx, &verify.Input{
 		StreamID: streamID, FromSeq: 1, ToSeq: uint64(len(events)),
-		Pin: hash.Pin{Scheme: hash.SchemePlain, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemePlainV4, Since: 1},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)
@@ -72,14 +72,14 @@ func TestHMACChainDetectsARewrite(t *testing.T) {
 	ctx := context.Background()
 	key := make([]byte, 32)
 	provider := stubProvider{key: key, activeID: "hmac-1"}
-	c, events, streamID := seedChain(t, hash.SchemeHMAC, provider)
+	c, events, streamID := seedChain(t, hash.SchemeHMACV5, provider)
 
 	rewriteAndRelink(t, events, 2, "attacker-was-not-here")
 	persist(t, c, events)
 
 	report, err := c.VerifyChain(ctx, &verify.Input{
 		StreamID: streamID, FromSeq: 1, ToSeq: uint64(len(events)),
-		Pin: hash.Pin{Scheme: hash.SchemeHMAC, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemeHMACV5, Since: 1},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)
@@ -110,7 +110,7 @@ func TestRotatedKeyStillVerifiesOldEvents(t *testing.T) {
 		activeID: "hmac-1",
 	}
 
-	c, events, streamID := seedChain(t, hash.SchemeHMAC, provider)
+	c, events, streamID := seedChain(t, hash.SchemeHMACV5, provider)
 
 	// Rotate: hmac-2 becomes the active signing key. hmac-1 stays resolvable
 	// through ByID, which is what lets the events already written under it
@@ -155,7 +155,7 @@ func TestRotatedKeyStillVerifiesOldEvents(t *testing.T) {
 
 	report, err := c.VerifyChain(ctx, &verify.Input{
 		StreamID: streamID, FromSeq: 1, ToSeq: total,
-		Pin: hash.Pin{Scheme: hash.SchemeHMAC, Since: 1},
+		Pin: hash.Pin{Scheme: hash.SchemeHMACV5, Since: 1},
 	})
 	if err != nil {
 		t.Fatalf("VerifyChain: %v", err)
@@ -215,7 +215,7 @@ func TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints(t *testing.T) 
 	ctx := context.Background()
 	key := make([]byte, 32)
 	provider := stubProvider{key: key, activeID: "hmac-1"}
-	c, events, streamID := seedChain(t, hash.SchemeHMAC, provider)
+	c, events, streamID := seedChain(t, hash.SchemeHMACV5, provider)
 
 	// idx 0, not a tail: a full-stream downgrade needs every claimed scheme
 	// to read plain, or a surviving hmac event would still mismatch a
@@ -242,7 +242,7 @@ func TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints(t *testing.T) 
 	if err != nil {
 		t.Fatalf("GetStream: %v", err)
 	}
-	st.Scheme = string(hash.SchemePlain)
+	st.Scheme = string(hash.SchemePlainV4)
 
 	// Derive the pin the way production does, from the stream row, not a
 	// literal, so this test cannot pass just because the test author typed
