@@ -150,7 +150,7 @@ func (s *Store) storeEvent(ctx context.Context, event *audit.Event) error {
 	pipe := s.rdb.Pipeline()
 	pipe.ZAdd(ctx, zEventAll, goredis.Z{Score: score, Member: m.ID})
 	pipe.ZAdd(ctx, zEventStream+m.StreamID, goredis.Z{Score: float64(m.Sequence), Member: m.ID})
-	pipe.ZAdd(ctx, zEventScope+m.AppID+":"+m.TenantID, goredis.Z{Score: score, Member: m.ID})
+	pipe.ZAdd(ctx, eventScopeKey(m.AppID, m.TenantID), goredis.Z{Score: score, Member: m.ID})
 	// An app-only index so a single-tenant query (AppID set, TenantID empty)
 	// does not have to scan every event in the deployment.
 	pipe.ZAdd(ctx, zEventApp+m.AppID, goredis.Z{Score: score, Member: m.ID})
@@ -191,7 +191,7 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 	var zKey string
 	switch {
 	case q.AppID != "" && q.TenantID != "":
-		zKey = zEventScope + q.AppID + ":" + q.TenantID
+		zKey = eventScopeKey(q.AppID, q.TenantID)
 	case q.AppID != "":
 		zKey = zEventApp + q.AppID
 	case q.UserID != "":
@@ -273,7 +273,7 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 	zKey := zEventAll
 	switch {
 	case q.AppID != "" && q.TenantID != "":
-		zKey = zEventScope + q.AppID + ":" + q.TenantID
+		zKey = eventScopeKey(q.AppID, q.TenantID)
 	case q.AppID != "":
 		zKey = zEventApp + q.AppID
 	}
@@ -417,7 +417,7 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 	zKey := zEventAll
 	switch {
 	case q.AppID != "" && q.TenantID != "":
-		zKey = zEventScope + q.AppID + ":" + q.TenantID
+		zKey = eventScopeKey(q.AppID, q.TenantID)
 	case q.AppID != "":
 		zKey = zEventApp + q.AppID
 	case q.Category != "":
