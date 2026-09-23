@@ -579,6 +579,38 @@ func (s *Store) MarkErased(
 	return count, nil
 }
 
+// SubjectKeyUsage groups a subject's events across every scope by app, tenant,
+// encryption key ID and erased flag. Unscoped on purpose; see erasure.Store.
+func (s *Store) SubjectKeyUsage(_ context.Context, subjectID string) ([]erasure.KeyUsage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type groupKey struct {
+		appID, tenantID, keyID string
+		erased                 bool
+	}
+	index := make(map[groupKey]int)
+	var usage []erasure.KeyUsage
+	for _, e := range s.events {
+		if e.SubjectID != subjectID {
+			continue
+		}
+		k := groupKey{e.AppID, e.TenantID, e.EncryptionKeyID, e.Erased}
+		i, ok := index[k]
+		if !ok {
+			i = len(usage)
+			index[k] = i
+			usage = append(usage, erasure.KeyUsage{
+				Scope:           erasure.Scope{AppID: e.AppID, TenantID: e.TenantID},
+				EncryptionKeyID: e.EncryptionKeyID,
+				Erased:          e.Erased,
+			})
+		}
+		usage[i].Events++
+	}
+	return usage, nil
+}
+
 // eventInErasureScope reports whether an event belongs to the given scope. An
 // empty field in the scope means "any".
 func eventInErasureScope(e *audit.Event, sc erasure.Scope) bool {

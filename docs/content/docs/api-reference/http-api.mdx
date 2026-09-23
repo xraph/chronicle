@@ -202,6 +202,8 @@ Request body:
 }
 ```
 
+The erasure only reaches the caller's app and tenant, keys included. When some of the events were sealed before keys were scoped, under a key another tenant still depends on, the response has `"key_destroyed": false` and `"legacy_key_retained": true`. See [Erasure](/docs/subsystems/erasure#upgrading-from-subject-keyed-seals) for what that means and how the key gets cleaned up.
+
 ### List erasures
 
 ```http

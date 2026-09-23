@@ -109,3 +109,56 @@ func (s *Store) MarkErased(
 
 	return result.ModifiedCount, nil
 }
+
+// SubjectKeyUsage groups a subject's events across every scope by app, tenant,
+// encryption key ID and erased flag.
+//
+// Security-critical in the other direction: it is unscoped on purpose, so the
+// erasure service can see every scope sharing a legacy key. It must never back
+// a response to a caller; see erasure.Store.
+func (s *Store) SubjectKeyUsage(ctx context.Context, subjectID string) ([]erasure.KeyUsage, error) {
+	pipeline := bson.A{
+		bson.M{"$match": bson.M{"subject_id": subjectID}},
+		bson.M{"$group": bson.M{
+			"_id": bson.M{
+				"app_id":            "$app_id",
+				"tenant_id":         "$tenant_id",
+				"encryption_key_id": "$encryption_key_id",
+				"erased":            "$erased",
+			},
+			"count": bson.M{"$sum": 1},
+		}},
+	}
+
+	cursor, err := s.mdb.Collection(colEvents).Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("failed to group subject key usage: %w", err)
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+
+	var usage []erasure.KeyUsage
+	for cursor.Next(ctx) {
+		var raw struct {
+			ID struct {
+				AppID           string `bson:"app_id"`
+				TenantID        string `bson:"tenant_id"`
+				EncryptionKeyID string `bson:"encryption_key_id"`
+				Erased          bool   `bson:"erased"`
+			} `bson:"_id"`
+			Count int64 `bson:"count"`
+		}
+		if err := cursor.Decode(&raw); err != nil {
+			return nil, fmt.Errorf("failed to decode subject key usage: %w", err)
+		}
+		usage = append(usage, erasure.KeyUsage{
+			Scope:           erasure.Scope{AppID: raw.ID.AppID, TenantID: raw.ID.TenantID},
+			EncryptionKeyID: raw.ID.EncryptionKeyID,
+			Erased:          raw.ID.Erased,
+			Events:          raw.Count,
+		})
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate subject key usage: %w", err)
+	}
+	return usage, nil
+}

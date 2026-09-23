@@ -1,9 +1,9 @@
 ---
 title: GDPR Erasure
-description: Crypto-erasure — destroying per-subject encryption keys to make data irrecoverable.
+description: Crypto-erasure, destroying a subject's encryption keys to make data irrecoverable.
 ---
 
-Chronicle implements GDPR Article 17 (right to erasure) through **crypto-erasure**: each data subject's sensitive fields are encrypted with a per-subject AES-256-GCM key. On erasure request, the key is destroyed — making the encrypted payload irrecoverable — while the hash chain remains structurally valid.
+Chronicle implements GDPR Article 17 (right to erasure) through **crypto-erasure**: each data subject's sensitive fields are encrypted with an AES-256-GCM key belonging to that subject in one app and tenant. When you erase the subject, the key is destroyed. The encrypted payload becomes irrecoverable and the hash chain stays valid.
 
 ## Enable crypto-erasure
 
@@ -74,17 +74,62 @@ Response: `erasure.Result` JSON.
 
 ## What erasure does
 
-1. Looks up all events with `SubjectID = "user-42"` in the given app+tenant scope.
-2. For each event, sets `Erased = true`, `ErasedAt`, and `ErasureID`.
-3. Destroys the per-subject encryption key from the `KeyStore`.
-4. Saves an `erasure.Erasure` record to the store.
-5. Returns an `erasure.Result` with `KeyDestroyed = true` and `EventsAffected`.
+1. Counts the subject's events in the caller's app and tenant.
+2. Destroys the keys those events were sealed under, and no others.
+3. Saves an `erasure.Erasure` record in the caller's scope.
+4. Sets `Erased = true`, `ErasedAt` and `ErasureID` on each of those events.
+5. Returns an `erasure.Result` with `KeyDestroyed` and `EventsAffected`.
 
-After erasure, attempting `ks.Get("user-42")` returns `chronicle.ErrErasureKeyNotFound`. The ciphertext in the store cannot be decrypted.
+An empty tenant covers every tenant in the app, the same rule the stores use for `CountBySubject` and `MarkErased`. Key destruction follows that rule too, so the keys destroyed always belong to exactly the events marked.
+
+After erasure the payload reads back as `[ERASED]` and the key lookup returns `chronicle.ErrErasureKeyNotFound`. The ciphertext in the store can't be decrypted.
+
+## How keys are scoped
+
+Every key belongs to one app, one tenant and one subject. The sealer builds its ID with `crypto.ScopedKeyID` and records it in `Event.EncryptionKeyID`:
+
+```go
+keyID := crypto.ScopedKeyID("app-1", "tenant-a", "user-42")
+// "ck1|5:app-1|8:tenant-a|7:user-42"
+```
+
+You need this because subject IDs aren't unique across tenants. `user-42` in one tenant is usually a different person from `user-42` in the next, and numeric IDs, emails and `user-1` style IDs collide all the time. If both shared a key, erasing one would wipe out the other.
+
+Each field is length-prefixed, the same way checkpoint payloads are, since app and tenant IDs are free text. Joined on a plain `:`, app `a:b` with tenant `c` and app `a` with tenant `b:c` would name the same key.
+
+If you write your own `KeyStore`, treat the ID as opaque bytes. Store and compare it exactly as given. The ID contains `|` and `:` plus whatever the app, tenant and subject IDs contain, so if your store maps IDs onto Vault paths or KMS aliases, hash or escape them first.
+
+## Upgrading from subject-keyed seals
+
+Before scoped keys, every event was sealed under a key named by the bare subject ID, shared by every app and tenant using that ID. An erasure in one tenant destroyed that shared key, so the other tenants' events silently read back as `[ERASED]` with no erasure record in their scope. You don't have to move any keys to upgrade. Here's what happens to the data you already have.
+
+Existing events stay readable. `Sealer.Open` recognises an event whose `EncryptionKeyID` isn't a scoped ID and looks its key up by subject ID, exactly as before. New events are always sealed under scoped keys, so the set of events on a legacy key only ever shrinks.
+
+Erasure destroys a legacy key only when nobody else needs it. When the erasing scope has live events on a subject's legacy key, `Erase` checks every other app and tenant for events on the same key:
+
+| Other scopes on the legacy key | What `Erase` does |
+|---|---|
+| None, or all already erased | Destroys the legacy key along with the scoped one. `KeyDestroyed = true`. |
+| Some not yet erased | Marks your events erased and destroys your scoped key, but keeps the legacy key. `KeyDestroyed = false`, `LegacyKeyRetained = true`. |
+
+When the key is kept, your events are still marked erased, and `Open` redacts any event flagged erased whether or not its key survives. So the payload stops showing through Chronicle immediately. It isn't cryptographically gone yet, though. Anyone holding both the database and the key store could still decrypt it, and the erasure record says `key_destroyed: false` so an auditor can see that.
+
+The key goes the first time any tenant sharing it erases that subject and finds every other tenant's events on it already erased. Running `Erase` again later is how you clean up a retained key: once the other tenants have erased, or retention has removed their old events, the next run destroys it.
+
+We looked at two other options and ruled both out:
+
+- Re-sealing your events under a scoped key, then destroying the legacy one. The hash chain covers the sealed bytes, so every re-sealed event would verify as tampered. Retention archives also hold copies of the old ciphertext that re-sealing can't reach.
+- Refusing to erase. That leaves the data readable and unmarked, which is worse for the data subject than redacting it. Two tenants sharing a legacy key would also each be refused because of the other, with no way out.
+
+A few limits you should know about:
+
+- The check only sees live rows. If retention has already archived and deleted another tenant's legacy events, destroying the key also makes that archive unreadable. A scope only ever destroys a legacy key while it still has live events on it, so a tenant that never used the key can't destroy it.
+- `LegacyKeyRetained` tells the caller that some other scope still holds unerased events for the same subject ID. That's one bit about another tenant, and only for data sealed before the upgrade.
+- A subject ID spelled like a scoped key ID (starting `ck1|`) never has its legacy key destroyed, because that name could belong to another scope's current key.
 
 ## Hash chain integrity after erasure
 
-Hashes are computed over event metadata — not the encrypted payload. Destroying the key does not change any hash value, so `VerifyChain` still returns `Valid = true` for streams that contain erased events.
+Hashes cover the stored, sealed bytes, not the plaintext. Destroying the key doesn't change a single stored byte, so `VerifyChain` still returns `Valid = true` for streams that contain erased events.
 
 ## erasure types
 
@@ -103,7 +148,8 @@ Hashes are computed over event metadata — not the encrypted payload. Destroyin
 | `ID` | `id.ID` | TypeID of the erasure record |
 | `SubjectID` | `string` | The erased subject |
 | `EventsAffected` | `int64` | Number of events marked as erased |
-| `KeyDestroyed` | `bool` | Whether the encryption key was destroyed |
+| `KeyDestroyed` | `bool` | Whether every key the events were sealed under was destroyed |
+| `LegacyKeyRetained` | `bool` | A pre-upgrade key was kept because another scope still depends on it (see above) |
 
 ### erasure.Erasure (stored record)
 
@@ -127,8 +173,9 @@ import "github.com/xraph/chronicle/crypto"
 enc := crypto.NewEncryptor()
 ks  := crypto.NewInMemoryKeyStore()
 
-// Get or create the key for a subject
-key, keyID, err := ks.GetOrCreate("user-42")
+// Get or create the key for a subject in one app and tenant
+keyID := crypto.ScopedKeyID("app-1", "tenant-a", "user-42")
+key, _, err := ks.GetOrCreate(keyID)
 
 // Encrypt
 ciphertext, err := enc.Encrypt(key, []byte("sensitive data"))
@@ -137,7 +184,7 @@ ciphertext, err := enc.Encrypt(key, []byte("sensitive data"))
 plaintext, err := enc.Decrypt(key, ciphertext)
 
 // Erase: destroy the key
-err = ks.Delete("user-42")
+err = ks.Delete(keyID)
 // Any subsequent Decrypt with this key is impossible
 ```
 

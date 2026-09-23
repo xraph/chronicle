@@ -32,4 +32,16 @@ type Store interface {
 	// Implementations must honour the scope: an unscoped update lets any caller
 	// tamper with every tenant's audit records.
 	MarkErased(ctx context.Context, q SubjectQuery, erasureID id.ID) (int64, error)
+
+	// SubjectKeyUsage groups a subject's events by app, tenant, encryption key
+	// ID and erased flag, across every app and tenant, with a count for each
+	// group. Events that were never sealed come back with an empty key ID.
+	//
+	// It is unscoped on purpose. Before keys were scoped, a subject's events in
+	// different tenants were sealed under one shared key, and the erasure
+	// service has to see every scope depending on that key before it can decide
+	// whether destroying it is safe. That makes the result exactly what
+	// CountBySubject's scoping exists to hide, so it is for trusted in-process
+	// use only and must never be returned to a caller.
+	SubjectKeyUsage(ctx context.Context, subjectID string) ([]KeyUsage, error)
 }

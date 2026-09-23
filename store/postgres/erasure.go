@@ -128,3 +128,36 @@ func (s *Store) MarkErased(
 
 	return rows, nil
 }
+
+// SubjectKeyUsage groups a subject's events across every scope by app, tenant,
+// encryption key ID and erased flag.
+//
+// Security-critical in the other direction: it is unscoped on purpose, so the
+// erasure service can see every scope sharing a legacy key. It must never back
+// a response to a caller; see erasure.Store.
+func (s *Store) SubjectKeyUsage(ctx context.Context, subjectID string) ([]erasure.KeyUsage, error) {
+	rows, err := s.pg.Query(ctx,
+		`SELECT app_id, tenant_id, encryption_key_id, erased, COUNT(*)
+		   FROM chronicle_events
+		  WHERE subject_id = $1
+		  GROUP BY app_id, tenant_id, encryption_key_id, erased`,
+		subjectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var usage []erasure.KeyUsage
+	for rows.Next() {
+		var u erasure.KeyUsage
+		if err := rows.Scan(&u.AppID, &u.TenantID, &u.EncryptionKeyID, &u.Erased, &u.Events); err != nil {
+			return nil, err
+		}
+		usage = append(usage, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return usage, nil
+}

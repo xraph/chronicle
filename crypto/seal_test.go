@@ -105,7 +105,7 @@ func TestDestroyingKeyMakesPayloadIrrecoverable(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	if err := keys.Delete(event.SubjectID); err != nil {
+	if err := keys.Delete(event.EncryptionKeyID); err != nil {
 		t.Fatalf("Delete key: %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestChainStillVerifiesAfterKeyDestruction(t *testing.T) {
 	event.Hash, _, _ = chain.Compute(context.Background(), "prev", event)
 	event.HashScheme = string(chain.Scheme())
 
-	if err := keys.Delete(event.SubjectID); err != nil {
+	if err := keys.Delete(event.EncryptionKeyID); err != nil {
 		t.Fatalf("Delete key: %v", err)
 	}
 

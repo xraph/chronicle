@@ -101,7 +101,9 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 | `Decrypt(key, ciphertext)` | method | Returns plaintext |
 | `InMemoryKeyStore` | struct | In-memory key store (dev/test only) |
 | `NewInMemoryKeyStore()` | func | Constructor |
-| `KeyStore` | interface | GetOrCreate, Get, Delete |
+| `KeyStore` | interface | GetOrCreate, Get, Delete, keyed by an opaque key ID |
+| `ScopedKeyID(app, tenant, subject)` | func | The key ID for one subject in one app and tenant |
+| `ParseScopedKeyID(keyID)` | func | Reverses `ScopedKeyID`; `ok` is false for legacy subject-keyed IDs |
 
 ## erasure
 

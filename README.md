@@ -164,10 +164,10 @@ Supported formats: `json`, `csv`, `markdown`, `html`.
 
 Chronicle supports GDPR Article 17 (right to erasure) through crypto-erasure:
 
-1. Each data subject's events are associated with a per-subject encryption key.
-2. On erasure request, the key is destroyed — making encrypted data irrecoverable.
+1. Each data subject's events are sealed with a key that belongs to that subject in one app and tenant. The same subject ID in two tenants gets two keys.
+2. On erasure request, that scope's key is destroyed, which makes the encrypted data irrecoverable. Other tenants' data is untouched.
 3. Events are marked as erased in the store.
-4. The hash chain remains structurally valid (hashes are computed over event metadata, not encrypted payloads).
+4. The hash chain stays valid, because hashes cover the stored ciphertext and destroying a key doesn't change it.
 
 ```go
 keyStore := crypto.NewInMemoryKeyStore()

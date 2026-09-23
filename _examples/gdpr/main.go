@@ -83,10 +83,11 @@ func main() {
 		fmt.Printf("  Recorded event %d for user-bob\n", i+1)
 	}
 
-	// 4. Create encryption keys for both subjects (simulating what happens
-	//    when crypto-erasure is active during recording).
-	_, _, _ = keyStore.GetOrCreate("user-alice")
-	_, _, _ = keyStore.GetOrCreate("user-bob")
+	// 4. The sealer created one key per subject as it recorded. Keys are scoped
+	//    to the app and tenant too, so another tenant's "user-alice" gets a key
+	//    of its own and survives this tenant's erasure.
+	aliceKeyID := crypto.ScopedKeyID("myapp", "tenant-1", "user-alice")
+	bobKeyID := crypto.ScopedKeyID("myapp", "tenant-1", "user-bob")
 
 	// 5. Show current state -- all events are visible.
 	fmt.Println("\n--- Before Erasure: All Events ---")
@@ -100,7 +101,7 @@ func main() {
 	}
 
 	// 6. Verify Alice's key exists.
-	aliceKey, err := keyStore.Get("user-alice")
+	aliceKey, err := keyStore.Get(aliceKeyID)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -124,13 +125,13 @@ func main() {
 
 	// 8. Verify Alice's key is gone.
 	fmt.Println("\n--- Verifying Key Destruction ---")
-	_, err = keyStore.Get("user-alice")
+	_, err = keyStore.Get(aliceKeyID)
 	if err != nil {
 		fmt.Printf("Alice's key lookup: %v\n", err)
 	}
 
 	// Bob's key should still exist.
-	bobKey, err := keyStore.Get("user-bob")
+	bobKey, err := keyStore.Get(bobKeyID)
 	if err != nil {
 		log.Fatal(err)
 	}
