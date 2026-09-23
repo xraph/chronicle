@@ -64,6 +64,15 @@ type Deps struct {
 	// so an HMAC deployment must pass its keyed chain here.
 	HashChain *hash.Chain
 
+	// MaxVerifySpan caps the number of sequences verify.run will walk in one
+	// call. Zero means use maxVerifySpan, the package default of 100,000.
+	//
+	// VerifyChain holds every event in the resolved range in memory at once,
+	// so an unbounded call on a long chain is an out-of-memory crash, and any
+	// read-capable operator could trigger one by sending fromSeq 0, toSeq 0.
+	// This exists to turn that into a refusal the UI can act on instead.
+	MaxVerifySpan uint64
+
 	Config SurfaceConfig
 
 	// Logger receives the underlying cause of every store error that reaches
@@ -148,6 +157,7 @@ type registration struct {
 func registrations() []registration {
 	groups := [][]registration{
 		streamsRegistrations(),
+		verifyRegistrations(),
 		// Each later task adds its group's <group>Registrations() here.
 	}
 
