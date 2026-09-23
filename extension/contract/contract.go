@@ -158,6 +158,7 @@ func registrations() []registration {
 	groups := [][]registration{
 		streamsRegistrations(),
 		verifyRegistrations(),
+		checkpointsRegistrations(),
 		// Each later task adds its group's <group>Registrations() here.
 	}
 

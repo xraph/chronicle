@@ -27,3 +27,15 @@ intents:
   # than making these commands.
   - { name: verify.run,   kind: query, version: 1, capability: read }
   - { name: verify.event, kind: query, version: 1, capability: read }
+  # The viewer's own chain's signed checkpoints. checkpoints.list carries no
+  # total -- see CheckpointListResponse's doc in handlers_checkpoints.go --
+  # only hasMore, computed by fetching one row past the requested page.
+  - { name: checkpoints.list,   kind: query, version: 1, capability: read }
+  - { name: checkpoints.detail, kind: query, version: 1, capability: read }
+  # Write, not admin: taking a checkpoint creates a record and destroys
+  # nothing. It is the one write that makes future verification stronger. A
+  # new checkpoint changes what a subsequent verification can prove, so
+  # verify.run is invalidated alongside the obvious two: a cached report
+  # taken before it is stale in a way the operator would otherwise not see.
+  - { name: checkpoints.take, kind: command, version: 1, capability: write,
+      invalidates: [checkpoints.list, streams.mine, verify.run] }
