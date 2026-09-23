@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	fcontract "github.com/xraph/forge/extensions/dashboard/contract"
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/hash"
@@ -42,8 +43,11 @@ const (
 	maxStreamListLimit     = 200
 
 	// streamScanBatch is how many streams streams.list reads from the store
-	// per round trip while it filters them down to the viewer's own.
-	streamScanBatch = 200
+	// per round trip while it filters an app-wide viewer's chains out of
+	// every app's. It is large because on redis ListStreams loads every
+	// stream and then slices, so each batch costs a full load and the scan
+	// costs about N^2/streamScanBatch reads per call.
+	streamScanBatch = 1000
 )
 
 func streamsRegistrations() []registration {
@@ -60,25 +64,9 @@ func streamsMineHandler(deps Deps) func(context.Context, MineInput, fcontract.Pr
 			return MineResponse{}, err
 		}
 
-		st, err := deps.Store.GetStreamByScope(ctx, v.AppID, v.TenantID)
-		if err != nil {
-			if errors.Is(err, chronicle.ErrStreamNotFound) {
-				// No events recorded yet in this scope. Not an error.
-				return MineResponse{}, nil
-			}
-			return MineResponse{}, mapStoreError(err)
-		}
-		if st == nil {
-			// A store that answers a miss with (nil, nil) rather than
-			// ErrStreamNotFound means the same thing.
-			return MineResponse{}, nil
-		}
-
-		// GetStreamByScope matches on both columns exactly, so this cannot
-		// fail today. It is here so that a backend that ever widens that
-		// match fails closed instead of handing over another scope's chain.
-		if st.AppID != v.AppID || st.TenantID != v.TenantID {
-			return MineResponse{}, &fcontract.Error{Code: fcontract.CodeInternal, Message: "the audit store returned a chain outside this scope"}
+		st, err := scopedStream(ctx, deps, "streams.mine", v)
+		if err != nil || st == nil {
+			return MineResponse{}, err
 		}
 
 		summary, err := projectStream(ctx, deps, st)
@@ -89,13 +77,44 @@ func streamsMineHandler(deps Deps) func(context.Context, MineInput, fcontract.Pr
 	}
 }
 
+// scopedStream returns the one chain for exactly v's app and tenant, or nil
+// when that scope has never recorded an event.
+//
+// It re-checks the returned stream's scope against v and refuses a mismatch.
+// GetStreamByScope is meant to match both columns exactly, but a backend can
+// get that wrong: store/redis builds its scope key as appID + ":" + tenantID,
+// so app "a:b" with tenant "c" and app "a" with tenant "b:c" land on the same
+// key. Without this check that collision would hand one scope's chain to the
+// other.
+func scopedStream(ctx context.Context, deps Deps, op string, v viewScope) (*stream.Stream, error) {
+	st, err := deps.Store.GetStreamByScope(ctx, v.AppID, v.TenantID)
+	if err != nil {
+		if errors.Is(err, chronicle.ErrStreamNotFound) {
+			// No events recorded yet in this scope. Not an error.
+			return nil, nil
+		}
+		return nil, deps.mapStoreError(op, err)
+	}
+	if st == nil {
+		// A store that answers a miss with (nil, nil) rather than
+		// ErrStreamNotFound means the same thing.
+		return nil, nil
+	}
+	if st.AppID != v.AppID || st.TenantID != v.TenantID {
+		deps.logger().Error("chronicle/contract: store returned a chain outside the requested scope",
+			log.String("op", op),
+			log.String("stream_id", st.ID.String()),
+		)
+		return nil, &fcontract.Error{Code: fcontract.CodeInternal, Message: "the audit store returned a chain outside this scope"}
+	}
+	return st, nil
+}
+
 // streamsListHandler lists the chains inside the viewer's own scope.
 //
-// The store cannot do the filtering. stream.Store.ListStreams takes only a
-// limit and an offset and returns every app's chains, so this handler reads
-// the store in batches, keeps what the viewer owns, and pages over that. The
-// page, the total and hasMore all describe the viewer's chains alone; paging
-// over the store's own offsets would leak how many chains other apps hold.
+// A tenant viewer owns at most one chain, the one GetStreamByScope returns
+// for its app and tenant, so that case is answered directly with no scan.
+// Only an app-wide viewer, who owns every chain in its app, needs the scan.
 func streamsListHandler(deps Deps) func(context.Context, StreamListInput, fcontract.Principal) (StreamListResponse, error) {
 	return func(ctx context.Context, in StreamListInput, p fcontract.Principal) (StreamListResponse, error) {
 		v, err := scopeFromPrincipal(p)
@@ -114,9 +133,26 @@ func streamsListHandler(deps Deps) func(context.Context, StreamListInput, fcontr
 			limit = maxStreamListLimit
 		}
 
-		page, total, err := scanOwnedStreams(ctx, deps.Store, v, in.Offset, limit)
-		if err != nil {
-			return StreamListResponse{}, err
+		var (
+			page  []*stream.Stream
+			total int64
+		)
+		if v.TenantID != "" {
+			st, scopeErr := scopedStream(ctx, deps, "streams.list", v)
+			if scopeErr != nil {
+				return StreamListResponse{}, scopeErr
+			}
+			if st != nil {
+				total = 1
+				if in.Offset == 0 {
+					page = []*stream.Stream{st}
+				}
+			}
+		} else {
+			page, total, err = scanOwnedStreams(ctx, deps, v, in.Offset, limit)
+			if err != nil {
+				return StreamListResponse{}, err
+			}
 		}
 
 		out := StreamListResponse{
@@ -139,11 +175,18 @@ func streamsListHandler(deps Deps) func(context.Context, StreamListInput, fcontr
 // It returns the owned streams at [offset, offset+limit) and the count of all
 // owned streams.
 //
-// It tracks the IDs it has seen and stops on a batch that adds nothing new.
-// Without that, a store whose offset handling misbehaves past the end (the
-// in-memory store returns everything again when the offset reaches its
-// length) would keep answering full batches and loop forever.
-func scanOwnedStreams(ctx context.Context, s stream.Store, v viewScope, offset, limit int) ([]*stream.Stream, int64, error) {
+// This scan is a workaround. The real fix is an app-scoped ListStreams in
+// stream.Store, which does not exist: ListStreams takes only a limit and an
+// offset and returns every app's chains, so the only way to page over one
+// app's is to read them all and filter here. Paging over the store's own
+// offsets instead would also leak how many chains other apps hold.
+//
+// It tracks the IDs it has seen and stops on a batch that adds nothing new,
+// counting unseen rows rather than owned ones: a batch of nothing but other
+// apps' chains is not the end. Tracking IDs also stops a store whose offset
+// handling misbehaves past the end (the in-memory store returns everything
+// again when the offset reaches its length) from looping forever.
+func scanOwnedStreams(ctx context.Context, deps Deps, v viewScope, offset, limit int) ([]*stream.Stream, int64, error) {
 	var (
 		page  []*stream.Stream
 		total int64
@@ -151,9 +194,9 @@ func scanOwnedStreams(ctx context.Context, s stream.Store, v viewScope, offset, 
 	)
 
 	for storeOffset := 0; ; storeOffset += streamScanBatch {
-		batch, err := s.ListStreams(ctx, stream.ListOpts{Limit: streamScanBatch, Offset: storeOffset})
+		batch, err := deps.Store.ListStreams(ctx, stream.ListOpts{Limit: streamScanBatch, Offset: storeOffset})
 		if err != nil {
-			return nil, 0, mapStoreError(err)
+			return nil, 0, deps.mapStoreError("streams.list", err)
 		}
 
 		fresh := 0
@@ -181,7 +224,7 @@ func scanOwnedStreams(ctx context.Context, s stream.Store, v viewScope, offset, 
 			break
 		}
 		if err := ctx.Err(); err != nil {
-			return nil, 0, mapStoreError(err)
+			return nil, 0, deps.mapStoreError("streams.list", err)
 		}
 	}
 
@@ -199,10 +242,21 @@ func scanOwnedStreams(ctx context.Context, s stream.Store, v viewScope, offset, 
 // still makes a later rewrite provable. A ceiling below what verification
 // then reports would read as a contradiction on the page.
 //
+// It is capped at unkeyed when the chain holds no events at or above its pin
+// (HeadSeq < SchemeSince), which covers a stream with no events yet and one
+// whose pin just moved with no append since. verify's gradeCoverage grades a
+// range that lies wholly below the pin as unkeyed, and upgradeSpan never
+// raises such a span to signed, so nothing better is reachable. An empty
+// chain (HeadSeq 0) is capped the same way even with a zero pin: there is
+// nothing to verify, so there is no assurance to claim.
+//
 // It never returns anchored. Nothing in chronicle emits LevelAnchored yet;
 // external anchoring is the next piece of work, and claiming it here would be
 // the exact overstatement this field exists to prevent.
 func coverageCeiling(deps Deps, st *stream.Stream) string {
+	if st.HeadSeq == 0 || st.HeadSeq < st.SchemeSince {
+		return string(verify.LevelUnkeyed)
+	}
 	level := verify.LevelUnkeyed
 	if hash.Keyed(hash.Scheme(st.Scheme)) {
 		level = verify.LevelKeyed

@@ -51,39 +51,42 @@ func scopeFromPrincipal(p fcontract.Principal) (viewScope, error) {
 }
 
 // tenantFromClaims resolves the tenant dimension, distinguishing a claim that
-// is ABSENT from one that is PRESENT AND UNUSABLE.
+// is ABSENT from one that is PRESENT.
 //
-// Those two look identical through a bare `v, _ := claims[k].(string)` and
-// they mean opposite things. Absent is a legitimate app-wide operator, and
-// widening to app-wide is correct for them. Present but unusable is a session
-// that was scoped to a tenant by something upstream, whose scoping this
-// handler then failed to read: widening THAT to app-wide hands one tenant's
-// operator every other tenant's audit events inside the same app.
+// The rule is exactly this. A tenant key ("tenant_id", or "org_id", which is
+// authsome's spelling of the same dimension) that is missing from the claims
+// map means the upstream never scoped this session to a tenant: that is a
+// legitimate app-wide operator, and the result is "" (app-wide). A tenant key
+// that IS in the map with any value other than a non-empty string (an empty
+// string, nil, a number, a list) means the upstream wrote a tenant and its
+// value was lost on the way here. That is a tenant-scoped session whose
+// scoping failed, and widening it to app-wide would hand one tenant's
+// operator every other tenant's audit events inside the same app, so it is
+// refused with PERMISSION_DENIED.
 //
-// So an absent claim falls back and an unusable one is refused. "tenant_id"
-// is read first and "org_id", authsome's spelling of the same dimension,
-// second. An unusable tenant_id is refused even when org_id is readable,
-// because treating org_id as a stand-in for a claim we could not parse is a
-// guess about what the upstream meant.
+// Both keys are checked, and a bad value in either refuses the session even
+// when the other is good: treating one spelling as a stand-in for a claim we
+// could not read is a guess about what the upstream meant. When both are
+// present and readable, tenant_id wins.
 func tenantFromClaims(p fcontract.Principal) (string, error) {
+	var tenant string
 	for _, key := range []string{"tenant_id", "org_id"} {
 		raw, present := p.Claims[key]
-		if !present || raw == nil {
-			continue // absent: try the next spelling, then app-wide
+		if !present {
+			continue // absent: the upstream never scoped a tenant
 		}
 		s, ok := raw.(string)
-		if !ok {
+		if !ok || s == "" {
 			return "", &fcontract.Error{
 				Code:    fcontract.CodePermissionDenied,
 				Message: "tenant scope on this session is unreadable",
 			}
 		}
-		if s == "" {
-			continue // explicitly empty reads as app-wide, same as absent
+		if tenant == "" {
+			tenant = s
 		}
-		return s, nil
 	}
-	return "", nil
+	return tenant, nil
 }
 
 // owns reports whether a record fetched by ID belongs to this viewer.
@@ -92,22 +95,23 @@ func tenantFromClaims(p fcontract.Principal) (string, error) {
 // intent resolves a record by ID, which bypasses every list filter, so without
 // this check any caller could read another tenant's event by guessing an ID.
 //
-// An empty TenantID on the VIEWER means an app-wide operator, who owns every
-// tenant inside their own app. An empty TenantID on the RECORD means a record
-// held at app level, which an app operator also owns. Neither ever reaches
-// past AppID, which is compared first and unconditionally.
+// AppID is compared first and unconditionally, and a viewer with no AppID
+// owns nothing. Past that:
 //
-// A viewer with no AppID owns nothing. scopeFromPrincipal never builds one,
-// but a zero viewScope that leaked through would otherwise match every record
-// whose AppID is also empty.
+//   - An app-wide viewer (TenantID "") owns every record in its app, including
+//     records held at app level with no tenant.
+//   - A tenant viewer owns a record only when the record's TenantID equals its
+//     own exactly. It does NOT own app-level records. applyQuery pins list
+//     queries to the viewer's tenant exactly, so lists already hide those
+//     records, and the contract must not show by ID what its lists hide.
 func (v viewScope) owns(appID, tenantID string) bool {
 	if v.AppID == "" || appID != v.AppID {
 		return false
 	}
-	if v.TenantID != "" && tenantID != "" && tenantID != v.TenantID {
-		return false
+	if v.TenantID == "" {
+		return true
 	}
-	return true
+	return tenantID == v.TenantID
 }
 
 // applyQuery stamps the viewer's scope onto an event query, overwriting

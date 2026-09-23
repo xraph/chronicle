@@ -10,6 +10,7 @@ import (
 	fcontract "github.com/xraph/forge/extensions/dashboard/contract"
 	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
 	"github.com/xraph/forge/extensions/dashboard/contract/loader"
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/checkpoint"
@@ -64,6 +65,20 @@ type Deps struct {
 	HashChain *hash.Chain
 
 	Config SurfaceConfig
+
+	// Logger receives the underlying cause of every store error that reaches
+	// the caller as CodeInternal. The contract error carries only a generic
+	// message, so this log line is the one place the cause survives. Nil
+	// means a no-op logger.
+	Logger log.Logger
+}
+
+// logger returns Deps.Logger, or a no-op logger when it is nil.
+func (d Deps) logger() log.Logger {
+	if d.Logger == nil {
+		return log.NewNoopLogger()
+	}
+	return d.Logger
 }
 
 // checkpointingConfigured reports whether this deployment holds checkpoints
