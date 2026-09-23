@@ -226,12 +226,23 @@ func TestCheckpointsDetailRefusesAnotherTenantsCheckpoint(t *testing.T) {
 
 // The same refusal, but with a syntactically valid checkpoint ID, so this
 // actually exercises v.owns rather than passing only because the brief's
-// literal "cp_1" fails to parse as a checkpoint ID. Removing the owns()
-// check in checkpointsDetailHandler must fail this test.
+// literal "cp_1" fails to parse as a checkpoint ID. The checkpoint's
+// StreamID is deliberately set to the viewer's OWN resolved stream, so the
+// separate "belongs to the viewer's own stream" check cannot be what catches
+// this: only v.owns, comparing the checkpoint's own recorded AppID/TenantID
+// against the viewer, can. Removing the owns() check in
+// checkpointsDetailHandler must fail this test.
 func TestCheckpointsDetailRefusesAnotherTenantsCheckpointByOwnership(t *testing.T) {
-	cp := &checkpoint.Checkpoint{ID: id.NewCheckpointID(), StreamID: id.NewStreamID(), AppID: "app-2", TenantID: "tenant-b"}
+	s := newSQLiteStore(t)
+	viewersOwnStream := seedStream(t, s, "app-1", "tenant-a")
+
+	// A checkpoint whose recorded scope belongs to a different tenant, but
+	// whose StreamID happens to be the viewer's own -- inconsistent data
+	// that should never occur in practice, but proves owns() is checked on
+	// its own merits rather than being redundant with the stream-ID check.
+	cp := &checkpoint.Checkpoint{ID: id.NewCheckpointID(), StreamID: viewersOwnStream.ID, AppID: "app-2", TenantID: "tenant-b"}
 	h := checkpointsDetailHandler(Deps{
-		Store:            newStubStore(),
+		Store:            s,
 		CheckpointStore:  checkpointStoreWith(cp),
 		CheckpointSigner: stubSigner{},
 	})
