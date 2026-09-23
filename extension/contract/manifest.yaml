@@ -64,3 +64,30 @@ intents:
   # A query, so it is lazy on the client and runs when the dialog opens, not
   # on every render of the list.
   - { name: erasures.preview, kind: query, version: 1, capability: read }
+  # Retention policies and the enforcement that purges audit events. Every
+  # intent here is confined to the viewer's own app and tenant; no request
+  # carries an appId or tenantId.
+  - { name: retention.policies,     kind: query, version: 1, capability: read }
+  - { name: retention.policyDetail, kind: query, version: 1, capability: read }
+  # Creates or updates a policy in the viewer's own scope. It deletes
+  # nothing by itself, and a duration of zero or less is refused, since
+  # that would make the next enforcement purge the whole category.
+  - { name: retention.savePolicy,   kind: command, version: 1, capability: write,
+      invalidates: [retention.policies, retention.policyDetail] }
+  # Deleting a policy switches off that category's retention, so it carries
+  # the explicit admin scope on top of write.
+  - { name: retention.deletePolicy, kind: command, version: 1, capability: write,
+      requires: { all: ["scope:chronicle.admin"] },
+      invalidates: [retention.policies] }
+  # What enforcement would purge if it ran now, for the confirm dialog in
+  # front of retention.enforce. It loads at most 10,000 events per policy
+  # and says when it was capped.
+  - { name: retention.preview,      kind: query, version: 1, capability: read }
+  # Purges audit events permanently, so it carries the explicit admin scope.
+  # It runs only the viewer's own policies, never the scheduler's global
+  # pass. A policy that fails part-way still answers with the true counts
+  # and failed: true, so these invalidations fire after every purge.
+  - { name: retention.enforce, kind: command, version: 1, capability: write,
+      requires: { all: ["scope:chronicle.admin"] },
+      invalidates: [retention.policies, retention.archives, events.list, overview.stats, streams.mine] }
+  - { name: retention.archives,     kind: query, version: 1, capability: read }
