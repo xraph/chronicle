@@ -120,6 +120,30 @@ func TestOverviewStatsUsesAggregateRatherThanCountingFetchedRows(t *testing.T) {
 	}
 }
 
+// Total deliberately does NOT equal the sum of the listed groups here, the
+// way it would not on a real backend if some rows carried a severity value
+// these fixture groups do not enumerate. TotalEvents must reflect the
+// store's own Total field, not a sum a handler computed from the groups it
+// happened to receive, or it would silently undercount the moment a row's
+// severity or outcome falls outside what the breakdown lists.
+func TestOverviewStatsTotalEventsComesFromAggregateTotalNotFromSummingGroups(t *testing.T) {
+	spy := &aggregateSpy{result: &audit.AggregateResult{
+		Groups: []audit.AggregateGroup{
+			{Severity: "critical", Count: 3},
+			{Severity: "info", Count: 900},
+		},
+		Total: 950,
+	}}
+	h := overviewStatsHandler(Deps{Store: spy})
+	out, err := h(context.Background(), struct{}{}, principalWith(map[string]any{"app_id": "app-1"}))
+	if err != nil {
+		t.Fatalf("overview.stats: %v", err)
+	}
+	if out.TotalEvents != 950 {
+		t.Errorf("TotalEvents = %d, want 950 (the store's Total; sum(groups) is 903)", out.TotalEvents)
+	}
+}
+
 func TestOverviewStatsRefusesAPrincipalWithNoApp(t *testing.T) {
 	h := overviewStatsHandler(Deps{Store: newStubStore()})
 	if _, err := h(context.Background(), struct{}{}, principalWith(nil)); err == nil {
