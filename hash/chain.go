@@ -90,6 +90,18 @@ func Rank(s Scheme) int {
 	}
 }
 
+// Writable reports whether NewChain will accept a scheme for writing. The three
+// retired schemes still verify every row ever written under them; none of them
+// produces another.
+//
+// It exists so callers can order their own startup errors sensibly. A caller
+// that checks "keyed but no key provider" before constructing the chain would
+// otherwise tell an operator on chronicle/v3 to go and configure a key, when
+// the scheme is gone and no key would bring it back.
+func Writable(s Scheme) bool {
+	return s == SchemePlainV4 || s == SchemeHMACV5 || s == ""
+}
+
 // Keyed reports whether a scheme's digest depends on key material the store
 // does not hold. It is the question callers actually mean when they reach for
 // an equality check against SchemeHMAC, and unlike that check it keeps giving

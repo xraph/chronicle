@@ -162,7 +162,9 @@ func New(opts ...Option) (*Chronicle, error) {
 
 	// Checked after every option has run, because the scheme and the provider
 	// can be supplied in either order.
-	if hash.Keyed(c.config.DigestScheme) && c.keys == nil {
+	// Writable first: a retired scheme is retired whether or not a provider was
+	// given, and NewChain below says so while naming the replacement.
+	if hash.Writable(c.config.DigestScheme) && hash.Keyed(c.config.DigestScheme) && c.keys == nil {
 		return nil, ErrHMACKeyUnavailable
 	}
 

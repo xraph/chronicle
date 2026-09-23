@@ -4,6 +4,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -112,13 +113,21 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// groveError checks if an error indicates no rows were found and returns
-// the appropriate Chronicle error.
+// groveError maps a missing row onto the sentinel a caller can test for.
+//
+// Three checks, because the wording belongs to whichever driver grove is
+// sitting on. grove's own sentinel comes first. database/sql says "sql: no rows
+// in result set" and pgx says "no rows in result set", and matching only the
+// second is how every sqlite miss used to reach callers as a raw driver error
+// rather than ErrEventNotFound: errors.Is against the sentinel returned false,
+// so an ordinary absent row looked like an internal failure. The string check
+// stays as a last resort for a driver that wraps neither.
 func groveError(err, notFoundErr error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, grove.ErrNoRows) || err.Error() == "no rows in result set" {
+	if errors.Is(err, grove.ErrNoRows) || errors.Is(err, sql.ErrNoRows) ||
+		strings.Contains(err.Error(), "no rows in result set") {
 		return notFoundErr
 	}
 	return err

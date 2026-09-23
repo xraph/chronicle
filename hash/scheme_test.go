@@ -396,3 +396,29 @@ func TestFramingDowngradeAboveThePinIsDetected(t *testing.T) {
 		t.Error("a downgraded event verified OK")
 	}
 }
+
+func TestWritableNamesTheSchemesNewChainAccepts(t *testing.T) {
+	key := make([]byte, 32)
+	provider := stubProvider{key: key, activeID: "hmac-1"}
+
+	for scheme, want := range map[hash.Scheme]bool{
+		hash.SchemeLegacy:  false,
+		hash.SchemePlain:   false,
+		hash.SchemeHMAC:    false,
+		hash.SchemePlainV4: true,
+		hash.SchemeHMACV5:  true,
+		"":                 true,
+		"chronicle/v99":    false,
+	} {
+		if got := hash.Writable(scheme); got != want {
+			t.Errorf("Writable(%q) = %v, want %v", scheme, got, want)
+		}
+
+		// Writable has to agree with NewChain, or it is just a second opinion
+		// that drifts. An unknown scheme is unwritable either way.
+		_, err := hash.NewChain(scheme, provider)
+		if accepted := err == nil; accepted != want {
+			t.Errorf("Writable(%q) = %v but NewChain accepted = %v", scheme, want, accepted)
+		}
+	}
+}

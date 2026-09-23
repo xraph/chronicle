@@ -10,6 +10,16 @@ import (
 // Events are append-only — no Update or Delete exists.
 type Store interface {
 	// Append persists a single event.
+	//
+	// Backends that recompute the digest (the SQL ones re-derive sequence and
+	// prev_hash under a row lock) also stamp Event.HashScheme with the scheme
+	// they used. The rest store exactly what they are handed, so a caller
+	// reaching Append directly owns both fields: an event carrying a Hash with
+	// no HashScheme is a row verification can only resolve through the
+	// pre-migration fallback, which recognises the retired schemes alone and
+	// will reject a digest computed under a current one.
+	//
+	// Chronicle.Record sets both. This only bites callers bypassing it.
 	Append(ctx context.Context, event *Event) error
 
 	// AppendBatch persists a batch of events atomically.
