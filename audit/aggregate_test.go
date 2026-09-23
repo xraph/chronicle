@@ -169,7 +169,14 @@ func TestResolveGroupByPreservesRequestOrder(t *testing.T) {
 	// recover which bucket unit was asked for, because "day" and "hour" share
 	// the "timestamp" column. That zip is only valid if order is preserved
 	// one-for-one, so this test is what makes it safe to rely on.
-	fields := []string{"category", "day", "outcome"}
+	//
+	// The field order below is deliberately NOT alphabetical ("outcome",
+	// "day", "category" rather than "category", "day", "outcome"). An
+	// implementation that sorted fields before resolving them would produce
+	// the same output as a correct one on an already-sorted input, which
+	// would make the test pass for the wrong reason. Don't "tidy" this back
+	// into alphabetical order.
+	fields := []string{"outcome", "day", "category"}
 	cols, err := ResolveGroupBy(fields)
 	if err != nil {
 		t.Fatalf("ResolveGroupBy: %v", err)
@@ -178,7 +185,30 @@ func TestResolveGroupByPreservesRequestOrder(t *testing.T) {
 		t.Fatalf("got %d columns for %d fields; the zip in every backend assumes one-for-one",
 			len(cols), len(fields))
 	}
-	if cols[0] != "category" || cols[1] != "timestamp" || cols[2] != "outcome" {
-		t.Fatalf("columns = %v, want [category timestamp outcome] in request order", cols)
+	if cols[0] != "outcome" || cols[1] != "timestamp" || cols[2] != "category" {
+		t.Fatalf("columns = %v, want [outcome timestamp category] in request order", cols)
+	}
+}
+
+func TestResolveGroupByRejectsMultipleBucketFields(t *testing.T) {
+	// "day" and "hour" are distinct field names, so the exact-duplicate check
+	// does not catch this, but both map to the "timestamp" column and both
+	// route through groupFieldPointer to the same &g.Bucket. Without this
+	// check, the second assignment would silently overwrite the first.
+	if _, err := ResolveGroupBy([]string{"day", "hour"}); !errors.Is(err, ErrMultipleBucketFields) {
+		t.Fatalf("ResolveGroupBy(day,hour) error = %v, want ErrMultipleBucketFields", err)
+	}
+}
+
+func TestResolveGroupByAcceptsSingleBucketWithDimension(t *testing.T) {
+	// Guards against the multiple-bucket check over-rejecting: one bucket
+	// field alongside an ordinary dimension is perfectly expressible and
+	// must still succeed.
+	cols, err := ResolveGroupBy([]string{"day", "category"})
+	if err != nil {
+		t.Fatalf("ResolveGroupBy(day,category): unexpected error: %v", err)
+	}
+	if len(cols) != 2 || cols[0] != "timestamp" || cols[1] != "category" {
+		t.Fatalf("columns = %v, want [timestamp category]", cols)
 	}
 }

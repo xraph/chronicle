@@ -16,6 +16,16 @@ var (
 
 	// ErrDuplicateGroupBy is returned when the same field is named twice.
 	ErrDuplicateGroupBy = errors.New("duplicate group_by field")
+
+	// ErrMultipleBucketFields is returned when a query names more than one
+	// time bucket field ("day" and "hour"). An AggregateGroup has exactly one
+	// Bucket field, so grouping by two time units at once is not expressible:
+	// both route through groupFieldPointer to the same &g.Bucket, and the
+	// second assignment would silently overwrite the first rather than
+	// producing two columns. This is distinct from ErrDuplicateGroupBy, which
+	// catches the same field named twice ("day", "day"); here the field names
+	// differ but the underlying column and destination field collide.
+	ErrMultipleBucketFields = errors.New("group_by names more than one time bucket field")
 )
 
 // groupByColumns maps each accepted group_by field to the physical column name
@@ -63,6 +73,7 @@ func ResolveGroupBy(fields []string) ([]string, error) {
 
 	columns := make([]string, 0, len(fields))
 	seen := make(map[string]struct{}, len(fields))
+	var bucketField string
 
 	for _, field := range fields {
 		column, ok := groupByColumns[field]
@@ -73,6 +84,14 @@ func ResolveGroupBy(fields []string) ([]string, error) {
 			return nil, fmt.Errorf("%w: %q", ErrDuplicateGroupBy, field)
 		}
 		seen[field] = struct{}{}
+
+		if IsBucketField(field) {
+			if bucketField != "" {
+				return nil, fmt.Errorf("%w: %q and %q", ErrMultipleBucketFields, bucketField, field)
+			}
+			bucketField = field
+		}
+
 		columns = append(columns, column)
 	}
 
