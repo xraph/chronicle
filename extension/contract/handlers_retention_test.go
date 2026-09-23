@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +111,20 @@ func (s *retentionPolicySpy) SavePolicy(context.Context, *retention.Policy) erro
 func (s *retentionPolicySpy) DeletePolicy(context.Context, id.ID) error {
 	s.deleteCalls++
 	return nil
+}
+
+// retentionEventsFailStore lists policies but cannot query events.
+type retentionEventsFailStore struct {
+	stubStore
+	policies []*retention.Policy
+}
+
+func (s *retentionEventsFailStore) ListPolicies(context.Context, retention.ListPoliciesOpts) ([]*retention.Policy, error) {
+	return s.policies, nil
+}
+
+func (s *retentionEventsFailStore) EventsOlderThan(context.Context, retention.PurgeQuery) ([]*audit.Event, error) {
+	return nil, errors.New("query timeout")
 }
 
 func retentionFakeEvents(n int) []*audit.Event {
@@ -971,14 +986,147 @@ func TestRetentionArchivesListsOnlyTheViewersScopeAndPages(t *testing.T) {
 	}
 }
 
+// store/redis keys a policy as app:tenant:category, and a save that finds a
+// different policy under that key deletes it. With free-text categories,
+// tenant "t" creating "x:auth" lands on tenant "t:x"'s "auth" key. So a
+// category is "*" or a plain identifier, on create and on update, whatever
+// the store does with it.
+func TestRetentionSavePolicyRefusesACategoryThatIsNotAPlainIdentifier(t *testing.T) {
+	tooLong := "a" + strings.Repeat("b", 64) // 65 characters
+	viewer := map[string]any{"app_id": "app-1", "tenant_id": "t"}
+	for _, cat := range []string{"x:auth", "a|b", "", tooLong, " auth", "-auth", "a/b", "**"} {
+		t.Run("create "+cat, func(t *testing.T) {
+			spy := &retentionPolicySpy{}
+			_, err := retentionSavePolicyHandler(Deps{Store: spy})(context.Background(),
+				SavePolicyInput{Category: retentionStr(cat), Duration: retentionStr("720h")}, principalWith(viewer))
+			if got := retentionErrCode(t, err); got != fcontract.CodeBadRequest {
+				t.Fatalf("category %q: code = %s, want %s", cat, got, fcontract.CodeBadRequest)
+			}
+			if spy.saveCalls != 0 {
+				t.Fatalf("SavePolicy was called with category %q", cat)
+			}
+		})
+		t.Run("update "+cat, func(t *testing.T) {
+			existing := retentionPolicy("app-1", "t", "auth", 720*time.Hour)
+			spy := &retentionPolicySpy{existing: existing}
+			_, err := retentionSavePolicyHandler(Deps{Store: spy})(context.Background(),
+				SavePolicyInput{ID: retentionStr(existing.ID.String()), Category: retentionStr(cat)}, principalWith(viewer))
+			if got := retentionErrCode(t, err); got != fcontract.CodeBadRequest {
+				t.Fatalf("category %q: code = %s, want %s", cat, got, fcontract.CodeBadRequest)
+			}
+			if spy.gets != 0 || spy.saveCalls != 0 {
+				t.Fatalf("the store was touched for category %q", cat)
+			}
+		})
+	}
+}
+
+func TestRetentionSavePolicyAcceptsPlainCategories(t *testing.T) {
+	longest := "a" + strings.Repeat("b", 63) // 64 characters, the limit
+	for _, cat := range []string{"*", "auth", "user.login", "billing-v2", "under_score", "9lives", longest} {
+		t.Run(cat, func(t *testing.T) {
+			s := newSQLiteStore(t)
+			out, err := retentionSavePolicyHandler(Deps{Store: s})(context.Background(),
+				SavePolicyInput{Category: retentionStr(cat), Duration: retentionStr("720h")}, principalWith(retentionApp1TenantA))
+			if err != nil {
+				t.Fatalf("category %q refused: %v", cat, err)
+			}
+			if out.Category != cat {
+				t.Fatalf("stored category %q, want %q", out.Category, cat)
+			}
+		})
+	}
+}
+
+// Every earlier detail intent is tested against a same-app, other-tenant
+// record as well as another app's.
+func TestRetentionPolicyDetailRefusesASiblingTenantsPolicy(t *testing.T) {
+	s := newSQLiteStore(t)
+	sibling := retentionSavePolicyIn(t, s, retentionPolicy("app-1", "tenant-b", "auth", time.Hour))
+	own := retentionSavePolicyIn(t, s, retentionPolicy("app-1", "tenant-a", "auth", time.Hour))
+
+	h := retentionPolicyDetailHandler(Deps{Store: s})
+	_, err := h(context.Background(), GetPolicyInput{ID: sibling.ID.String()}, principalWith(retentionApp1TenantA))
+	if got := retentionErrCode(t, err); got != fcontract.CodeNotFound {
+		t.Fatalf("sibling tenant's policy: code = %s, want %s", got, fcontract.CodeNotFound)
+	}
+	if _, err := h(context.Background(), GetPolicyInput{ID: own.ID.String()}, principalWith(retentionApp1TenantA)); err != nil {
+		t.Fatalf("own policy: %v", err)
+	}
+}
+
+// Archives carry the tenant as well as the app, and a tenant operator must
+// see only its own tenant's.
+func TestRetentionArchivesAsATenantListsOnlyThatTenant(t *testing.T) {
+	s := newSQLiteStore(t)
+	ctx := context.Background()
+	record := func(tenantID string) *retention.Archive {
+		now := time.Now().UTC().Truncate(time.Second)
+		a := &retention.Archive{
+			Entity:        chronicle.Entity{CreatedAt: now, UpdatedAt: now},
+			ID:            id.NewArchiveID(),
+			PolicyID:      id.NewPolicyID(),
+			Category:      "auth",
+			EventCount:    1,
+			FromTimestamp: now.Add(-time.Hour),
+			ToTimestamp:   now,
+			SinkName:      "s3",
+			AppID:         "app-1",
+			TenantID:      tenantID,
+		}
+		if err := s.RecordArchive(ctx, a); err != nil {
+			t.Fatalf("record archive: %v", err)
+		}
+		return a
+	}
+	own := record("tenant-a")
+	record("tenant-b")
+	record("")
+
+	out, err := retentionArchivesHandler(Deps{Store: s})(ctx, ArchiveListInput{}, principalWith(retentionApp1TenantA))
+	if err != nil {
+		t.Fatalf("retention.archives: %v", err)
+	}
+	if len(out.Archives) != 1 || out.Archives[0].ID != own.ID.String() || out.HasMore {
+		t.Fatalf("tenant-a archives = %+v, want only its own one", out.Archives)
+	}
+}
+
+// moreRemain answers true when its own check fails. False would tell the
+// operator the backlog is clear when nobody could look. The enforcer here
+// runs cleanly over an empty store, and only the re-check is broken.
+func TestRetentionEnforceMoreRemainIsTrueWhenTheCheckFails(t *testing.T) {
+	cases := map[string]store.Store{
+		"listing policies fails": storeReturning(errors.New("connection refused")),
+		"querying events fails": &retentionEventsFailStore{policies: []*retention.Policy{
+			retentionPolicy("app-1", "", "auth", 24*time.Hour),
+		}},
+	}
+	for name, depsStore := range cases {
+		t.Run(name, func(t *testing.T) {
+			clean := &retentionListSpy{}
+			h := retentionEnforceHandler(Deps{Store: depsStore, Enforcer: retention.NewEnforcer(clean, nil, nil)})
+			out, err := h(context.Background(), struct{}{}, principalWith(retentionApp1Wide))
+			if err != nil {
+				t.Fatalf("retention.enforce: %v", err)
+			}
+			if !out.MoreRemain {
+				t.Fatal("moreRemain = false after a failed check; that claims nothing remains when nobody could tell")
+			}
+			if out.Failed {
+				t.Fatal("failed = true, but enforcement itself ran cleanly")
+			}
+		})
+	}
+}
+
 // ──────────────────────────────────────────────────
 // Manifest
 // ──────────────────────────────────────────────────
 
-// The two intents that destroy something carry the explicit admin scope on
-// top of write, which the transport checks before the handler runs. Losing
-// it in a manifest edit would hand purge rights to every writer.
-func TestRetentionDestructiveCommandsRequireTheAdminScope(t *testing.T) {
+// retentionManifestIntents loads the manifest and indexes its intents.
+func retentionManifestIntents(t *testing.T) map[string]fcontract.Intent {
+	t.Helper()
 	m, err := loader.Load(bytes.NewReader(manifestYAML), "manifest.yaml")
 	if err != nil {
 		t.Fatalf("load manifest: %v", err)
@@ -987,22 +1135,61 @@ func TestRetentionDestructiveCommandsRequireTheAdminScope(t *testing.T) {
 	for _, in := range m.Intents {
 		intents[in.Name] = in
 	}
+	return intents
+}
 
+func retentionAssertAdminCommand(t *testing.T, intents map[string]fcontract.Intent, name string) {
+	t.Helper()
+	in, ok := intents[name]
+	if !ok {
+		t.Fatalf("%s is not in the manifest", name)
+	}
+	if in.Kind != fcontract.IntentKindCommand || in.Capability != fcontract.CapWrite {
+		t.Errorf("%s: kind %s capability %s, want command/write", name, in.Kind, in.Capability)
+	}
+	if !reflect.DeepEqual(in.Requires.All, []string{"scope:chronicle.admin"}) {
+		t.Errorf("%s requires %+v, want all: [scope:chronicle.admin]", name, in.Requires)
+	}
+}
+
+// The two intents that destroy something directly carry the explicit admin
+// scope on top of write, which the transport checks before the handler
+// runs. Losing it in a manifest edit would hand purge rights to every
+// writer. enforce's invalidations are pinned here too: a purge changes
+// every list of events, and verification of the chain it cut through.
+func TestRetentionDestructiveCommandsRequireTheAdminScope(t *testing.T) {
+	intents := retentionManifestIntents(t)
 	for _, name := range []string{"retention.deletePolicy", "retention.enforce"} {
-		in, ok := intents[name]
-		if !ok {
-			t.Fatalf("%s is not in the manifest", name)
-		}
-		if in.Kind != fcontract.IntentKindCommand || in.Capability != fcontract.CapWrite {
-			t.Errorf("%s: kind %s capability %s, want command/write", name, in.Kind, in.Capability)
-		}
-		if !reflect.DeepEqual(in.Requires.All, []string{"scope:chronicle.admin"}) {
-			t.Errorf("%s requires %+v, want all: [scope:chronicle.admin]", name, in.Requires)
-		}
+		retentionAssertAdminCommand(t, intents, name)
 	}
 
-	wantInvalidates := []string{"retention.policies", "retention.archives", "events.list", "overview.stats", "streams.mine"}
+	wantInvalidates := []string{
+		"retention.policies", "retention.archives", "retention.preview",
+		"events.list", "events.detail", "events.aggregate", "events.byUser",
+		"overview.stats", "streams.mine", "verify.run", "verify.event",
+		"erasures.preview",
+	}
 	if got := intents["retention.enforce"].Invalidates; !reflect.DeepEqual(got, wantInvalidates) {
 		t.Errorf("retention.enforce invalidates %v, want %v", got, wantInvalidates)
+	}
+}
+
+// Saving a policy purges nothing itself, but the background scheduler
+// enforces every policy on its next run. A "*" policy with a tiny duration,
+// or a shortened existing one, purges history without anyone calling
+// retention.enforce, so savePolicy needs the same admin scope.
+func TestRetentionSavePolicyRequiresTheAdminScope(t *testing.T) {
+	retentionAssertAdminCommand(t, retentionManifestIntents(t), "retention.savePolicy")
+}
+
+// Changing or removing a policy changes the policy list, the policy's own
+// detail, and what a preview would show.
+func TestRetentionPolicyCommandsDeclareTheirInvalidations(t *testing.T) {
+	intents := retentionManifestIntents(t)
+	want := []string{"retention.policies", "retention.policyDetail", "retention.preview"}
+	for _, name := range []string{"retention.savePolicy", "retention.deletePolicy"} {
+		if got := intents[name].Invalidates; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s invalidates %v, want %v", name, got, want)
+		}
 	}
 }

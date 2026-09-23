@@ -70,24 +70,35 @@ intents:
   - { name: retention.policies,     kind: query, version: 1, capability: read }
   - { name: retention.policyDetail, kind: query, version: 1, capability: read }
   # Creates or updates a policy in the viewer's own scope. It deletes
-  # nothing by itself, and a duration of zero or less is refused, since
-  # that would make the next enforcement purge the whole category.
+  # nothing by itself, but the background scheduler enforces every policy
+  # on its next run, so a "*" policy with a tiny duration, or a shortened
+  # one, purges history without anyone calling retention.enforce. That makes
+  # it as destructive in effect as enforce, so it carries the admin scope
+  # too. A duration of zero or less is refused outright.
   - { name: retention.savePolicy,   kind: command, version: 1, capability: write,
-      invalidates: [retention.policies, retention.policyDetail] }
+      requires: { all: ["scope:chronicle.admin"] },
+      invalidates: [retention.policies, retention.policyDetail, retention.preview] }
   # Deleting a policy switches off that category's retention, so it carries
   # the explicit admin scope on top of write.
   - { name: retention.deletePolicy, kind: command, version: 1, capability: write,
       requires: { all: ["scope:chronicle.admin"] },
-      invalidates: [retention.policies] }
+      invalidates: [retention.policies, retention.policyDetail, retention.preview] }
   # What enforcement would purge if it ran now, for the confirm dialog in
   # front of retention.enforce. It loads at most 10,000 events per policy
-  # and says when it was capped.
+  # and says when it was capped. Its counts are eligible events; one enforce
+  # pass purges at most 5,000 per policy.
   - { name: retention.preview,      kind: query, version: 1, capability: read }
   # Purges audit events permanently, so it carries the explicit admin scope.
   # It runs only the viewer's own policies, never the scheduler's global
   # pass. A policy that fails part-way still answers with the true counts
-  # and failed: true, so these invalidations fire after every purge.
+  # and failed: true, so these invalidations fire after every purge. The
+  # verify intents are on the list because a purge removes events from the
+  # middle of the chain: verification reports the purged sequences as gaps
+  # and the events after them as tampered.
   - { name: retention.enforce, kind: command, version: 1, capability: write,
       requires: { all: ["scope:chronicle.admin"] },
-      invalidates: [retention.policies, retention.archives, events.list, overview.stats, streams.mine] }
+      invalidates: [retention.policies, retention.archives, retention.preview,
+                    events.list, events.detail, events.aggregate, events.byUser,
+                    overview.stats, streams.mine, verify.run, verify.event,
+                    erasures.preview] }
   - { name: retention.archives,     kind: query, version: 1, capability: read }

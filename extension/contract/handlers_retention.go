@@ -2,6 +2,7 @@ package contract
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"time"
 
@@ -103,8 +104,15 @@ type PolicyPreview struct {
 	Capped     bool   `json:"capped"`
 }
 
-// RetentionPreviewResponse is what retention.enforce would purge if it ran
-// now, for the confirm dialog that stands in front of it.
+// RetentionPreviewResponse describes the events the viewer's policies make
+// eligible for purging right now, for the confirm dialog that stands in
+// front of retention.enforce.
+//
+// The counts are eligible events, not what one enforce pass will delete.
+// The preview counts up to previewCap (10,000) events per policy, and one
+// pass purges at most retention.DefaultPurgeBatchSize (5,000) per policy, so
+// a large backlog takes several passes. EnforceResponse.MoreRemain is what
+// says another one is needed.
 //
 // EventCount is the number of distinct events the viewer's policies select.
 // Capped true means at least one policy hit previewCap, so the real number
@@ -244,6 +252,23 @@ func projectArchive(a *retention.Archive) ArchiveSummary {
 	}
 }
 
+// policyCategoryPattern is what a policy category may look like, apart from
+// "*". The stores build lookup keys out of the category, and store/redis
+// joins app, tenant and category with ":" into one key. A category carrying
+// a separator could then name another tenant's key: tenant "t" creating
+// category "x:auth" lands on the key of tenant "t:x"'s "auth" policy, and
+// redis deletes the policy it finds there. Refusing separators and anything
+// else outside a plain identifier closes that at the contract, whatever a
+// store does with the string.
+var policyCategoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// validPolicyCategory reports whether c may be stored as a policy category:
+// exactly "*" (every category), or a plain identifier of at most 64
+// characters. It is checked on create and on update.
+func validPolicyCategory(c string) bool {
+	return c == "*" || policyCategoryPattern.MatchString(c)
+}
+
 // errPolicyNotFound is the answer for a policy ID that does not parse, does
 // not exist, or belongs to someone else. All three look the same, so a
 // caller cannot probe which IDs exist in other tenants.
@@ -345,9 +370,14 @@ func retentionSavePolicyHandler(deps Deps) func(context.Context, SavePolicyInput
 
 		var category *string
 		if in.Category != nil {
-			c := strings.TrimSpace(*in.Category)
-			if c == "" {
-				return PolicySummary{}, &fcontract.Error{Code: fcontract.CodeBadRequest, Message: "category cannot be empty"}
+			// Checked exactly as supplied, with no trimming, so what is
+			// validated is what is stored.
+			c := *in.Category
+			if !validPolicyCategory(c) {
+				return PolicySummary{}, &fcontract.Error{
+					Code:    fcontract.CodeBadRequest,
+					Message: `category must be "*" or 1 to 64 letters, digits, '.', '_' or '-', starting with a letter or digit`,
+				}
 			}
 			category = &c
 		}
