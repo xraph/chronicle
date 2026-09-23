@@ -39,3 +39,12 @@ intents:
   # taken before it is stale in a way the operator would otherwise not see.
   - { name: checkpoints.take, kind: command, version: 1, capability: write,
       invalidates: [checkpoints.list, streams.mine, verify.run] }
+  # The audit log's search surface. events.byUser is its own intent rather
+  # than reusing events.list with a userId filter: it is backed by
+  # Store.Query with UserID set (see RULING 1 in handlers_events.go), not by
+  # Store.ByUser, whose Total is only the returned page's length on every
+  # backend and would misstate the count on the wire.
+  - { name: events.list,      kind: query, version: 1, capability: read }
+  - { name: events.detail,    kind: query, version: 1, capability: read }
+  - { name: events.aggregate, kind: query, version: 1, capability: read }
+  - { name: events.byUser,    kind: query, version: 1, capability: read }
