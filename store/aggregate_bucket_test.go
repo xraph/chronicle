@@ -27,7 +27,7 @@ import (
 // not reached yet. Once every backend is done this equals the full key set
 // of backends(t); it stays here afterward as a record of the rollout, not
 // because anything still needs filtering out.
-var bucketBackends = []string{"postgres"}
+var bucketBackends = []string{"postgres", "sqlite"}
 
 // bucketTestBackends returns backends(t) filtered down to bucketBackends.
 func bucketTestBackends(t *testing.T) map[string]func(t *testing.T) (store.Store, func(context.Context, id.ID)) {
