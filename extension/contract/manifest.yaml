@@ -52,3 +52,15 @@ intents:
   # (failure + denied), denied, erasures, and the category/severity/outcome
   # groups they are derived from.
   - { name: overview.stats, kind: query, version: 1, capability: read }
+  # GDPR erasure records: the evidence that a data subject's right to
+  # erasure was honoured. There is no erasures.request here yet: a confirmed
+  # library bug means crypto.KeyStore keys an encryption key by subject ID
+  # alone, so an erasure requested in one app or tenant destroys another
+  # app's or tenant's data for the same subject. The command stays out of
+  # this manifest until the library scopes its keys.
+  - { name: erasures.list,   kind: query, version: 1, capability: read }
+  - { name: erasures.detail, kind: query, version: 1, capability: read }
+  # The count a confirm dialog would show before an erasure command fires.
+  # A query, so it is lazy on the client and runs when the dialog opens, not
+  # on every render of the list.
+  - { name: erasures.preview, kind: query, version: 1, capability: read }
