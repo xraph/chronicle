@@ -160,6 +160,7 @@ func registrations() []registration {
 		verifyRegistrations(),
 		checkpointsRegistrations(),
 		eventsRegistrations(),
+		overviewRegistrations(),
 		// Each later task adds its group's <group>Registrations() here.
 	}
 
