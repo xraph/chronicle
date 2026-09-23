@@ -19,29 +19,6 @@ import (
 	"github.com/xraph/chronicle/stream"
 )
 
-// bucketBackends is the subset of backends(t) (see scope_behaviour_test.go)
-// whose Aggregate currently understands the "day" and "hour" group_by
-// fields. It grows by one entry per backend commit -- postgres, then
-// sqlite, then mongo, then redis -- so `go test ./...` stays green after
-// each single-backend commit instead of failing on backends this batch has
-// not reached yet. Once every backend is done this equals the full key set
-// of backends(t); it stays here afterward as a record of the rollout, not
-// because anything still needs filtering out.
-var bucketBackends = []string{"postgres", "sqlite", "mongo", "redis"}
-
-// bucketTestBackends returns backends(t) filtered down to bucketBackends.
-func bucketTestBackends(t *testing.T) map[string]func(t *testing.T) (store.Store, func(context.Context, id.ID)) {
-	t.Helper()
-	all := backends(t)
-	filtered := make(map[string]func(t *testing.T) (store.Store, func(context.Context, id.ID)), len(bucketBackends))
-	for _, name := range bucketBackends {
-		if open, ok := all[name]; ok {
-			filtered[name] = open
-		}
-	}
-	return filtered
-}
-
 // seedScope returns a fresh per-run app id and tenant id, built from
 // newRunSuffix (see scope_behaviour_test.go), so repeated runs against a
 // persistent database (postgres, mongo, redis) never collide on
@@ -112,21 +89,45 @@ func registerStreamCleanup(t *testing.T, cleanupStream func(context.Context, id.
 	})
 }
 
+// bucketCount pairs a rendered bucket label with the count of events it
+// covers. The dashboard chart plots the count, not just the label, so a
+// backend that renders the right bucket string with the wrong count would
+// still produce a wrong chart; comparing this pair (rather than the label
+// alone) is what catches that.
+type bucketCount struct {
+	Bucket string
+	Count  int64
+}
+
+// bucketCountsOf converts an AggregateResult's groups to bucketCounts,
+// sorted by bucket label so callers can compare across backends (which may
+// return groups in a different order, e.g. postgres/sqlite/mongo sort by
+// count DESC while ties break arbitrarily) without a separate sort step at
+// every call site.
+func bucketCountsOf(groups []audit.AggregateGroup) []bucketCount {
+	out := make([]bucketCount, len(groups))
+	for i, g := range groups {
+		out[i] = bucketCount{Bucket: g.Bucket, Count: g.Count}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Bucket < out[j].Bucket })
+	return out
+}
+
 // assertBucketsAgree is the cross-backend assertion a per-package test
 // design could not make: every backend must have rendered the exact same
-// ordered bucket strings, because the dashboard contract carries a bucket to
-// the browser with no per-backend branch.
-func assertBucketsAgree(t *testing.T, got map[string][]string) {
+// ordered (bucket, count) pairs, because the dashboard contract carries both
+// to the browser with no per-backend branch.
+func assertBucketsAgree(t *testing.T, got map[string][]bucketCount) {
 	t.Helper()
 	var ref string
-	var refBuckets []string
+	var refBuckets []bucketCount
 	for name, b := range got {
 		if ref == "" {
 			ref, refBuckets = name, b
 			continue
 		}
 		if !reflect.DeepEqual(b, refBuckets) {
-			t.Errorf("backends disagree: %s rendered %v, %s rendered %v", name, b, ref, refBuckets)
+			t.Errorf("backends disagree: %s rendered %+v, %s rendered %+v", name, b, ref, refBuckets)
 		}
 	}
 }
@@ -140,8 +141,8 @@ func TestAggregateBucketsAgreeAcrossBackends(t *testing.T) {
 	day1 := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 	day3 := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
 
-	got := map[string][]string{} // backend -> ordered buckets
-	for name, open := range bucketTestBackends(t) {
+	got := map[string][]bucketCount{} // backend -> ordered (bucket, count) pairs
+	for name, open := range backends(t) {
 		t.Run(name, func(t *testing.T) {
 			s, cleanupStream := open(t)
 			appID, tenantID := seedScope(t)
@@ -162,13 +163,12 @@ func TestAggregateBucketsAgreeAcrossBackends(t *testing.T) {
 				t.Fatalf("%s: %d groups, want 2 (the empty day must be absent, not zero): %+v",
 					name, len(res.Groups), res.Groups)
 			}
-			var buckets []string
-			for _, g := range res.Groups {
-				buckets = append(buckets, g.Bucket)
-			}
-			sort.Strings(buckets)
-			if buckets[0] != "2026-09-20" || buckets[1] != "2026-09-22" {
-				t.Errorf("%s: buckets %v, want [2026-09-20 2026-09-22]", name, buckets)
+			buckets := bucketCountsOf(res.Groups)
+			// Two events landed on day1, one on day3: the count is part of
+			// what the chart draws, not just the label.
+			want := []bucketCount{{"2026-09-20", 2}, {"2026-09-22", 1}}
+			if !reflect.DeepEqual(buckets, want) {
+				t.Errorf("%s: buckets %+v, want %+v", name, buckets, want)
 			}
 			got[name] = buckets
 		})
@@ -184,8 +184,8 @@ func TestAggregateHourBucketsAgreeAcrossBackends(t *testing.T) {
 	hour1 := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 	hour3 := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC) // two hours later, nothing between
 
-	got := map[string][]string{}
-	for name, open := range bucketTestBackends(t) {
+	got := map[string][]bucketCount{}
+	for name, open := range backends(t) {
 		t.Run(name, func(t *testing.T) {
 			s, cleanupStream := open(t)
 			appID, tenantID := seedScope(t)
@@ -204,14 +204,11 @@ func TestAggregateHourBucketsAgreeAcrossBackends(t *testing.T) {
 				t.Fatalf("%s: %d groups, want 2 (the empty hour must be absent, not zero): %+v",
 					name, len(res.Groups), res.Groups)
 			}
-			var buckets []string
-			for _, g := range res.Groups {
-				buckets = append(buckets, g.Bucket)
-			}
-			sort.Strings(buckets)
-			want0, want1 := "2026-09-20T10:00:00Z", "2026-09-20T12:00:00Z"
-			if buckets[0] != want0 || buckets[1] != want1 {
-				t.Errorf("%s: buckets %v, want [%s %s]", name, buckets, want0, want1)
+			buckets := bucketCountsOf(res.Groups)
+			// Two events landed in hour1, one in hour3.
+			want := []bucketCount{{"2026-09-20T10:00:00Z", 2}, {"2026-09-20T12:00:00Z", 1}}
+			if !reflect.DeepEqual(buckets, want) {
+				t.Errorf("%s: buckets %+v, want %+v", name, buckets, want)
 			}
 			got[name] = buckets
 		})
@@ -231,8 +228,8 @@ func TestAggregateHourBucketHandlesFractionalSeconds(t *testing.T) {
 	onTheSecond := time.Date(2026, 9, 20, 14, 0, 3, 0, time.UTC)
 	withFraction := time.Date(2026, 9, 20, 14, 0, 3, 123456789, time.UTC)
 
-	got := map[string][]string{}
-	for name, open := range bucketTestBackends(t) {
+	got := map[string][]bucketCount{}
+	for name, open := range backends(t) {
 		t.Run(name, func(t *testing.T) {
 			s, cleanupStream := open(t)
 			appID, tenantID := seedScope(t)
@@ -252,36 +249,42 @@ func TestAggregateHourBucketHandlesFractionalSeconds(t *testing.T) {
 				t.Fatalf("%s: %d groups, want 1 (both timestamps are the same hour): %+v",
 					name, len(res.Groups), res.Groups)
 			}
-			want := "2026-09-20T14:00:00Z"
-			if res.Groups[0].Bucket != want {
-				t.Errorf("%s: bucket = %q, want %q", name, res.Groups[0].Bucket, want)
+			buckets := bucketCountsOf(res.Groups)
+			want := []bucketCount{{"2026-09-20T14:00:00Z", 2}}
+			if !reflect.DeepEqual(buckets, want) {
+				t.Errorf("%s: buckets %+v, want %+v", name, buckets, want)
 			}
-			if res.Groups[0].Count != 2 {
-				t.Errorf("%s: count = %d, want 2", name, res.Groups[0].Count)
-			}
-			got[name] = []string{res.Groups[0].Bucket}
+			got[name] = buckets
 		})
 	}
 
 	assertBucketsAgree(t, got)
 }
 
-// TestAggregatePostgresDayBucketIsUTCNormalized proves store/postgres's day
-// bucket expression normalises to UTC rather than to the session's own time
-// zone. date_trunc on a TIMESTAMPTZ truncates in whatever time zone the
-// connection happens to be in; a naive `date_trunc('day', timestamp)` passes
-// every other test in this file -- the containers those run against are all
-// UTC -- and then silently shifts day boundaries the first time it runs
-// against a server configured for a different zone.
+// openPostgresNonUTCSession opens an independent postgres store against
+// CHRONICLE_TEST_POSTGRES_DSN with a "timezone" query parameter appended, so
+// the session's own time zone is deliberately NOT UTC. It is shared by
+// TestAggregatePostgresDayBucketIsUTCNormalized and
+// TestAggregatePostgresHourBucketIsUTCNormalized, which both need the same
+// non-UTC session and differ only in which bucket unit and timestamp they
+// exercise -- the day and hour expressions each carry their own `AT TIME
+// ZONE 'UTC'` in store/postgres/audit.go, so a mistake in one without the
+// other is a realistic failure and each test must independently catch it.
 //
 // This opens its own postgres store, independent of backends(t)/
 // openPostgres in scope_behaviour_test.go, because it needs a DSN carrying a
 // non-UTC session time zone rather than the one those helpers dial. If the
-// driver does not honour a "timezone" query parameter on the DSN, this test
-// fails loudly (naming the session time zone it actually got) rather than
-// silently passing as a no-op, so a change in that behaviour is visible
-// instead of quietly making this test meaningless.
-func TestAggregatePostgresDayBucketIsUTCNormalized(t *testing.T) {
+// driver does not honour the "timezone" query parameter, this fails loudly
+// (naming the session time zone it actually got) rather than silently
+// passing as a no-op, so a change in that behaviour is visible instead of
+// quietly making the caller's test meaningless.
+//
+// Returns the store, the raw driver (so the caller can issue its own
+// cleanup DELETEs the same way scope_behaviour_test.go's openPostgres
+// does), and the session time zone the server actually reports.
+func openPostgresNonUTCSession(t *testing.T) (*chroniclepostgres.Store, *pgdriver.PgDB, string) {
+	t.Helper()
+
 	dsn := os.Getenv("CHRONICLE_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("CHRONICLE_TEST_POSTGRES_DSN not set, skipping postgres time zone test")
@@ -319,8 +322,8 @@ func TestAggregatePostgresDayBucketIsUTCNormalized(t *testing.T) {
 	}
 
 	// Confirm the session actually picked up the non-UTC zone, so a failure
-	// below is about the bucket expression and not about the DSN parameter
-	// being silently ignored by the driver.
+	// in the caller is about the bucket expression and not about the DSN
+	// parameter being silently ignored by the driver.
 	var sessionTZ string
 	if err := drv.NewRaw("SHOW timezone").Scan(ctx, &sessionTZ); err != nil {
 		t.Fatalf("read session timezone: %v", err)
@@ -328,8 +331,41 @@ func TestAggregatePostgresDayBucketIsUTCNormalized(t *testing.T) {
 	if sessionTZ == "UTC" || sessionTZ == "utc" {
 		t.Fatalf("driver did not honour the timezone DSN parameter (session timezone is %q); "+
 			"this test cannot exercise UTC normalization without a non-UTC session -- see "+
-			"this test's doc comment", sessionTZ)
+			"this function's doc comment", sessionTZ)
 	}
+
+	return s, drv, sessionTZ
+}
+
+// registerPostgresRawCleanup deletes streamID's events and stream via the
+// raw driver once the test ends, the same way scope_behaviour_test.go's
+// openPostgres cleanup does. store.Store itself has no Delete; drv does.
+func registerPostgresRawCleanup(t *testing.T, drv *pgdriver.PgDB, streamID id.ID) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := drv.Exec(ctx, "DELETE FROM chronicle_events WHERE stream_id = $1", streamID.String()); err != nil {
+			t.Logf("cleanup: delete events for stream %s: %v", streamID, err)
+		}
+		if _, err := drv.Exec(ctx, "DELETE FROM chronicle_streams WHERE id = $1", streamID.String()); err != nil {
+			t.Logf("cleanup: delete stream %s: %v", streamID, err)
+		}
+	})
+}
+
+// TestAggregatePostgresDayBucketIsUTCNormalized proves store/postgres's day
+// bucket expression normalises to UTC rather than to the session's own time
+// zone. date_trunc on a TIMESTAMPTZ truncates in whatever time zone the
+// connection happens to be in; a naive `date_trunc('day', timestamp)` passes
+// every other test in this file -- the containers those run against are all
+// UTC -- and then silently shifts day boundaries the first time it runs
+// against a server configured for a different zone. See
+// openPostgresNonUTCSession for how the non-UTC session is obtained and
+// verified.
+func TestAggregatePostgresDayBucketIsUTCNormalized(t *testing.T) {
+	s, drv, sessionTZ := openPostgresNonUTCSession(t)
+	ctx := context.Background()
 
 	appID, tenantID := seedScope(t)
 	// 2026-09-20T02:00:00Z is 2026-09-19 22:00 in New York (UTC-4 under DST
@@ -337,16 +373,7 @@ func TestAggregatePostgresDayBucketIsUTCNormalized(t *testing.T) {
 	// this into 2026-09-19, not 2026-09-20.
 	ts := time.Date(2026, 9, 20, 2, 0, 0, 0, time.UTC)
 	streamID := seedEventsAt(t, s, appID, tenantID, ts)
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, execErr := drv.Exec(cleanupCtx, "DELETE FROM chronicle_events WHERE stream_id = $1", streamID.String()); execErr != nil {
-			t.Logf("cleanup: delete events for stream %s: %v", streamID, execErr)
-		}
-		if _, execErr := drv.Exec(cleanupCtx, "DELETE FROM chronicle_streams WHERE id = $1", streamID.String()); execErr != nil {
-			t.Logf("cleanup: delete stream %s: %v", streamID, execErr)
-		}
-	})
+	registerPostgresRawCleanup(t, drv, streamID)
 
 	res, err := s.Aggregate(ctx, &audit.AggregateQuery{
 		After: ts.Add(-time.Hour), Before: ts.Add(time.Hour),
@@ -362,5 +389,44 @@ func TestAggregatePostgresDayBucketIsUTCNormalized(t *testing.T) {
 		t.Errorf("bucket = %q, want %q (session timezone is %q; a date_trunc that is not "+
 			"normalized to UTC would bucket this into 2026-09-19 instead)",
 			res.Groups[0].Bucket, "2026-09-20", sessionTZ)
+	}
+}
+
+// TestAggregatePostgresHourBucketIsUTCNormalized is
+// TestAggregatePostgresDayBucketIsUTCNormalized's sibling for "hour". The
+// hour expression in store/postgres/audit.go has its own `AT TIME ZONE
+// 'UTC'`, entirely separate from the day expression's, so nothing forces a
+// fix (or a regression) in one to carry over to the other: this test exists
+// so removing normalization from the hour expression alone is caught here,
+// not just by the day test above.
+func TestAggregatePostgresHourBucketIsUTCNormalized(t *testing.T) {
+	s, drv, sessionTZ := openPostgresNonUTCSession(t)
+	ctx := context.Background()
+
+	appID, tenantID := seedScope(t)
+	// 2026-09-20T02:00:00Z is 2026-09-19T22:00:00 in New York: a session
+	// that truncates in its own time zone buckets this into hour 22 on the
+	// 19th, not hour 02 on the 20th -- a different day AND a different hour,
+	// so this also catches a normalized day expression paired with a
+	// forgotten hour one.
+	ts := time.Date(2026, 9, 20, 2, 0, 0, 0, time.UTC)
+	streamID := seedEventsAt(t, s, appID, tenantID, ts)
+	registerPostgresRawCleanup(t, drv, streamID)
+
+	res, err := s.Aggregate(ctx, &audit.AggregateQuery{
+		After: ts.Add(-time.Hour), Before: ts.Add(time.Hour),
+		AppID: appID, GroupBy: []string{"hour"},
+	})
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	if len(res.Groups) != 1 {
+		t.Fatalf("%d groups, want 1: %+v", len(res.Groups), res.Groups)
+	}
+	want := "2026-09-20T02:00:00Z"
+	if res.Groups[0].Bucket != want {
+		t.Errorf("bucket = %q, want %q (session timezone is %q; an hour truncation that is "+
+			"not normalized to UTC would bucket this into 2026-09-19T22:00:00Z instead)",
+			res.Groups[0].Bucket, want, sessionTZ)
 	}
 }
