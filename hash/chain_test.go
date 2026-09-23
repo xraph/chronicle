@@ -244,6 +244,7 @@ func TestVerifyAcceptsCurrentHash(t *testing.T) {
 	c := &hash.Chain{}
 	event := baseEvent()
 	event.Hash, _, _ = c.Compute(context.Background(), "prev", event)
+	event.HashScheme = string(c.Scheme())
 
 	if !c.Verify("prev", event) {
 		t.Fatal("Verify rejected a hash it had just computed")
@@ -255,6 +256,7 @@ func TestVerifyRejectsTamperedActor(t *testing.T) {
 	c := &hash.Chain{}
 	event := baseEvent()
 	event.Hash, _, _ = c.Compute(context.Background(), "prev", event)
+	event.HashScheme = string(c.Scheme())
 
 	event.UserID = "innocent@corp"
 	event.IP = "10.0.0.1"

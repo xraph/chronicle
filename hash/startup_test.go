@@ -49,7 +49,7 @@ func TestNewChainRefusesAKeysetWithNoActiveHMACKey(t *testing.T) {
 		t.Fatalf("NewFileProvider rejected a structurally valid keyset: %v", err)
 	}
 
-	_, err = hash.NewChain(hash.SchemeHMAC, provider)
+	_, err = hash.NewChain(hash.SchemeHMACV5, provider)
 	if err == nil {
 		t.Fatal("NewChain accepted a provider with no active hmac key; every Record would fail at runtime")
 	}
@@ -70,7 +70,7 @@ func TestNewChainRefusesAMisspelledUse(t *testing.T) {
 		t.Fatalf("NewFileProvider: %v", err)
 	}
 
-	if _, err := hash.NewChain(hash.SchemeHMAC, provider); err == nil {
+	if _, err := hash.NewChain(hash.SchemeHMACV5, provider); err == nil {
 		t.Fatal("NewChain accepted a keyset whose only key is filed under the wrong use")
 	}
 }
@@ -88,12 +88,12 @@ func TestNewChainAcceptsAUsableKeyset(t *testing.T) {
 		t.Fatalf("NewFileProvider: %v", err)
 	}
 
-	chain, err := hash.NewChain(hash.SchemeHMAC, provider)
+	chain, err := hash.NewChain(hash.SchemeHMACV5, provider)
 	if err != nil {
 		t.Fatalf("NewChain: %v", err)
 	}
-	if chain.Scheme() != hash.SchemeHMAC {
-		t.Errorf("Scheme = %s, want %s", chain.Scheme(), hash.SchemeHMAC)
+	if chain.Scheme() != hash.SchemeHMACV5 {
+		t.Errorf("Scheme = %s, want %s", chain.Scheme(), hash.SchemeHMACV5)
 	}
 }
 
@@ -111,7 +111,7 @@ func (emptyKeyProvider) ByID(_ context.Context, _ string) ([]byte, error) { retu
 // digest is reproducible by anyone who knows the algorithm, which is the exact
 // property the keyed scheme exists to remove.
 func TestNewChainRefusesAnEmptyKey(t *testing.T) {
-	if _, err := hash.NewChain(hash.SchemeHMAC, emptyKeyProvider{}); err == nil {
+	if _, err := hash.NewChain(hash.SchemeHMACV5, emptyKeyProvider{}); err == nil {
 		t.Fatal("NewChain accepted an empty hmac key")
 	}
 }
@@ -120,7 +120,7 @@ func TestNewChainRefusesAnEmptyKey(t *testing.T) {
 // unkeyed digests with a stale keys block in its config has nothing to resolve
 // and no reason to fail.
 func TestNewChainPlainIgnoresTheProvider(t *testing.T) {
-	if _, err := hash.NewChain(hash.SchemePlain, emptyKeyProvider{}); err != nil {
+	if _, err := hash.NewChain(hash.SchemePlainV4, emptyKeyProvider{}); err != nil {
 		t.Fatalf("NewChain(plain): %v", err)
 	}
 	if _, err := hash.NewChain("", nil); err != nil {

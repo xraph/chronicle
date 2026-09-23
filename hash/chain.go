@@ -10,16 +10,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/keys"
 )
 
-// versionTag prefixes the hashed content so the scheme a digest was produced
-// under is unambiguous, and so a digest from one scheme can never collide with
-// the other's.
-const versionTag = "chronicle/v2"
+// contentV2Tag prefixes the content the v2 and v3 schemes hash.
+//
+// It is frozen. Every digest ever written under those schemes covers exactly
+// these bytes, so changing the tag, the field order, or the separator would
+// report the entire history as tampered.
+const contentV2Tag = "chronicle/v2"
 
 // Scheme names how a digest was produced. It is recorded on every event so
 // verification never has to guess, and so a weaker scheme cannot be substituted
@@ -31,13 +35,29 @@ const (
 	// source address. Verify-only; never write one.
 	SchemeLegacy Scheme = "chronicle/v1"
 
-	// SchemePlain is the unkeyed SHA-256 digest. Anyone who can write to the
-	// store can reproduce it, so it detects corruption and not tampering.
+	// SchemePlain is the unkeyed SHA-256 digest over delimiter-joined content.
+	//
+	// Verify-only; never write one. Its content encoding is ambiguous, which
+	// lets an attacker move content across a field boundary without changing
+	// the digest. See contentV4. Use SchemePlainV4 instead.
 	SchemePlain Scheme = "chronicle/v2"
 
-	// SchemeHMAC is HMAC-SHA256 over identical content, under a key the store
-	// does not hold.
+	// SchemeHMAC is HMAC-SHA256 over the same delimiter-joined content, under a
+	// key the store does not hold.
+	//
+	// Verify-only; never write one. The key does not close the encoding hole:
+	// the MAC covers the same ambiguous bytes, so the swap described in
+	// contentV4 works without ever resolving the key. Use SchemeHMACV5.
 	SchemeHMAC Scheme = "chronicle/v3"
+
+	// SchemePlainV4 is the unkeyed SHA-256 digest over length-prefixed content.
+	// Unkeyed still means reproducible by anyone who can write to the store, so
+	// it detects corruption and not tampering.
+	SchemePlainV4 Scheme = "chronicle/v4"
+
+	// SchemeHMACV5 is HMAC-SHA256 over that same length-prefixed content, under
+	// a key the store does not hold. This is the strongest digest on offer.
+	SchemeHMACV5 Scheme = "chronicle/v5"
 )
 
 // Rank orders schemes by strength, so a stream pinned to one scheme can detect
@@ -49,15 +69,33 @@ const (
 // its stream pins, and the writer asks whether a newly configured scheme is
 // strong enough to move that pin forward. An unknown or empty scheme ranks
 // below every named one.
+// The ordering puts keying ahead of content framing, and that is deliberate.
+// Ranking the framing fix above SchemeHMAC would make a move from SchemeHMAC to
+// SchemePlainV4 read as strengthening, so reconcileStreamPin would advance the
+// pin while the deployment quietly stopped using its key. Losing the key is the
+// larger loss, so every keyed scheme outranks every unkeyed one and the framing
+// fix breaks the tie within each pair.
 func Rank(s Scheme) int {
 	switch s {
+	case SchemeHMACV5:
+		return 4
 	case SchemeHMAC:
+		return 3
+	case SchemePlainV4:
 		return 2
 	case SchemePlain:
 		return 1
 	default:
 		return 0
 	}
+}
+
+// Keyed reports whether a scheme's digest depends on key material the store
+// does not hold. It is the question callers actually mean when they reach for
+// an equality check against SchemeHMAC, and unlike that check it keeps giving
+// the right answer as schemes are added.
+func Keyed(s Scheme) bool {
+	return s == SchemeHMAC || s == SchemeHMACV5
 }
 
 // Pin is a stream's declared scheme and the sequence from which it applies.
@@ -114,7 +152,15 @@ func NewChain(scheme Scheme, provider keys.Provider) (*Chain, error) {
 	switch scheme {
 	case SchemeLegacy:
 		return nil, fmt.Errorf("hash: %s is verify-only and cannot be used for writing", scheme)
+	case SchemePlain:
+		return nil, fmt.Errorf(
+			"hash: %s is verify-only and cannot be used for writing; its content encoding is "+
+				"ambiguous, so use %s", scheme, SchemePlainV4)
 	case SchemeHMAC:
+		return nil, fmt.Errorf(
+			"hash: %s is verify-only and cannot be used for writing; its content encoding is "+
+				"ambiguous and the key does not close that hole, so use %s", scheme, SchemeHMACV5)
+	case SchemeHMACV5:
 		if provider == nil {
 			return nil, fmt.Errorf("hash: %s requires a key provider", scheme)
 		}
@@ -129,8 +175,8 @@ func NewChain(scheme Scheme, provider keys.Provider) (*Chain, error) {
 				"hash: %s key %q resolved to no material; a keyed digest over an empty key "+
 					"is an unkeyed digest with extra steps", scheme, keyID)
 		}
-	case SchemePlain, "":
-		scheme = SchemePlain
+	case SchemePlainV4, "":
+		scheme = SchemePlainV4
 	default:
 		return nil, fmt.Errorf("hash: unknown scheme %q", scheme)
 	}
@@ -140,16 +186,18 @@ func NewChain(scheme Scheme, provider keys.Provider) (*Chain, error) {
 // Scheme reports the scheme this chain writes under.
 func (c *Chain) Scheme() Scheme {
 	if c.scheme == "" {
-		return SchemePlain
+		return SchemePlainV4
 	}
 	return c.scheme
 }
 
-// content assembles the bytes a digest covers. Both schemes hash exactly this,
-// so the field coverage documented above holds either way.
-func content(prevHash string, event *audit.Event) string {
+// contentV2 assembles the bytes a v2 or v3 digest covers.
+//
+// Frozen, and ambiguous by construction: see contentV4 for what that costs and
+// contentV2Tag for why it cannot be corrected in place.
+func contentV2(prevHash string, event *audit.Event) string {
 	return fmt.Sprintf("%s|%s|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
-		versionTag,
+		contentV2Tag,
 		prevHash,
 		event.Sequence,
 		event.Timestamp.UTC().Format(time.RFC3339Nano),
@@ -169,6 +217,54 @@ func content(prevHash string, event *audit.Event) string {
 	)
 }
 
+// contentV4 assembles the bytes a v4 or v5 digest covers, with every field
+// length-prefixed.
+//
+// contentV2 joins its fields with a bare "|" and escapes nothing, so content can
+// move across a separator without changing the joined string. A user ID of
+// "alice" beside an address of "10.0.0.9|note" produces the same bytes as a user
+// ID of "alice|10.0.0.9" beside an address of "note". The two events say
+// different things about who acted and from where, and they hash identically.
+// HMAC does not help: the MAC covers those same bytes, so rewriting the actor
+// never needed the key at all.
+//
+// Prefixing each value with its byte length closes it. A reader can find where
+// every field ends without trusting what is inside it, so no arrangement of
+// field contents can imitate another. The scheme's own name leads the content
+// rather than a shared tag, so v4 bytes can never be read as v5 bytes.
+func contentV4(scheme Scheme, prevHash string, event *audit.Event) string {
+	fields := [...]string{
+		string(scheme),
+		prevHash,
+		strconv.FormatUint(event.Sequence, 10),
+		event.Timestamp.UTC().Format(time.RFC3339Nano),
+		event.AppID,
+		event.TenantID,
+		event.UserID,
+		event.IP,
+		event.Action,
+		event.Resource,
+		event.Category,
+		event.ResourceID,
+		event.Outcome,
+		event.Severity,
+		event.Reason,
+		event.SubjectID,
+		marshalMetadata(event.Metadata),
+	}
+
+	var b strings.Builder
+	for i, f := range fields {
+		if i > 0 {
+			b.WriteByte('|')
+		}
+		b.WriteString(strconv.Itoa(len(f)))
+		b.WriteByte(':')
+		b.WriteString(f)
+	}
+	return b.String()
+}
+
 // Compute generates the digest for an event, linking it to the previous hash,
 // and returns the ID of the key used. The key ID is empty for unkeyed schemes.
 //
@@ -177,9 +273,10 @@ func content(prevHash string, event *audit.Event) string {
 // (Reason), about whom (SubjectID), and the event's position in the stream
 // (Sequence), as well as what happened.
 func (c *Chain) Compute(ctx context.Context, prevHash string, event *audit.Event) (digest, keyID string, err error) {
-	body := []byte(content(prevHash, event))
+	scheme := c.Scheme()
+	body := []byte(contentV4(scheme, prevHash, event))
 
-	if c.Scheme() != SchemeHMAC {
+	if !Keyed(scheme) {
 		sum := sha256.Sum256(body)
 		return hex.EncodeToString(sum[:]), "", nil
 	}
@@ -209,25 +306,38 @@ func (c *Chain) computeUnder(ctx context.Context, scheme Scheme, keyID, prevHash
 		return ComputeLegacy(prevHash, event), nil
 
 	case SchemePlain, "":
-		sum := sha256.Sum256([]byte(content(prevHash, event)))
+		sum := sha256.Sum256([]byte(contentV2(prevHash, event)))
 		return hex.EncodeToString(sum[:]), nil
 
 	case SchemeHMAC:
-		if c.keys == nil {
-			return "", fmt.Errorf("hash: cannot verify an %s digest without a key provider", scheme)
-		}
-		key, err := c.keys.ByID(ctx, keyID)
-		if err != nil {
-			return "", fmt.Errorf("hash: resolve key %q: %w", keyID, err)
-		}
+		return c.keyedDigest(ctx, scheme, keyID, contentV2(prevHash, event))
 
-		mac := hmac.New(sha256.New, key)
-		mac.Write([]byte(content(prevHash, event)))
-		return hex.EncodeToString(mac.Sum(nil)), nil
+	case SchemePlainV4:
+		sum := sha256.Sum256([]byte(contentV4(scheme, prevHash, event)))
+		return hex.EncodeToString(sum[:]), nil
+
+	case SchemeHMACV5:
+		return c.keyedDigest(ctx, scheme, keyID, contentV4(scheme, prevHash, event))
 
 	default:
 		return "", fmt.Errorf("hash: unknown scheme %q", scheme)
 	}
+}
+
+// keyedDigest is the MAC half of computeUnder, shared by both keyed schemes so
+// that resolving the key and applying it happens in exactly one place.
+func (c *Chain) keyedDigest(ctx context.Context, scheme Scheme, keyID, body string) (string, error) {
+	if c.keys == nil {
+		return "", fmt.Errorf("hash: cannot verify an %s digest without a key provider", scheme)
+	}
+	key, err := c.keys.ByID(ctx, keyID)
+	if err != nil {
+		return "", fmt.Errorf("hash: resolve key %q: %w", keyID, err)
+	}
+
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(body))
+	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
 // ComputeLegacy reproduces the original hash scheme, which covered only
@@ -238,9 +348,9 @@ func (c *Chain) computeUnder(ctx context.Context, scheme Scheme, keyID, prevHash
 // without it, upgrading would report every historical event as tampered. Never
 // use it to write a new hash.
 //
-// Falling back to it does not weaken current events: a digest written under the
-// current scheme includes versionTag, so recomputing a tampered event under
-// either scheme yields a different digest than the one stored.
+// Falling back to it does not weaken current events: every later scheme covers
+// its own name, so recomputing a tampered event under any of them yields a
+// different digest than the one stored.
 func ComputeLegacy(prevHash string, event *audit.Event) string {
 	content := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%s",
 		prevHash,
