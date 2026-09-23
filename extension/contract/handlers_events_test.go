@@ -3,6 +3,7 @@ package contract
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -221,6 +222,73 @@ func TestEventListClampsLimitTheSameWayHandlerRequestsDoes(t *testing.T) {
 	}
 }
 
+// Every filter field on EventListInput has to reach the outgoing
+// audit.Query, or that filter silently stops narrowing the results: dropping
+// Categories, say, would widen every filtered list back to "everything",
+// and the "N of total"/"no events match" states built on it would be wrong
+// without the caller ever finding out. This sets every field to a
+// distinguishable value and checks each one lands on the query the store
+// sees, so a mutation that drops or mis-wires any single field fails here.
+func TestEventListForwardsEveryFilterToTheStore(t *testing.T) {
+	spy := &querySpy{}
+	h := eventsListHandler(Deps{Store: spy})
+
+	in := EventListInput{
+		After:      "2026-01-01T00:00:00Z",
+		Before:     "2026-02-01T00:00:00Z",
+		UserID:     "alice",
+		Categories: []string{"auth", "data"},
+		Actions:    []string{"login", "logout"},
+		Resources:  []string{"doc", "user"},
+		Severity:   []string{"info", "warning"},
+		Outcome:    []string{"success", "failure"},
+		Order:      "asc",
+		Limit:      37,
+		Offset:     9,
+	}
+	if _, err := h(context.Background(), in, principalWith(map[string]any{"app_id": "app-1"})); err != nil {
+		t.Fatalf("events.list: %v", err)
+	}
+
+	wantAfter, _ := time.Parse(time.RFC3339, in.After)
+	wantBefore, _ := time.Parse(time.RFC3339, in.Before)
+	got := spy.last
+
+	if !got.After.Equal(wantAfter) {
+		t.Errorf("After = %v, want %v", got.After, wantAfter)
+	}
+	if !got.Before.Equal(wantBefore) {
+		t.Errorf("Before = %v, want %v", got.Before, wantBefore)
+	}
+	if got.UserID != in.UserID {
+		t.Errorf("UserID = %q, want %q", got.UserID, in.UserID)
+	}
+	if !reflect.DeepEqual(got.Categories, in.Categories) {
+		t.Errorf("Categories = %v, want %v", got.Categories, in.Categories)
+	}
+	if !reflect.DeepEqual(got.Actions, in.Actions) {
+		t.Errorf("Actions = %v, want %v", got.Actions, in.Actions)
+	}
+	if !reflect.DeepEqual(got.Resources, in.Resources) {
+		t.Errorf("Resources = %v, want %v", got.Resources, in.Resources)
+	}
+	if !reflect.DeepEqual(got.Severity, in.Severity) {
+		t.Errorf("Severity = %v, want %v", got.Severity, in.Severity)
+	}
+	if !reflect.DeepEqual(got.Outcome, in.Outcome) {
+		t.Errorf("Outcome = %v, want %v", got.Outcome, in.Outcome)
+	}
+	if got.Order != in.Order {
+		t.Errorf("Order = %q, want %q", got.Order, in.Order)
+	}
+	if got.Limit != in.Limit {
+		t.Errorf("Limit = %d, want %d", got.Limit, in.Limit)
+	}
+	if got.Offset != in.Offset {
+		t.Errorf("Offset = %d, want %d", got.Offset, in.Offset)
+	}
+}
+
 // A malformed after/before must be refused, not silently treated as the zero
 // time -- that would widen the query to the beginning of time. Bad order and
 // a negative offset are refused for the same reason: input the store was
@@ -250,26 +318,9 @@ func TestEventListRefusesBadInputBeforeTouchingTheStore(t *testing.T) {
 // events.detail
 // ──────────────────────────────────────────────────
 
-// Review Focus 2. contributor.go calls this check security-critical, in
-// those words, because a detail intent resolves by ID and bypasses every
-// list filter. As given in the brief, "evt_1" does not even parse as an
-// audit ID, so this also covers the unparseable-ID path answering NOT_FOUND
-// without touching the store.
-func TestEventDetailRefusesAnotherTenantsEvent(t *testing.T) {
-	h := eventsDetailHandler(Deps{Store: storeWithEvent(&audit.Event{
-		AppID: "app-2", TenantID: "tenant-b",
-	})})
-	_, err := h(context.Background(), GetEventInput{ID: "evt_1"},
-		principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"}))
-	if err == nil {
-		t.Fatal("served another tenant's event to a caller who guessed its ID")
-	}
-}
-
-// The same refusal, but with an ID that actually parses, so the store is
-// really reached and the ownership check is what refuses the call -- not
-// the ID-parsing shortcut TestEventDetailRefusesAnotherTenantsEvent also
-// passes through.
+// The store is really reached and the ownership check is what refuses the
+// call: a real, parseable ID, an event in a different app AND a different
+// tenant from the viewer.
 func TestEventDetailRefusesAnotherTenantsEventWithAParseableID(t *testing.T) {
 	realID := id.NewAuditID()
 	h := eventsDetailHandler(Deps{Store: storeWithEvent(&audit.Event{
@@ -277,6 +328,43 @@ func TestEventDetailRefusesAnotherTenantsEventWithAParseableID(t *testing.T) {
 	})})
 	_, err := h(context.Background(), GetEventInput{ID: realID.String()},
 		principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"}))
+	if !errors.Is(err, fcontract.ErrNotFound) {
+		t.Fatalf("err = %v, want NOT_FOUND", err)
+	}
+}
+
+// A tenant viewer must not own a same-app event that belongs to a DIFFERENT
+// tenant. This isolates the AppID-matches/TenantID-differs case from
+// TestEventDetailRefusesAnotherTenantsEventWithAParseableID, which changes
+// both dimensions at once and so cannot tell v.owns(event.AppID, event.TenantID)
+// apart from the wrong-argument mutation v.owns(event.AppID, v.TenantID) --
+// that mutation compares the viewer's own TenantID to itself and always
+// answers true, regardless of which tenant the event actually belongs to.
+func TestEventDetailRefusesASameAppOtherTenantsEvent(t *testing.T) {
+	realID := id.NewAuditID()
+	h := eventsDetailHandler(Deps{Store: storeWithEvent(&audit.Event{
+		ID: realID, AppID: "app-1", TenantID: "tenant-b",
+	})})
+	_, err := h(context.Background(), GetEventInput{ID: realID.String()},
+		principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"}))
+	if !errors.Is(err, fcontract.ErrNotFound) {
+		t.Fatalf("err = %v, want NOT_FOUND", err)
+	}
+}
+
+// An app-wide viewer (no tenant claim) must not own an event in a DIFFERENT
+// app. This isolates the AppID-differs case from the same test above, and
+// catches the wrong-argument mutation v.owns(v.AppID, event.TenantID) --
+// that mutation compares the viewer's own AppID to itself, which always
+// answers true for the app check regardless of which app the event actually
+// belongs to, so an app-wide viewer would read any app's events.
+func TestEventDetailRefusesAnotherAppsEventForAnAppWideViewer(t *testing.T) {
+	realID := id.NewAuditID()
+	h := eventsDetailHandler(Deps{Store: storeWithEvent(&audit.Event{
+		ID: realID, AppID: "app-2", TenantID: "",
+	})})
+	_, err := h(context.Background(), GetEventInput{ID: realID.String()},
+		principalWith(map[string]any{"app_id": "app-1"}))
 	if !errors.Is(err, fcontract.ErrNotFound) {
 		t.Fatalf("err = %v, want NOT_FOUND", err)
 	}
@@ -402,6 +490,37 @@ func TestEventAggregateStampsTheViewersScope(t *testing.T) {
 	}
 }
 
+// After, Before and GroupBy all have to reach the outgoing AggregateQuery:
+// a dropped After/Before would widen the bucket, and a dropped GroupBy would
+// change what the response even means.
+func TestEventAggregateForwardsAfterBeforeAndGroupByToTheStore(t *testing.T) {
+	spy := &aggregateSpy{}
+	h := eventsAggregateHandler(Deps{Store: spy})
+
+	in := AggregateInput{
+		After:   "2026-01-01T00:00:00Z",
+		Before:  "2026-02-01T00:00:00Z",
+		GroupBy: []string{"category", "day"},
+	}
+	if _, err := h(context.Background(), in, principalWith(map[string]any{"app_id": "app-1"})); err != nil {
+		t.Fatalf("events.aggregate: %v", err)
+	}
+
+	wantAfter, _ := time.Parse(time.RFC3339, in.After)
+	wantBefore, _ := time.Parse(time.RFC3339, in.Before)
+	got := spy.last
+
+	if !got.After.Equal(wantAfter) {
+		t.Errorf("After = %v, want %v", got.After, wantAfter)
+	}
+	if !got.Before.Equal(wantBefore) {
+		t.Errorf("Before = %v, want %v", got.Before, wantBefore)
+	}
+	if !reflect.DeepEqual(got.GroupBy, in.GroupBy) {
+		t.Errorf("GroupBy = %v, want %v", got.GroupBy, in.GroupBy)
+	}
+}
+
 // ──────────────────────────────────────────────────
 // events.byUser
 // ──────────────────────────────────────────────────
@@ -448,6 +567,89 @@ func TestEventByUserRefusesAMalformedAfterBeforeTouchingTheStore(t *testing.T) {
 	}
 	if spy.calls() != 0 {
 		t.Fatalf("handler reached the store %d time(s) before refusing", spy.calls())
+	}
+}
+
+// A negative offset is refused before the store is touched, the same as
+// events.list.
+func TestEventByUserRefusesANegativeOffsetBeforeTouchingTheStore(t *testing.T) {
+	spy := &eventsTouchedStore{}
+	h := eventsByUserHandler(Deps{Store: spy})
+	_, err := h(context.Background(), EventsByUserInput{UserID: "alice", Offset: -1},
+		principalWith(map[string]any{"app_id": "app-1"}))
+	if !errors.Is(err, fcontract.ErrBadRequest) {
+		t.Fatalf("err = %v, want BAD_REQUEST", err)
+	}
+	if spy.calls() != 0 {
+		t.Fatalf("handler reached the store %d time(s) before refusing", spy.calls())
+	}
+}
+
+// A limit of zero reaching the store as-is would be unlimited on every
+// backend (sqlite/postgres skip their LIMIT clause entirely when Limit <= 0,
+// and store/redis's applyPagination treats a non-positive limit as "no
+// cap") -- an unbounded read of one user's entire audit history. Clamp it
+// exactly like events.list does.
+func TestEventByUserClampsLimitTheSameWayEventsListDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		limit int
+		want  int
+	}{
+		{"zero becomes default", 0, 50},
+		{"negative becomes default", -5, 50},
+		{"over the cap is capped", 5000, 1000},
+		{"within range is untouched", 200, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spy := &querySpy{}
+			h := eventsByUserHandler(Deps{Store: spy})
+			in := EventsByUserInput{UserID: "alice", Limit: tc.limit}
+			if _, err := h(context.Background(), in, principalWith(map[string]any{"app_id": "app-1"})); err != nil {
+				t.Fatalf("events.byUser: %v", err)
+			}
+			if spy.last.Limit != tc.want {
+				t.Fatalf("limit %d clamped to %d, want %d", tc.limit, spy.last.Limit, tc.want)
+			}
+		})
+	}
+}
+
+// UserID, After, Before, Limit and Offset all have to reach the outgoing
+// audit.Query, the same requirement events.list carries for its own filters.
+func TestEventByUserForwardsEveryFieldToTheStore(t *testing.T) {
+	spy := &querySpy{}
+	h := eventsByUserHandler(Deps{Store: spy})
+
+	in := EventsByUserInput{
+		UserID: "alice",
+		After:  "2026-01-01T00:00:00Z",
+		Before: "2026-02-01T00:00:00Z",
+		Limit:  37,
+		Offset: 9,
+	}
+	if _, err := h(context.Background(), in, principalWith(map[string]any{"app_id": "app-1"})); err != nil {
+		t.Fatalf("events.byUser: %v", err)
+	}
+
+	wantAfter, _ := time.Parse(time.RFC3339, in.After)
+	wantBefore, _ := time.Parse(time.RFC3339, in.Before)
+	got := spy.last
+
+	if got.UserID != in.UserID {
+		t.Errorf("UserID = %q, want %q", got.UserID, in.UserID)
+	}
+	if !got.After.Equal(wantAfter) {
+		t.Errorf("After = %v, want %v", got.After, wantAfter)
+	}
+	if !got.Before.Equal(wantBefore) {
+		t.Errorf("Before = %v, want %v", got.Before, wantBefore)
+	}
+	if got.Limit != in.Limit {
+		t.Errorf("Limit = %d, want %d", got.Limit, in.Limit)
+	}
+	if got.Offset != in.Offset {
+		t.Errorf("Offset = %d, want %d", got.Offset, in.Offset)
 	}
 }
 
@@ -532,6 +734,34 @@ func TestEventsStayInsideTheViewersAppOnSQLite(t *testing.T) {
 			if !appOneIDs[e.ID] {
 				t.Fatalf("events.byUser returned an event outside app-1: %s", e.ID)
 			}
+		}
+	})
+
+	// Offset has to actually page: HasMore true with no way to move past the
+	// first page would strand the caller on it forever.
+	t.Run("events.byUser paging", func(t *testing.T) {
+		h := eventsByUserHandler(Deps{Store: s})
+		seen := map[string]bool{}
+		for offset := 0; offset < appOneCount; offset += pageLimit {
+			out, err := h(ctx, EventsByUserInput{UserID: "alice", Limit: pageLimit, Offset: offset}, viewer)
+			if err != nil {
+				t.Fatalf("events.byUser at offset %d: %v", offset, err)
+			}
+			if out.Total != appOneCount {
+				t.Fatalf("offset %d: Total = %d, want %d", offset, out.Total, appOneCount)
+			}
+			for _, e := range out.Events {
+				if seen[e.ID] {
+					t.Fatalf("offset %d repeated event %s", offset, e.ID)
+				}
+				seen[e.ID] = true
+				if !appOneIDs[e.ID] {
+					t.Fatalf("offset %d returned an event outside app-1: %s", offset, e.ID)
+				}
+			}
+		}
+		if len(seen) != appOneCount {
+			t.Fatalf("paging visited %d events, want %d", len(seen), appOneCount)
 		}
 	})
 

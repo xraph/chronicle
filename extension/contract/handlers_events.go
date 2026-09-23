@@ -115,6 +115,7 @@ type EventsByUserInput struct {
 	After  string `json:"after,omitempty"`
 	Before string `json:"before,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
+	Offset int    `json:"offset,omitempty"`
 }
 
 // AggregateInput bounds an events.aggregate call. GroupBy is validated
@@ -410,6 +411,9 @@ func eventsByUserHandler(deps Deps) func(context.Context, EventsByUserInput, fco
 		if in.UserID == "" {
 			return EventListResponse{}, &fcontract.Error{Code: fcontract.CodeBadRequest, Message: "userId is required"}
 		}
+		if in.Offset < 0 {
+			return EventListResponse{}, &fcontract.Error{Code: fcontract.CodeBadRequest, Message: "offset cannot be negative"}
+		}
 
 		after, err := parseEventTimeBound("after", in.After)
 		if err != nil {
@@ -425,6 +429,7 @@ func eventsByUserHandler(deps Deps) func(context.Context, EventsByUserInput, fco
 			Before: before,
 			UserID: in.UserID,
 			Limit:  clampEventListLimit(in.Limit),
+			Offset: in.Offset,
 			Order:  "desc",
 		})
 
