@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	fcontract "github.com/xraph/forge/extensions/dashboard/contract"
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
@@ -123,8 +124,14 @@ type VerifyEventInput struct {
 // distinction that hash.Result carries is flattened before it gets here, and
 // the hasher that could recompute it is unexported.
 //
-// Two limits bound what a caller may conclude from it, and neither can be
-// recovered from the response:
+// HashScheme is the event's own recorded scheme, verbatim, which can be
+// empty. That means the row predates schemes being recorded at all; its
+// digest was resolved by the tolerant, pre-migration fallback (trying the
+// historical schemes in turn) rather than checked against a claimed one, and
+// Keyed is false for it the same as for any other unkeyed reading.
+//
+// Two further limits bound what a caller may conclude from Valid, and
+// neither can be recovered from the response:
 //
 //   - On an unkeyed chain, Valid true does not rule out a rewrite. The
 //     digest is reproducible by anyone who can write to the store, so a
@@ -134,6 +141,12 @@ type VerifyEventInput struct {
 //     never whether that PrevHash matches the event actually stored before
 //     it. It says nothing about the event's place in the chain. Chain
 //     linkage needs verify.run over a range around the event.
+//
+// A downgrade (an event claiming a weaker scheme than its stream pins at
+// that sequence, which verify.Report surfaces as its own Downgrades list)
+// has no representation here at all: it can only come back as Valid false,
+// indistinguishable from ordinary edited content. Telling the two apart
+// needs verify.run over a range around the event, not this intent.
 type VerifyEventResponse struct {
 	Valid      bool   `json:"valid"`
 	HashScheme string `json:"hashScheme"`
@@ -255,14 +268,30 @@ func verifyRunHandler(deps Deps) func(context.Context, VerifyInput, fcontract.Pr
 		}
 
 		fromSeq, toSeq := resolveVerifySpan(in, st.HeadSeq)
-		if toSeq < fromSeq {
+
+		// Refuse a reversed range only when the CALLER supplied an explicit
+		// ToSeq that resolved below fromSeq -- that is a mistake in the
+		// request. A ToSeq resolved from the stream's own head must never be
+		// refused this way, even when the head is 0: that is a wiped chain,
+		// exactly the case checkClaimedHead exists to catch (a signed
+		// checkpoint still asserting events the head no longer claims). The
+		// resolved span there is 0, so memory is never at risk, and refusing
+		// it here as "toSeq < fromSeq" would hide the headline tamper case
+		// behind a generic bad-request error before VerifyChain ever runs.
+		if in.ToSeq != 0 && toSeq < fromSeq {
 			return VerifyResponse{}, &fcontract.Error{
 				Code:    fcontract.CodeBadRequest,
 				Message: "toSeq cannot be less than fromSeq",
 			}
 		}
 
-		span := toSeq - fromSeq + 1
+		// A range that resolved with toSeq below fromSeq (the wiped-chain
+		// case above, or an explicit FromSeq past a shorter head) covers no
+		// sequences; span stays 0 rather than underflowing the subtraction.
+		var span uint64
+		if toSeq >= fromSeq {
+			span = toSeq - fromSeq + 1
+		}
 		if maxSpan := deps.verifySpanCap(); span > maxSpan {
 			return VerifyResponse{}, &fcontract.Error{
 				Code: fcontract.CodeBadRequest,
@@ -327,6 +356,38 @@ func verifyEventHandler(deps Deps) func(context.Context, VerifyEventInput, fcont
 			return VerifyEventResponse{}, &fcontract.Error{
 				Code:    fcontract.CodeUnavailable,
 				Message: "event verification is not configured on this deployment",
+			}
+		}
+
+		// Chronicle.VerifyEvent resolves the event's stream itself, with a raw
+		// GetStreamByScope(event.AppID, event.TenantID) that carries none of
+		// scopedStream's collision guard. store/redis builds its scope key as
+		// appID + ":" + tenantID, so app "a:b"/tenant "c" and app "a"/tenant
+		// "b:c" can resolve to the same row on that backend; handed the wrong
+		// stream, VerifyEvent checks the event against the wrong pin, and a
+		// downgraded event can come back valid:true under a pin that never
+		// should have applied to it. Re-resolve the event's own scope through
+		// scopedStream here, and refuse before ever calling VerifyEvent if it
+		// does not land on the event's own stream.
+		eventScope := viewScope{AppID: event.AppID, TenantID: event.TenantID}
+		st, err := scopedStream(ctx, deps, "verify.event", eventScope)
+		if err != nil {
+			return VerifyEventResponse{}, err
+		}
+		if st == nil || st.ID != event.StreamID {
+			resolvedID := "none"
+			if st != nil {
+				resolvedID = st.ID.String()
+			}
+			deps.logger().Error("chronicle/contract: verify.event resolved a chain that does not match the event's own",
+				log.String("op", "verify.event"),
+				log.String("event_id", event.ID.String()),
+				log.String("event_stream_id", event.StreamID.String()),
+				log.String("resolved_stream_id", resolvedID),
+			)
+			return VerifyEventResponse{}, &fcontract.Error{
+				Code:    fcontract.CodeInternal,
+				Message: "the audit store returned a chain outside this event's scope",
 			}
 		}
 
