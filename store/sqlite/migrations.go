@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/xraph/grove/migrate"
 )
@@ -371,6 +372,82 @@ CREATE INDEX IF NOT EXISTS idx_chronicle_checkpoints_scope
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "fixed_width_timestamps",
+			Version: "20240101000008",
+			Comment: "Rewrite RFC3339Nano timestamps with a fixed nine-digit fraction",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Rows written before timeLayout used time.RFC3339Nano, whose
+				// variable-width fraction does not sort chronologically as a
+				// string (see timeLayout in models.go). Range filters and ORDER
+				// BY compare these columns as strings, so the old rows have to
+				// be rewritten, not just the new ones written differently.
+				//
+				// The rewrite is safe for the hash chain: hash/chain.go digests
+				// the parsed time.Time, never the stored string, and both forms
+				// parse to the same instant.
+				for _, tc := range timestampColumns {
+					if _, err := exec.Exec(ctx, normalizeTimestampSQL(tc[0], tc[1])); err != nil {
+						return fmt.Errorf("normalize %s.%s: %w", tc[0], tc[1], err)
+					}
+				}
+				return nil
+			},
+			Down: func(context.Context, migrate.Executor) error {
+				// Nothing to undo: the fixed-width form is still valid
+				// RFC3339, and every reader parses it.
+				return nil
+			},
+		},
 	)
 	return g
 }()
+
+// timestampColumns lists every TEXT timestamp column as {table, column}.
+// Only some are compared or ordered in SQL today, but normalizing all of them
+// means no column is left holding a mix of the two layouts.
+var timestampColumns = [][2]string{
+	{"chronicle_streams", "created_at"},
+	{"chronicle_streams", "updated_at"},
+	{"chronicle_events", "timestamp"},
+	{"chronicle_events", "created_at"},
+	{"chronicle_events", "erased_at"},
+	{"chronicle_erasures", "created_at"},
+	{"chronicle_retention_policies", "created_at"},
+	{"chronicle_retention_policies", "updated_at"},
+	{"chronicle_archives", "from_timestamp"},
+	{"chronicle_archives", "to_timestamp"},
+	{"chronicle_archives", "created_at"},
+	{"chronicle_reports", "period_from"},
+	{"chronicle_reports", "period_to"},
+	{"chronicle_reports", "created_at"},
+	{"chronicle_checkpoints", "created_at"},
+}
+
+// normalizeTimestampSQL rewrites one column's UTC RFC3339Nano values into
+// timeLayout: "…:05Z" becomes "…:05.000000000Z" and "…:05.5Z" becomes
+// "…:05.500000000Z". The fraction is right-padded with zeros, which keeps its
+// value.
+//
+// The WHERE clause only matches the two shapes RFC3339Nano produces in UTC,
+// a bare second (20 chars) or a 1-8 digit fraction (22-29 chars), so rows
+// already in timeLayout (30 chars) are left alone and a re-run is a no-op.
+// Anything else, such as a value with a numeric offset, is also left alone:
+// the store has always written UTC, and a rewrite that guessed would be worse
+// than one that skips.
+//
+// table and column come only from timestampColumns, never from input.
+func normalizeTimestampSQL(table, column string) string {
+	return fmt.Sprintf(`
+UPDATE %[1]s SET %[2]s =
+    substr(%[2]s, 1, 19) || '.' ||
+    substr(CASE WHEN length(%[2]s) = 20 THEN '' ELSE substr(%[2]s, 21, length(%[2]s) - 21) END || '000000000', 1, 9) ||
+    'Z'
+WHERE %[2]s GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z'
+  AND (
+    length(%[2]s) = 20
+    OR (substr(%[2]s, 20, 1) = '.' AND length(%[2]s) BETWEEN 22 AND 29
+        AND substr(%[2]s, 21, length(%[2]s) - 21) NOT GLOB '*[^0-9]*')
+  );
+`, table, column)
+}

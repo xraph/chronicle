@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/xraph/grove/drivers/sqlitedriver"
 
@@ -96,7 +95,7 @@ func (s *Store) appendOnce(ctx context.Context, event *audit.Event) error {
 	// it points at. Record also calls UpdateStreamHead; that becomes a no-op.
 	if _, err := tx.NewRaw(
 		"UPDATE chronicle_streams SET head_seq = ?, head_hash = ?, updated_at = ? WHERE id = ?",
-		next, event.Hash, now().Format(time.RFC3339Nano), streamID,
+		next, event.Hash, formatTime(now()), streamID,
 	).Exec(ctx); err != nil {
 		return fmt.Errorf("update stream head %s: %w", streamID, err)
 	}
@@ -220,11 +219,11 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 
 	if !q.After.IsZero() {
 		conditions = append(conditions, "timestamp >= ?")
-		args = append(args, q.After.UTC().Format(time.RFC3339Nano))
+		args = append(args, formatTime(q.After))
 	}
 	if !q.Before.IsZero() {
 		conditions = append(conditions, "timestamp <= ?")
-		args = append(args, q.Before.UTC().Format(time.RFC3339Nano))
+		args = append(args, formatTime(q.Before))
 	}
 
 	whereClause := ""
@@ -289,10 +288,10 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 	// A zero After/Before means "unbounded". Applying them unconditionally
 	// compares every row against year 1 and matches nothing.
 	if !opts.After.IsZero() {
-		q = q.Where("e.timestamp >= ?", opts.After.UTC().Format(time.RFC3339Nano))
+		q = q.Where("e.timestamp >= ?", formatTime(opts.After))
 	}
 	if !opts.Before.IsZero() {
-		q = q.Where("e.timestamp <= ?", opts.Before.UTC().Format(time.RFC3339Nano))
+		q = q.Where("e.timestamp <= ?", formatTime(opts.Before))
 	}
 	if opts.AppID != "" {
 		q = q.Where("e.app_id = ?", opts.AppID)
@@ -338,10 +337,10 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 		countQuery = countQuery.Where("e.category = ?", q.Category)
 	}
 	if !q.After.IsZero() {
-		countQuery = countQuery.Where("e.timestamp >= ?", q.After.UTC().Format(time.RFC3339Nano))
+		countQuery = countQuery.Where("e.timestamp >= ?", formatTime(q.After))
 	}
 	if !q.Before.IsZero() {
-		countQuery = countQuery.Where("e.timestamp <= ?", q.Before.UTC().Format(time.RFC3339Nano))
+		countQuery = countQuery.Where("e.timestamp <= ?", formatTime(q.Before))
 	}
 
 	return countQuery.Count(ctx)
@@ -386,10 +385,10 @@ func applyEventFilters(q *sqlitedriver.SelectQuery, f *audit.Query) *sqlitedrive
 		q = q.Where("e.user_id = ?", f.UserID)
 	}
 	if !f.After.IsZero() {
-		q = q.Where("e.timestamp >= ?", f.After.UTC().Format(time.RFC3339Nano))
+		q = q.Where("e.timestamp >= ?", formatTime(f.After))
 	}
 	if !f.Before.IsZero() {
-		q = q.Where("e.timestamp <= ?", f.Before.UTC().Format(time.RFC3339Nano))
+		q = q.Where("e.timestamp <= ?", formatTime(f.Before))
 	}
 	if len(f.Categories) > 0 {
 		q = q.Where("e.category IN (?)", f.Categories)

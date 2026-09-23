@@ -81,7 +81,7 @@ func (s *Store) UpdateStreamScheme(ctx context.Context, streamID id.ID, scheme s
 	result, err := s.sdb.NewUpdate((*StreamModel)(nil)).
 		Set("scheme = ?", scheme).
 		Set("scheme_since = ?", since).
-		Set("updated_at = ?", now().Format("2006-01-02T15:04:05.999999999Z07:00")).
+		Set("updated_at = ?", formatTime(now())).
 		Where("id = ?", streamID.String()).
 		Exec(ctx)
 	if err != nil {
@@ -105,7 +105,7 @@ func (s *Store) UpdateStreamHead(ctx context.Context, streamID id.ID, hash strin
 	result, err := s.sdb.NewUpdate((*StreamModel)(nil)).
 		Set("head_hash = ?", hash).
 		Set("head_seq = ?", seq).
-		Set("updated_at = ?", now().Format("2006-01-02T15:04:05.999999999Z07:00")).
+		Set("updated_at = ?", formatTime(now())).
 		Where("id = ?", streamID.String()).
 		Exec(ctx)
 	if err != nil {

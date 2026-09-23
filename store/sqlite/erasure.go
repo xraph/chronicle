@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/erasure"
@@ -106,7 +105,7 @@ func (s *Store) MarkErased(
 ) (int64, error) {
 	q := s.sdb.NewUpdate((*EventModel)(nil)).
 		Set("erased = 1").
-		Set("erased_at = ?", now().Format(time.RFC3339Nano)).
+		Set("erased_at = ?", formatTime(now())).
 		Set("erasure_id = ?", erasureID.String()).
 		Where("subject_id = ?", sq.SubjectID)
 

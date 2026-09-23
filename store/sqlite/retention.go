@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
@@ -114,7 +113,7 @@ func (s *Store) EventsOlderThan(
 ) ([]*audit.Event, error) {
 	var models []EventModel
 	q := s.sdb.NewSelect(&models).
-		Where("e.timestamp < ?", pq.Before.UTC().Format(time.RFC3339Nano))
+		Where("e.timestamp < ?", formatTime(pq.Before))
 
 	if pq.Category != "*" {
 		q = q.Where("e.category = ?", pq.Category)
