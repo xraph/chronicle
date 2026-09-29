@@ -3,6 +3,7 @@ package contract
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -1347,5 +1348,148 @@ func TestRetentionPolicyCommandsDeclareTheirInvalidations(t *testing.T) {
 		if got := intents[name].Invalidates; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s invalidates %v, want %v", name, got, want)
 		}
+	}
+}
+
+// retention.policies shows a tenant viewer the app-level policies that govern
+// it, but retention.enforce runs only the viewer's own. An app-level policy
+// purges under the whole app's scope, so if a tenant's enforce ran it, one
+// tenant's operator would delete every sibling tenant's events on demand. The
+// background scheduler is what runs those.
+func TestRetentionEnforceAsATenantNeverRunsAnAppLevelPolicy(t *testing.T) {
+	s := newSQLiteStore(t)
+	seed := newRetentionSeeder(t, s)
+
+	retentionSavePolicyIn(t, s, retentionPolicy("app-1", "", "*", time.Hour))
+
+	aOld := seed.events("app-1", "tenant-a", "auth", 48*time.Hour, 3)
+	bOld := seed.events("app-1", "tenant-b", "auth", 48*time.Hour, 3)
+
+	h := retentionEnforceHandler(Deps{Store: s, Enforcer: retention.NewEnforcer(s, nil, nil)})
+	out, err := h(context.Background(), struct{}{}, principalWith(retentionApp1TenantA))
+	if err != nil {
+		t.Fatalf("retention.enforce: %v", err)
+	}
+	if out.Purged != 0 || out.Archived != 0 || out.Failed {
+		t.Fatalf("enforce = %+v, want nothing purged: the tenant has no policy of its own", out)
+	}
+	retentionAssertKept(t, s, "tenant-a old, governed only by the app-level policy", aOld)
+	retentionAssertKept(t, s, "tenant-b old, governed only by the app-level policy", bOld)
+}
+
+// retention.policyDetail answers for the same two sets retention.policies
+// lists: the viewer's own policies, editable, and the app-level policies that
+// govern a tenant viewer, not editable. The row a tenant sees in the list has
+// to open.
+func TestRetentionPolicyDetailAnswersForAGoverningAppLevelPolicy(t *testing.T) {
+	ctx := context.Background()
+	s := newSQLiteStore(t)
+	appLevel := retentionSavePolicyIn(t, s, retentionPolicy("app-1", "", "*", time.Hour))
+	own := retentionSavePolicyIn(t, s, retentionPolicy("app-1", "tenant-a", "auth", time.Hour))
+	deps := Deps{Store: s}
+	tenant := principalWith(retentionApp1TenantA)
+	detail := retentionPolicyDetailHandler(deps)
+
+	got, err := detail(ctx, GetPolicyInput{ID: appLevel.ID.String()}, tenant)
+	if err != nil {
+		t.Fatalf("policyDetail on the governing app-level policy: %v", err)
+	}
+	if got.ID != appLevel.ID.String() || got.Category != "*" || got.AppID != "app-1" || got.TenantID != "" || got.Editable {
+		t.Fatalf("detail = %+v, want the app-level policy, not editable", got)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"editable":false`) {
+		t.Fatalf("detail JSON %s does not carry editable: false", raw)
+	}
+
+	mine, err := detail(ctx, GetPolicyInput{ID: own.ID.String()}, tenant)
+	if err != nil {
+		t.Fatalf("policyDetail on the tenant's own policy: %v", err)
+	}
+	raw, err = json.Marshal(mine)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !mine.Editable || !strings.Contains(string(raw), `"editable":true`) {
+		t.Fatalf("own detail = %s, want editable true", raw)
+	}
+
+	// An app-wide viewer owns both, so both are editable for it.
+	wide := principalWith(retentionApp1Wide)
+	for name, pol := range map[string]*retention.Policy{"app-level": appLevel, "tenant's": own} {
+		row, err := detail(ctx, GetPolicyInput{ID: pol.ID.String()}, wide)
+		if err != nil {
+			t.Fatalf("app-wide policyDetail on the %s policy: %v", name, err)
+		}
+		if !row.Editable {
+			t.Errorf("app-wide viewer's %s policy is not editable", name)
+		}
+	}
+}
+
+// Showing a governing policy in detail must not make it writable. A tenant
+// viewer still gets NOT_FOUND from save and delete on an app-level policy, and
+// the policy is untouched afterwards.
+func TestRetentionGoverningAppLevelPolicyIsReadableButNotWritableByATenant(t *testing.T) {
+	ctx := context.Background()
+	s := newSQLiteStore(t)
+	appLevel := retentionSavePolicyIn(t, s, retentionPolicy("app-1", "", "*", time.Hour))
+	deps := Deps{Store: s}
+	tenant := principalWith(retentionApp1TenantA)
+
+	if _, err := retentionPolicyDetailHandler(deps)(ctx, GetPolicyInput{ID: appLevel.ID.String()}, tenant); err != nil {
+		t.Fatalf("policyDetail: %v", err)
+	}
+
+	_, err := retentionSavePolicyHandler(deps)(ctx, SavePolicyInput{ID: retentionStr(appLevel.ID.String()), Duration: retentionStr("1m")}, tenant)
+	if got := retentionErrCode(t, err); got != fcontract.CodeNotFound {
+		t.Fatalf("savePolicy: code = %s, want %s", got, fcontract.CodeNotFound)
+	}
+	_, err = retentionDeletePolicyHandler(deps)(ctx, DeletePolicyInput{ID: appLevel.ID.String()}, tenant)
+	if got := retentionErrCode(t, err); got != fcontract.CodeNotFound {
+		t.Fatalf("deletePolicy: code = %s, want %s", got, fcontract.CodeNotFound)
+	}
+
+	after, err := s.GetPolicy(ctx, appLevel.ID)
+	if err != nil {
+		t.Fatalf("the app-level policy is gone: %v", err)
+	}
+	if after.Duration != time.Hour {
+		t.Fatalf("duration = %s, want it unchanged at 1h", after.Duration)
+	}
+}
+
+// Detail answers for a governing policy of the viewer's OWN app and nothing
+// wider. Another app's policy, app-level or a tenant's, stays NOT_FOUND for
+// tenant and app-wide viewers alike, and so does a sibling tenant's.
+func TestRetentionPolicyDetailStillRefusesEverythingOutsideTheViewersApp(t *testing.T) {
+	ctx := context.Background()
+	s := newSQLiteStore(t)
+	foreignAppLevel := retentionSavePolicyIn(t, s, retentionPolicy("app-2", "", "*", time.Hour))
+	foreignTenant := retentionSavePolicyIn(t, s, retentionPolicy("app-2", "tenant-a", "auth", time.Hour))
+	sibling := retentionSavePolicyIn(t, s, retentionPolicy("app-1", "tenant-b", "auth", time.Hour))
+	detail := retentionPolicyDetailHandler(Deps{Store: s})
+
+	for name, p := range map[string]fcontract.Principal{
+		"tenant viewer":   principalWith(retentionApp1TenantA),
+		"app-wide viewer": principalWith(retentionApp1Wide),
+	} {
+		for label, pol := range map[string]*retention.Policy{
+			"another app's app-level policy": foreignAppLevel,
+			"another app's tenant policy":    foreignTenant,
+		} {
+			_, err := detail(ctx, GetPolicyInput{ID: pol.ID.String()}, p)
+			if got := retentionErrCode(t, err); got != fcontract.CodeNotFound {
+				t.Errorf("%s asking for %s: code = %s, want %s", name, label, got, fcontract.CodeNotFound)
+			}
+		}
+	}
+
+	_, err := detail(ctx, GetPolicyInput{ID: sibling.ID.String()}, principalWith(retentionApp1TenantA))
+	if got := retentionErrCode(t, err); got != fcontract.CodeNotFound {
+		t.Errorf("tenant viewer asking for a sibling tenant's policy: code = %s, want %s", got, fcontract.CodeNotFound)
 	}
 }

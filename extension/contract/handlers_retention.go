@@ -38,8 +38,9 @@ const (
 // Editable is true when the viewer may change or delete this policy through
 // retention.savePolicy and retention.deletePolicy, and false for an app-level
 // policy that governs a tenant viewer's chain but belongs to the app. Those
-// are shown so the tenant viewer can see what purges its history, and the two
-// commands answer NOT_FOUND for them. An app-wide viewer owns every policy in
+// are shown by retention.policies and retention.policyDetail so the tenant
+// viewer can see what purges its history, and the two commands answer
+// NOT_FOUND for them. An app-wide viewer owns every policy in
 // its app, so every row it sees is editable.
 type PolicySummary struct {
 	ID        string `json:"id"`
@@ -366,10 +367,11 @@ func errPolicyNotFound() error {
 	return &fcontract.Error{Code: fcontract.CodeNotFound, Message: "not found"}
 }
 
-// ownedPolicy fetches a policy by ID and returns it only if the viewer owns
-// it. Every path that acts on a policy by ID goes through here, before it
-// reads, changes or deletes anything.
-func ownedPolicy(ctx context.Context, deps Deps, op string, v viewScope, rawID string) (*retention.Policy, error) {
+// fetchPolicy resolves a policy by ID with no ownership check. It exists so
+// ownedPolicy and the detail handler share the parse and the miss handling
+// and differ only in whom they let through. Neither may return what this
+// returns without checking it against the viewer.
+func fetchPolicy(ctx context.Context, deps Deps, op string, rawID string) (*retention.Policy, error) {
 	policyID, err := id.ParsePolicyID(rawID)
 	if err != nil {
 		// An ID that does not parse cannot name a real policy, and the
@@ -383,6 +385,17 @@ func ownedPolicy(ctx context.Context, deps Deps, op string, v viewScope, rawID s
 	}
 	if pol == nil {
 		return nil, errPolicyNotFound()
+	}
+	return pol, nil
+}
+
+// ownedPolicy fetches a policy by ID and returns it only if the viewer owns
+// it. Every path that changes or deletes a policy by ID goes through here,
+// before it changes or deletes anything.
+func ownedPolicy(ctx context.Context, deps Deps, op string, v viewScope, rawID string) (*retention.Policy, error) {
+	pol, err := fetchPolicy(ctx, deps, op, rawID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Security-critical: GetPolicy resolves by ID alone and bypasses every
@@ -447,11 +460,24 @@ func retentionPolicyDetailHandler(deps Deps) func(context.Context, GetPolicyInpu
 			return PolicySummary{}, err
 		}
 
-		pol, err := ownedPolicy(ctx, deps, "retention.policyDetail", v, in.ID)
+		pol, err := fetchPolicy(ctx, deps, "retention.policyDetail", in.ID)
 		if err != nil {
 			return PolicySummary{}, err
 		}
-		return projectPolicy(pol, true), nil
+
+		// Security-critical: fetchPolicy resolves by ID alone. Detail answers
+		// for the viewer's own policies and for the app-level policies that
+		// govern a tenant viewer, the two sets retention.policies lists, and
+		// for nothing else. A policy from another app or a sibling tenant
+		// answers exactly as a policy that does not exist.
+		switch {
+		case v.owns(pol.AppID, pol.TenantID):
+			return projectPolicy(pol, true), nil
+		case v.governedBy(pol.AppID, pol.TenantID):
+			return projectPolicy(pol, false), nil
+		default:
+			return PolicySummary{}, errPolicyNotFound()
+		}
 	}
 }
 

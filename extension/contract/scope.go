@@ -245,6 +245,14 @@ func (v viewScope) owns(appID, tenantID string) bool {
 	return tenantID == v.TenantID
 }
 
+// governedBy reports whether a record is an app-level policy of the viewer's
+// app that purges a tenant viewer's chain without being the viewer's own: same
+// app, no tenant, and a viewer that has one. An app-wide viewer is governed by
+// nothing, because every app-level record in its app is already its own.
+func (v viewScope) governedBy(appID, tenantID string) bool {
+	return v.AppID != "" && v.TenantID != "" && appID == v.AppID && tenantID == ""
+}
+
 // applyQuery stamps the viewer's scope onto an event query, overwriting
 // whatever scope the query already carried. It sets TenantID even when the
 // viewer's is empty, so an app-wide viewer's query is app-wide and never
