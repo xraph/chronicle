@@ -234,16 +234,15 @@ func TestRegisterRefusesDepsWithNoStore(t *testing.T) {
 	}
 }
 
-// 28 intents. erasures.request is held out until crypto.KeyStore scopes its
-// keys by app and tenant, because an erasure currently destroys every scope's
-// data for the same subject ID.
-func TestManifestDeclaresTwentyEightIntents(t *testing.T) {
+// 29 intents. The count is pinned so that adding or removing an intent is a
+// deliberate edit here, next to the parity test that checks the handlers.
+func TestManifestDeclaresTwentyNineIntents(t *testing.T) {
 	m, err := loader.Load(bytes.NewReader(manifestYAML), "manifest.yaml")
 	if err != nil {
 		t.Fatalf("load manifest: %v", err)
 	}
-	if len(m.Intents) != 28 {
-		t.Fatalf("manifest declares %d intents, want 28. If you added or removed one "+
+	if len(m.Intents) != 29 {
+		t.Fatalf("manifest declares %d intents, want 29. If you added or removed one "+
 			"deliberately, update this number",
 			len(m.Intents))
 	}

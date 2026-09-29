@@ -66,17 +66,26 @@ intents:
   # "failed" tile is failed plus denied and sums the two fields itself.
   - { name: overview.stats, kind: query, version: 1, capability: read }
   # GDPR erasure records: the evidence that a data subject's right to
-  # erasure was honoured. There is no erasures.request here yet: a confirmed
-  # library bug means crypto.KeyStore keys an encryption key by subject ID
-  # alone, so an erasure requested in one app or tenant destroys another
-  # app's or tenant's data for the same subject. The command stays out of
-  # this manifest until the library scopes its keys.
+  # erasure was honoured.
   - { name: erasures.list,   kind: query, version: 1, capability: read }
   - { name: erasures.detail, kind: query, version: 1, capability: read }
   # The count a confirm dialog would show before an erasure command fires.
   # A query, so it is lazy on the client and runs when the dialog opens, not
   # on every render of the list.
   - { name: erasures.preview, kind: query, version: 1, capability: read }
+  # Destroys the keys a subject's events were sealed under and flags the
+  # events erased, inside the viewer's own app and tenant only. It carries
+  # the explicit admin scope on top of write. Everything the erasure changes
+  # is listed here: the erasure list, the count the confirm dialog shows,
+  # the overview's erasure tile, and every read that returns events, because
+  # they now come back redacted and flagged. events.aggregate is not listed:
+  # it groups on fields the sealer never encrypts. The verify intents are not
+  # listed either: the hash covers the stored ciphertext, and an erasure
+  # destroys a key without rewriting a stored byte, so no verdict changes.
+  - { name: erasures.request, kind: command, version: 1, capability: write,
+      requires: { all: ["scope:chronicle.admin"] },
+      invalidates: [erasures.list, erasures.preview, overview.stats,
+                    events.list, events.detail, events.byUser] }
   # Retention policies and the enforcement that purges audit events. Every
   # intent here is confined to the viewer's own app and tenant; no request
   # carries an appId or tenantId.

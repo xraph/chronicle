@@ -93,9 +93,8 @@ func (s *erasuresListFixedStore) ListErasures(context.Context, erasure.ListOpts)
 }
 
 // erasuresSeedErasure records one erasure via Store.RecordErasure directly,
-// never through erasure.Service.Erase, which carries the confirmed library
-// bug (an unscoped key delete) that keeps erasures.request out of this
-// contract for now.
+// so a list or detail test controls exactly what the record says instead of
+// deriving it from a real erasure.
 func erasuresSeedErasure(t *testing.T, s store.Store, appID, tenantID, subjectID string) *erasure.Erasure {
 	t.Helper()
 	now := time.Now().UTC()

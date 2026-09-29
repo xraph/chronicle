@@ -557,12 +557,11 @@ func (e *Extension) RegisterContractContributor(
 		Engine:    e.engine,
 		Enforcer:  e.enforcer,
 
-		// Deliberately nil. The erasures.request intent is held out of the
-		// dashboard until crypto.KeyStore scopes its keys by app and tenant:
-		// today an erasure destroys every scope's data for the same subject
-		// ID, so a per-scope operator must not be able to trigger one. No
-		// handler uses the erasure service.
-		Erasure: nil,
+		// Nil unless crypto-erasure is on: the service exists only then, and
+		// erasures.request answers UNAVAILABLE without it. It shares the
+		// sealer's key store, so the keys it destroys are the ones events
+		// were sealed under.
+		Erasure: e.erasureService,
 
 		// The checkpoint trio travels as a set, and is all nil when
 		// checkpointing is off.
