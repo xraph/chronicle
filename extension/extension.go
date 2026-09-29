@@ -142,6 +142,9 @@ func (e *Extension) Register(fapp forge.App) error {
 	if err := e.loadConfiguration(); err != nil {
 		return err
 	}
+	if err := e.config.Dashboard.Validate(); err != nil {
+		return err
+	}
 
 	// Captured before store resolution: only a store the operator supplied
 	// directly bypasses buildStoreFromGroveDB (and so never received
@@ -566,6 +569,12 @@ func (e *Extension) RegisterContractContributor(
 		// dropped the same field with every other test staying green.
 		HashChain: e.hashChain,
 
+		// The configured default scope. Without these the contract path
+		// refuses every session whose claims carry no app, and nothing in a
+		// Deps built by hand would notice they were dropped.
+		DefaultAppID:    e.config.Dashboard.AppID,
+		DefaultTenantID: e.config.Dashboard.TenantID,
+
 		Config: contract.SurfaceConfig{
 			BatchSize:           e.config.BatchSize,
 			FlushInterval:       e.config.FlushInterval.String(),
@@ -917,6 +926,16 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	}
 	if programmaticConfig.Auth.AllowUnauthenticated {
 		yamlConfig.Auth.AllowUnauthenticated = true
+	}
+
+	// Dashboard default scope: YAML takes precedence per field, programmatic
+	// fills gaps. Losing app_id here would turn a working single-app dashboard
+	// into one that refuses every session, with nothing logged.
+	if yamlConfig.Dashboard.AppID == "" && programmaticConfig.Dashboard.AppID != "" {
+		yamlConfig.Dashboard.AppID = programmaticConfig.Dashboard.AppID
+	}
+	if yamlConfig.Dashboard.TenantID == "" && programmaticConfig.Dashboard.TenantID != "" {
+		yamlConfig.Dashboard.TenantID = programmaticConfig.Dashboard.TenantID
 	}
 
 	// String fields: YAML takes precedence.

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/xraph/chronicle/extension/contract"
 )
 
 // Config holds the Chronicle extension configuration.
@@ -59,6 +61,10 @@ type Config struct {
 	// event and its stream's pin.
 	Checkpoints CheckpointConfig `json:"checkpoints" mapstructure:"checkpoints" yaml:"checkpoints"`
 
+	// Dashboard configures how the contract dashboard scopes a session that
+	// arrives with no app or tenant claims. See [DashboardConfig].
+	Dashboard DashboardConfig `json:"dashboard" mapstructure:"dashboard" yaml:"dashboard"`
+
 	// DashboardMutations permits the dashboard's write actions: creating and
 	// deleting retention policies, running enforcement, and generating reports.
 	//
@@ -71,6 +77,32 @@ type Config struct {
 	// RequireConfig requires config to be present in YAML files.
 	// If true and no config is found, Register returns an error.
 	RequireConfig bool `json:"-" yaml:"-"`
+}
+
+// DashboardConfig names the app and tenant a dashboard session takes when its
+// claims carry none.
+//
+// The dashboard scopes every request from the signed-in user's claims. Until
+// the auth provider fills those in, a single-app deployment has nothing to
+// scope by and every intent is refused. Naming the app here lets it run. A
+// claim that is present but unreadable is still refused, and a request with no
+// signed-in user never takes either value.
+type DashboardConfig struct {
+	// AppID is the app a session belongs to when its claims name none
+	// (chronicle.dashboard.app_id).
+	AppID string `json:"app_id" mapstructure:"app_id" yaml:"app_id"`
+
+	// TenantID is the tenant a session in AppID is narrowed to when its claims
+	// name none (chronicle.dashboard.tenant_id). It applies only inside AppID,
+	// so it cannot be set without it. Empty leaves such a session app-wide.
+	TenantID string `json:"tenant_id" mapstructure:"tenant_id" yaml:"tenant_id"`
+}
+
+// Validate refuses values the dashboard would store and compare exactly as
+// written: edge whitespace, control characters, or a tenant with no app.
+// Failing at startup beats a dashboard that boots and shows nothing.
+func (c DashboardConfig) Validate() error {
+	return contract.ValidateDefaultScope(c.AppID, c.TenantID)
 }
 
 // AuthConfig configures authentication and authorisation for the admin API.

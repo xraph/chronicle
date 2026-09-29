@@ -216,6 +216,8 @@ chronicle:
 | `RetentionInterval` | `retention_interval` | `duration` | `24h` | Retention enforcement interval (0 = off) |
 | `DisableRoutes` | `disable_routes` | `bool` | `false` | Skip auto route registration |
 | `DisableMigrate` | `disable_migrate` | `bool` | `false` | Skip `Migrate` on `Start` |
+| `Dashboard.AppID` | `dashboard.app_id` | `string` | `""` | App a dashboard session takes when its claims carry no `app_id`. A present but unreadable claim is still refused, and so is a request with no signed-in user |
+| `Dashboard.TenantID` | `dashboard.tenant_id` | `string` | `""` | Tenant a session in `dashboard.app_id` takes when its claims carry no `tenant_id` or `org_id`. Refused at startup without `dashboard.app_id`. Neither value may have edge whitespace or control characters |
 
 ## Full option reference
 

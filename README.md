@@ -316,6 +316,26 @@ chronicle:
 Dashboard reads are always tenant-scoped, and dashboard enforcement only runs the
 viewing tenant's own policies.
 
+Each dashboard session is scoped by the `app_id` claim, and by `tenant_id` or
+`org_id` for a tenant, on the signed-in user. A session with no app is refused,
+because an empty app matches every app in Chronicle's stores. Until your auth
+provider fills those claims in, a single-app deployment can name its app instead:
+
+```yaml
+chronicle:
+  dashboard:
+    app_id: my-app          # chronicle.dashboard.app_id
+    tenant_id: my-tenant    # optional; chronicle.dashboard.tenant_id
+```
+
+The configured values are only a fallback for a session whose claims say nothing.
+A claim that is present but unreadable (empty, null, or not a string) is still
+refused, and a request with no signed-in user never takes either value. The
+tenant applies only inside the configured app, so a session that claims a
+different app is not narrowed to it, and `tenant_id` without `app_id` is refused
+at startup. Values with leading or trailing whitespace or a control character are
+refused at startup too, not trimmed.
+
 ## Configuration
 
 ```go
