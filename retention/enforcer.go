@@ -33,6 +33,14 @@ var ErrNoChainRecorder = errors.New(
 		"reports as deletions (use WithChainRecorder, or WithUnrecordedPurge to accept that)",
 )
 
+// ErrPolicyWithoutApp is returned when an Enforcer is handed a policy with no
+// AppID. It purges nothing for that policy.
+//
+// Every list filter reads an empty AppID as every app, so a policy that
+// reaches the enforcer without one is a row nothing should have produced.
+// Guessing what it was meant to cover is not worth an unrecoverable purge.
+var ErrPolicyWithoutApp = errors.New("retention: policy has no app ID; refusing to enforce it")
+
 // ChainRecorder records a retention purge in the hash chain before the events
 // are deleted. *chronicle.Chronicle implements it.
 type ChainRecorder interface {
@@ -99,19 +107,55 @@ func NewEnforcer(store Store, archiveSink sink.Sink, logger log.Logger, opts ...
 // (AppID, TenantID) owns. Request handlers must call EnforceScope instead, so a
 // caller cannot trigger another tenant's retention.
 func (e *Enforcer) Enforce(ctx context.Context) (*EnforceResult, error) {
-	return e.enforce(ctx, ListPoliciesOpts{Limit: -1})
+	return e.enforce(ctx, ListPoliciesOpts{Limit: -1}, nil)
 }
 
 // EnforceScope runs only the policies owned by the given scope.
+//
+// A policy the store returns from outside s is skipped, so a store whose
+// ListPolicies ignores the scope still cannot make one caller purge
+// another's events.
 func (e *Enforcer) EnforceScope(ctx context.Context, s Scope) (*EnforceResult, error) {
-	return e.enforce(ctx, ListPoliciesOpts{Scope: s, Limit: -1})
+	return e.EnforceScopeFunc(ctx, s, nil)
 }
 
-func (e *Enforcer) enforce(ctx context.Context, opts ListPoliciesOpts) (*EnforceResult, error) {
+// EnforceScopeFunc is EnforceScope with the caller's own ownership check:
+// only the policies keep reports true for are run. It is applied before
+// anything is read or purged, on top of the scope check EnforceScope already
+// does. A nil keep runs every policy in s.
+//
+// Use it when the caller's idea of what a viewer owns is stricter than the
+// listing scope, so the policies it enforces are the same ones it shows.
+func (e *Enforcer) EnforceScopeFunc(
+	ctx context.Context, s Scope, keep func(*Policy) bool,
+) (*EnforceResult, error) {
+	return e.enforce(ctx, ListPoliciesOpts{Scope: s, Limit: -1}, func(p *Policy) bool {
+		return inListScope(p, s) && (keep == nil || keep(p))
+	})
+}
+
+// inListScope reports whether p falls inside s the way ListPolicies reads s:
+// an empty field matches any value, a set one must match exactly.
+func inListScope(p *Policy, s Scope) bool {
+	return (s.AppID == "" || p.AppID == s.AppID) &&
+		(s.TenantID == "" || p.TenantID == s.TenantID)
+}
+
+// enforce runs the listed policies that keep reports true for. A nil keep
+// runs all of them.
+func (e *Enforcer) enforce(
+	ctx context.Context, opts ListPoliciesOpts, keep func(*Policy) bool,
+) (*EnforceResult, error) {
 	policies, err := e.store.ListPolicies(ctx, opts)
 	if err != nil {
 		return nil, fmt.Errorf("retention: list policies: %w", err)
 	}
+
+	// Security-critical: drop what the caller does not own before any policy
+	// reads or purges a single event.
+	policies = slices.DeleteFunc(policies, func(p *Policy) bool {
+		return p == nil || (keep != nil && !keep(p))
+	})
 
 	result := &EnforceResult{}
 	var firstErr error
@@ -151,6 +195,10 @@ func (e *Enforcer) enforce(ctx context.Context, opts ListPoliciesOpts) (*Enforce
 }
 
 func (e *Enforcer) enforcePolicy(ctx context.Context, policy *Policy) (*EnforceResult, error) {
+	if policy.AppID == "" {
+		return nil, ErrPolicyWithoutApp
+	}
+
 	cutoff := time.Now().Add(-policy.Duration)
 	result := &EnforceResult{}
 
