@@ -210,23 +210,54 @@ func TestCheckpointsListComputesHasMoreFromTheExtraRow(t *testing.T) {
 	}
 }
 
-// Review Focus 2: a checkpoint belonging to another tenant, fetched by ID.
-func TestCheckpointsDetailRefusesAnotherTenantsCheckpoint(t *testing.T) {
+// checkpointsTouchedStore counts calls to GetCheckpoint, so a test can prove
+// a request was refused before it ever reached the store.
+type checkpointsTouchedStore struct {
+	stubCheckpointStore
+	getCheckpointCalls int
+}
+
+func (s *checkpointsTouchedStore) GetCheckpoint(context.Context, id.ID) (*checkpoint.Checkpoint, error) {
+	s.getCheckpointCalls++
+	return nil, checkpoint.ErrNotFound
+}
+
+// An ID that does not even parse as a checkpoint ID -- "cp_1" has no valid
+// "ckpt_..." suffix -- cannot name a real checkpoint. checkpointsDetailHandler
+// must refuse it with the same NOT_FOUND a real miss gets, so a prober
+// cannot tell an unparseable ID apart from a real one that just isn't
+// theirs, and it must do so before the store is ever touched.
+//
+// This does NOT exercise v.owns or the ownership boundary: the checkpoint ID
+// fails id.ParseCheckpointID before GetCheckpoint or v.owns ever run, which
+// is exactly what getCheckpointCalls proves below. It was previously named
+// TestCheckpointsDetailRefusesAnotherTenantsCheckpoint and asserted only
+// err != nil, which made it read as an ownership test while actually
+// covering ID parsing; deleting the owns() check left it passing.
+// TestCheckpointsDetailRefusesAnotherTenantsCheckpointByOwnership is the
+// test that actually exercises ownership.
+func TestCheckpointsDetailRefusesAnUnparseableID(t *testing.T) {
+	spy := &checkpointsTouchedStore{}
 	h := checkpointsDetailHandler(Deps{
 		Store:            newStubStore(),
-		CheckpointStore:  checkpointStoreWith(&checkpoint.Checkpoint{AppID: "app-2", TenantID: "tenant-b"}),
+		CheckpointStore:  spy,
 		CheckpointSigner: stubSigner{},
 	})
 	_, err := h(context.Background(), GetCheckpointInput{ID: "cp_1"},
 		principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"}))
-	if err == nil {
-		t.Fatal("served another tenant's checkpoint to a caller who guessed its ID")
+
+	var ce *fcontract.Error
+	if !errors.As(err, &ce) || ce.Code != fcontract.CodeNotFound {
+		t.Fatalf("err = %v, want NOT_FOUND", err)
+	}
+	if spy.getCheckpointCalls != 0 {
+		t.Fatalf("handler reached the store %d time(s) before refusing an unparseable ID", spy.getCheckpointCalls)
 	}
 }
 
-// The same refusal, but with a syntactically valid checkpoint ID, so this
-// actually exercises v.owns rather than passing only because the brief's
-// literal "cp_1" fails to parse as a checkpoint ID. The checkpoint's
+// A checkpoint belonging to another tenant, fetched by ID with a
+// syntactically valid checkpoint ID, so this actually exercises v.owns
+// rather than passing only because the ID fails to parse. The checkpoint's
 // StreamID is deliberately set to the viewer's OWN resolved stream, so the
 // separate "belongs to the viewer's own stream" check cannot be what catches
 // this: only v.owns, comparing the checkpoint's own recorded AppID/TenantID

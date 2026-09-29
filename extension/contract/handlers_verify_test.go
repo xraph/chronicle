@@ -23,6 +23,7 @@ import (
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/keys"
+	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/store"
 	"github.com/xraph/chronicle/store/memory"
 	"github.com/xraph/chronicle/store/sqlite"
@@ -150,13 +151,18 @@ func TestVerifyReportJSONNeverOmitsACheckedFlagOrItsPartner(t *testing.T) {
 		"valid", "verified", "firstEvent", "lastEvent", "headSeq",
 		"partial", "headMatch", "headChecked",
 		"checkpointsChecked", "checkpointHeadOk", "checkpointHeadChecked",
+		"retentionPolicies",
 	} {
 		msg, ok := raw[key]
 		if !ok {
 			t.Errorf("marshaled report omits %q for its false/zero value; omitempty was added back", key)
 			continue
 		}
-		if string(msg) != "false" && key != "verified" && key != "firstEvent" && key != "lastEvent" && key != "headSeq" {
+		numeric := map[string]bool{"verified": true, "firstEvent": true, "lastEvent": true, "headSeq": true, "retentionPolicies": true}
+		if numeric[key] && string(msg) != "0" {
+			t.Errorf("%q = %s, want 0", key, msg)
+		}
+		if string(msg) != "false" && !numeric[key] {
 			t.Errorf("%q = %s, want false", key, msg)
 		}
 	}
@@ -892,5 +898,125 @@ func TestVerifyDetectsARealChainTamperOnSQLite(t *testing.T) {
 	}
 	if !cleanOut.Valid {
 		t.Fatal("verify.event reported an untouched event invalid")
+	}
+}
+
+// ──────────────────────────────────────────────────
+// verify.run: retentionPolicies
+// ──────────────────────────────────────────────────
+
+// verifyPoliciesFailStore is a real store whose ListPolicies fails, so a
+// verification runs for real and only the policy count breaks.
+type verifyPoliciesFailStore struct {
+	store.Store
+}
+
+func (verifyPoliciesFailStore) ListPolicies(context.Context, retention.ListPoliciesOpts) ([]*retention.Policy, error) {
+	return nil, errors.New("connection reset")
+}
+
+// verifyPolicyCountSpy counts ListPolicies calls on a store that has no
+// chain for anyone.
+type verifyPolicyCountSpy struct {
+	stubStore
+	lists int
+}
+
+func (s *verifyPolicyCountSpy) ListPolicies(context.Context, retention.ListPoliciesOpts) ([]*retention.Policy, error) {
+	s.lists++
+	return nil, nil
+}
+
+func verifySeedChain(t *testing.T, s store.Store) {
+	t.Helper()
+	c, err := chronicle.New(chronicle.WithStore(store.NewAdapter(s)))
+	if err != nil {
+		t.Fatalf("chronicle.New: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		e := &audit.Event{AppID: "app-1", TenantID: "tenant-a", Action: "test.action", Resource: "res", Category: "auth"}
+		if err := c.Record(context.Background(), e); err != nil {
+			t.Fatalf("record event %d: %v", i, err)
+		}
+	}
+}
+
+func verifySavePolicy(t *testing.T, s store.Store, appID, tenantID, category string) {
+	t.Helper()
+	p := &retention.Policy{
+		Entity: chronicle.NewEntity(), ID: id.NewPolicyID(),
+		Category: category, Duration: 24 * time.Hour, AppID: appID, TenantID: tenantID,
+	}
+	if err := s.SavePolicy(context.Background(), p); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+}
+
+// Retention purges read as gaps and tampering, and Chronicle cannot yet tell
+// them from deletion, so the report says how many policies the viewer's
+// scope has. Counted over the viewer's own scope only: a sibling tenant's,
+// an app-level and another app's policy do not count for a tenant viewer.
+func TestVerifyRunCountsTheViewersRetentionPolicies(t *testing.T) {
+	ctx := context.Background()
+	s := newSQLiteStore(t)
+	verifySeedChain(t, s)
+	viewer := principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"})
+	h := verifyRunHandler(Deps{Store: s})
+
+	out, err := h(ctx, VerifyInput{}, viewer)
+	if err != nil {
+		t.Fatalf("verify.run: %v", err)
+	}
+	if out.Report == nil || out.Report.RetentionPolicies != 0 {
+		t.Fatalf("report = %+v, want retentionPolicies 0 with none configured", out.Report)
+	}
+
+	verifySavePolicy(t, s, "app-1", "tenant-a", "auth")
+	verifySavePolicy(t, s, "app-1", "tenant-a", "billing")
+	verifySavePolicy(t, s, "app-1", "tenant-b", "auth")
+	verifySavePolicy(t, s, "app-1", "", "auth")
+	verifySavePolicy(t, s, "app-2", "tenant-a", "auth")
+
+	out, err = h(ctx, VerifyInput{}, viewer)
+	if err != nil {
+		t.Fatalf("verify.run: %v", err)
+	}
+	if out.Report == nil || out.Report.RetentionPolicies != 2 {
+		t.Fatalf("report = %+v, want retentionPolicies 2, tenant-a's own", out.Report)
+	}
+	if !out.Report.Valid || out.Report.Verified != 3 {
+		t.Fatalf("report = %+v, want a valid chain of 3", out.Report)
+	}
+}
+
+// A failure to count policies must not fail the verification: the report
+// is still true without the number, which answers -1 for "unknown".
+func TestVerifyRunWithAnUncountablePolicyListSaysUnknown(t *testing.T) {
+	s := newSQLiteStore(t)
+	verifySeedChain(t, s)
+
+	out, err := verifyRunHandler(Deps{Store: verifyPoliciesFailStore{Store: s}})(context.Background(), VerifyInput{},
+		principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"}))
+	if err != nil {
+		t.Fatalf("verify.run failed because the policy count failed: %v", err)
+	}
+	if out.Report == nil || out.Report.RetentionPolicies != -1 {
+		t.Fatalf("report = %+v, want retentionPolicies -1", out.Report)
+	}
+	if !out.Report.Valid || out.Report.Verified != 3 {
+		t.Fatalf("report = %+v, want the verification itself intact", out.Report)
+	}
+}
+
+// The count annotates a report, so no report means no count.
+func TestVerifyRunWithNoChainDoesNotCountPolicies(t *testing.T) {
+	spy := &verifyPolicyCountSpy{stubStore: stubStore{err: chronicle.ErrStreamNotFound}}
+	out, err := verifyRunHandler(Deps{Store: spy})(context.Background(), VerifyInput{},
+		principalWith(map[string]any{"app_id": "app-1"}))
+	if err != nil {
+		t.Fatalf("verify.run: %v", err)
+	}
+	if !out.NoChain || spy.lists != 0 {
+		t.Fatalf("noChain = %v, ListPolicies calls = %d; want true and 0", out.NoChain, spy.lists)
 	}
 }

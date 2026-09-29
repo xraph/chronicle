@@ -159,6 +159,10 @@ func registrations() []registration {
 		streamsRegistrations(),
 		verifyRegistrations(),
 		checkpointsRegistrations(),
+		eventsRegistrations(),
+		overviewRegistrations(),
+		erasuresRegistrations(),
+		retentionRegistrations(),
 		// Each later task adds its group's <group>Registrations() here.
 	}
 

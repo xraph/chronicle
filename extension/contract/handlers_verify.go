@@ -9,6 +9,7 @@ import (
 
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/verify"
 )
 
@@ -91,6 +92,18 @@ type VerifyReport struct {
 
 	Coverage    []CoverageSpan     `json:"coverage,omitempty"`
 	Checkpoints []CheckpointResult `json:"checkpoints,omitempty"`
+
+	// RetentionPolicies is how many retention policies the viewer's scope
+	// has configured. A non-zero value means gaps and tampered sequences in
+	// this report may be authorised retention purges, which Chronicle
+	// cannot currently distinguish from deletion: a purge removes events
+	// from the middle of the chain, so the purged sequences read as gaps
+	// and the events after them as tampered. It counts the policies
+	// configured NOW, so purges made under policies that have since been
+	// deleted are not reflected. -1 means unknown: listing the policies
+	// failed, and that is not allowed to fail the verification itself.
+	// No omitempty, because zero is an answer the page needs.
+	RetentionPolicies int `json:"retentionPolicies"`
 }
 
 // VerifyInput bounds the range. Both zero means genesis to head, which is
@@ -320,8 +333,33 @@ func verifyRunHandler(deps Deps) func(context.Context, VerifyInput, fcontract.Pr
 			return VerifyResponse{}, deps.mapStoreError("verify.run", err)
 		}
 
-		return VerifyResponse{Report: projectReport(report)}, nil
+		out := VerifyResponse{Report: projectReport(report)}
+		if out.Report != nil {
+			out.Report.RetentionPolicies = verifyRetentionPolicyCount(ctx, deps, v)
+		}
+		return out, nil
 	}
+}
+
+// verifyRetentionPolicyCount counts the viewer's retention policies for
+// VerifyReport.RetentionPolicies, over the same scope retention.policies
+// lists. A store error is logged and answered as -1 ("unknown"): the
+// report is still true without this number, and failing it would hide a
+// verification result over an annotation.
+func verifyRetentionPolicyCount(ctx context.Context, deps Deps, v viewScope) int {
+	policies, err := deps.Store.ListPolicies(ctx, retention.ListPoliciesOpts{
+		Scope: v.retentionScope(),
+		Limit: -1,
+	})
+	if err != nil {
+		deps.logger().Error("chronicle/contract: count retention policies for verify.run failed",
+			log.String("contributor", contributorName),
+			log.String("op", "verify.run"),
+			log.Error(err),
+		)
+		return -1
+	}
+	return len(policies)
 }
 
 func verifyEventHandler(deps Deps) func(context.Context, VerifyEventInput, fcontract.Principal) (VerifyEventResponse, error) {
