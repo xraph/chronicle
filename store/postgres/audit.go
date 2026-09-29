@@ -386,20 +386,23 @@ func applyEventFilters(q *pgdriver.SelectQuery, f *audit.Query) {
 	if !f.Before.IsZero() {
 		q.Where("e.timestamp <= ?", f.Before)
 	}
+	// WhereArray quotes its column as one identifier, so "e.category" became
+	// the nonexistent column "e.category" and every filtered query failed.
+	// The bare name is unambiguous: these queries read one table.
 	if len(f.Categories) > 0 {
-		q.WhereArray("e.category", "= ANY", f.Categories)
+		q.WhereArray("category", "= ANY", f.Categories)
 	}
 	if len(f.Actions) > 0 {
-		q.WhereArray("e.action", "= ANY", f.Actions)
+		q.WhereArray("action", "= ANY", f.Actions)
 	}
 	if len(f.Resources) > 0 {
-		q.WhereArray("e.resource", "= ANY", f.Resources)
+		q.WhereArray("resource", "= ANY", f.Resources)
 	}
 	if len(f.Severity) > 0 {
-		q.WhereArray("e.severity", "= ANY", f.Severity)
+		q.WhereArray("severity", "= ANY", f.Severity)
 	}
 	if len(f.Outcome) > 0 {
-		q.WhereArray("e.outcome", "= ANY", f.Outcome)
+		q.WhereArray("outcome", "= ANY", f.Outcome)
 	}
 }
 
