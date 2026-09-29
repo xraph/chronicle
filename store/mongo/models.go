@@ -262,6 +262,9 @@ type ErasureModel struct {
 	AppID          string    `grove:"app_id"          bson:"app_id"`
 	TenantID       string    `grove:"tenant_id"       bson:"tenant_id"`
 	CreatedAt      time.Time `grove:"created_at"      bson:"created_at"`
+	Status         string    `grove:"status"          bson:"status,omitempty"`
+
+	LegacyKeyRetained bool `grove:"legacy_key_retained" bson:"legacy_key_retained"`
 }
 
 func toErasure(m *ErasureModel) (*erasure.Erasure, error) {
@@ -282,7 +285,20 @@ func toErasure(m *ErasureModel) (*erasure.Erasure, error) {
 		KeyDestroyed:   m.KeyDestroyed,
 		AppID:          m.AppID,
 		TenantID:       m.TenantID,
+		Status:         erasureStatus(m.Status),
+
+		LegacyKeyRetained: m.LegacyKeyRetained,
 	}, nil
+}
+
+// erasureStatus reads a stored status. Documents written before erasures had
+// a status have none, and every one of them was written after its keys were
+// destroyed, so they are completed.
+func erasureStatus(s string) erasure.Status {
+	if s == "" {
+		return erasure.StatusCompleted
+	}
+	return erasure.Status(s)
 }
 
 func fromErasure(e *erasure.Erasure) *ErasureModel {
@@ -296,6 +312,9 @@ func fromErasure(e *erasure.Erasure) *ErasureModel {
 		AppID:          e.AppID,
 		TenantID:       e.TenantID,
 		CreatedAt:      e.CreatedAt,
+		Status:         string(e.Status),
+
+		LegacyKeyRetained: e.LegacyKeyRetained,
 	}
 }
 

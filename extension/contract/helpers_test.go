@@ -129,8 +129,9 @@ func (s *stubStore) Gaps(context.Context, id.ID, uint64, uint64) ([]uint64, erro
 func (s *stubStore) CountBySubject(context.Context, erasure.SubjectQuery) (int64, error) {
 	return 0, s.err
 }
-func (s *stubStore) CountErasures(context.Context, erasure.Scope) (int64, error) { return 0, s.err }
-func (s *stubStore) GetErasure(context.Context, id.ID) (*erasure.Erasure, error) { return nil, s.err }
+func (s *stubStore) CompleteErasure(context.Context, id.ID, erasure.Outcome) error { return s.err }
+func (s *stubStore) CountErasures(context.Context, erasure.Scope) (int64, error)   { return 0, s.err }
+func (s *stubStore) GetErasure(context.Context, id.ID) (*erasure.Erasure, error)   { return nil, s.err }
 func (s *stubStore) ListErasures(context.Context, erasure.ListOpts) ([]*erasure.Erasure, error) {
 	return nil, s.err
 }

@@ -19,6 +19,26 @@ func (s *Store) RecordErasure(ctx context.Context, e *erasure.Erasure) error {
 	return err
 }
 
+// CompleteErasure writes an erasure's outcome and marks it completed.
+func (s *Store) CompleteErasure(ctx context.Context, erasureID id.ID, o erasure.Outcome) error {
+	result, err := s.mdb.Collection(colErasures).UpdateOne(ctx,
+		bson.M{"_id": erasureID.String()},
+		bson.M{"$set": bson.M{
+			"status":              string(erasure.StatusCompleted),
+			"events_affected":     o.EventsAffected,
+			"key_destroyed":       o.KeyDestroyed,
+			"legacy_key_retained": o.LegacyKeyRetained,
+		}},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to complete erasure: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return chronicle.ErrErasureNotFound
+	}
+	return nil
+}
+
 // GetErasure returns an erasure record by ID.
 func (s *Store) GetErasure(ctx context.Context, erasureID id.ID) (*erasure.Erasure, error) {
 	var m ErasureModel

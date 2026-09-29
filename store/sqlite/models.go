@@ -292,6 +292,9 @@ type ErasureModel struct {
 	AppID          string `grove:"app_id"`
 	TenantID       string `grove:"tenant_id"`
 	CreatedAt      string `grove:"created_at"` // TEXT, written with timeLayout
+	Status         string `grove:"status"`
+
+	LegacyKeyRetained int `grove:"legacy_key_retained"` // INTEGER boolean
 }
 
 func toErasure(m *ErasureModel) (*erasure.Erasure, error) {
@@ -317,25 +320,35 @@ func toErasure(m *ErasureModel) (*erasure.Erasure, error) {
 		KeyDestroyed:   m.KeyDestroyed != 0,
 		AppID:          m.AppID,
 		TenantID:       m.TenantID,
+		Status:         erasure.Status(m.Status),
+
+		LegacyKeyRetained: m.LegacyKeyRetained != 0,
 	}, nil
 }
 
 func fromErasure(e *erasure.Erasure) *ErasureModel {
-	kd := 0
-	if e.KeyDestroyed {
-		kd = 1
-	}
 	return &ErasureModel{
 		ID:             e.ID.String(),
 		SubjectID:      e.SubjectID,
 		Reason:         e.Reason,
 		RequestedBy:    e.RequestedBy,
 		EventsAffected: e.EventsAffected,
-		KeyDestroyed:   kd,
+		KeyDestroyed:   boolInt(e.KeyDestroyed),
 		AppID:          e.AppID,
 		TenantID:       e.TenantID,
 		CreatedAt:      formatTime(e.CreatedAt),
+		Status:         string(e.Status),
+
+		LegacyKeyRetained: boolInt(e.LegacyKeyRetained),
 	}
+}
+
+// boolInt stores a bool in an INTEGER column.
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // ──────────────────────────────────────────────────

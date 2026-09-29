@@ -6,11 +6,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/crypto"
 	"github.com/xraph/chronicle/erasure"
@@ -104,4 +106,108 @@ func randomHash(t *testing.T) string {
 		t.Fatalf("random hash: %v", err)
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// Getter reads one event back from the backend under test.
+type Getter func(t *testing.T, eventID id.ID) *audit.Event
+
+// CompleteErasure checks that s records an erasure as pending, writes its
+// outcome and completed status, and reports chronicle.ErrErasureNotFound for
+// an ID it never recorded.
+func CompleteErasure(t *testing.T, s erasure.Store, suffix string) {
+	t.Helper()
+	ctx := context.Background()
+
+	rec := &erasure.Erasure{
+		Entity:         chronicle.NewEntity(),
+		ID:             id.NewErasureID(),
+		SubjectID:      "user-42-" + suffix,
+		Reason:         "GDPR Article 17",
+		RequestedBy:    "dpo@example.com",
+		EventsAffected: 3,
+		AppID:          "app-1-" + suffix,
+		TenantID:       "tenant-a-" + suffix,
+		Status:         erasure.StatusPending,
+	}
+	if err := s.RecordErasure(ctx, rec); err != nil {
+		t.Fatalf("RecordErasure: %v", err)
+	}
+
+	got, err := s.GetErasure(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("GetErasure: %v", err)
+	}
+	if got.Status != erasure.StatusPending || got.KeyDestroyed || got.LegacyKeyRetained {
+		t.Errorf("recorded erasure Status=%q KeyDestroyed=%v LegacyKeyRetained=%v, want pending and nothing destroyed",
+			got.Status, got.KeyDestroyed, got.LegacyKeyRetained)
+	}
+
+	if err = s.CompleteErasure(ctx, rec.ID, erasure.Outcome{
+		EventsAffected:    2,
+		LegacyKeyRetained: true,
+	}); err != nil {
+		t.Fatalf("CompleteErasure: %v", err)
+	}
+
+	got, err = s.GetErasure(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("GetErasure after complete: %v", err)
+	}
+	if got.Status != erasure.StatusCompleted || got.EventsAffected != 2 ||
+		got.KeyDestroyed || !got.LegacyKeyRetained {
+		t.Errorf("completed erasure = %+v, want completed, 2 events, legacy key retained", got)
+	}
+	if got.SubjectID != rec.SubjectID || got.Reason != rec.Reason || got.RequestedBy != rec.RequestedBy {
+		t.Errorf("completing changed who, what or why: %+v", got)
+	}
+
+	err = s.CompleteErasure(ctx, id.NewErasureID(), erasure.Outcome{KeyDestroyed: true})
+	if !errors.Is(err, chronicle.ErrErasureNotFound) {
+		t.Errorf("CompleteErasure(unknown) = %v, want %v", err, chronicle.ErrErasureNotFound)
+	}
+}
+
+// MarkErasedAgain checks that marking a subject a second time takes over every
+// event in scope: all of them count, and all of them point at the second
+// erasure. That is what lets a retry after a failed erasure finish cleanly.
+func MarkErasedAgain(t *testing.T, s erasure.Store, appendEvent Appender, get Getter, suffix string) {
+	t.Helper()
+	ctx := context.Background()
+
+	subject := "user-42-" + suffix
+	scope := erasure.Scope{AppID: "app-1-" + suffix, TenantID: "tenant-a-" + suffix}
+	events := make([]*audit.Event, 0, 2)
+	for range 2 {
+		e := &audit.Event{
+			ID:        id.NewAuditID(),
+			StreamID:  id.NewStreamID(),
+			Hash:      randomHash(t),
+			Timestamp: time.Now().UTC().Truncate(time.Second),
+			AppID:     scope.AppID,
+			TenantID:  scope.TenantID,
+			Action:    "export",
+			Resource:  "user",
+			Category:  "data",
+			Outcome:   audit.OutcomeSuccess,
+			Severity:  audit.SeverityInfo,
+			SubjectID: subject,
+		}
+		appendEvent(t, e)
+		events = append(events, e)
+	}
+
+	q := erasure.SubjectQuery{Scope: scope, SubjectID: subject}
+	if n, err := s.MarkErased(ctx, q, id.NewErasureID()); err != nil || n != 2 {
+		t.Fatalf("first MarkErased = %d, %v; want 2", n, err)
+	}
+	second := id.NewErasureID()
+	if n, err := s.MarkErased(ctx, q, second); err != nil || n != 2 {
+		t.Fatalf("second MarkErased = %d, %v; want 2", n, err)
+	}
+	for _, e := range events {
+		got := get(t, e.ID)
+		if !got.Erased || got.ErasureID != second.String() {
+			t.Errorf("event %s: Erased=%v ErasureID=%q, want erased by %s", e.ID, got.Erased, got.ErasureID, second)
+		}
+	}
 }
