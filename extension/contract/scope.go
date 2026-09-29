@@ -85,7 +85,7 @@ func scopeFromPrincipal(p fcontract.Principal, deps Deps) (viewScope, error) {
 		}
 	}
 
-	tenantID, err := tenantFromClaims(p, deps, appID)
+	tenantID, err := tenantFromClaims(p, deps, appFromClaim)
 	if err != nil {
 		return viewScope{}, err
 	}
@@ -149,8 +149,8 @@ func hasClaim(p fcontract.Principal, key string) bool {
 // same rule a policy category follows.
 //
 // A tenant with no app is refused because the default tenant only ever
-// applies inside the default app, so on its own it would do nothing while
-// looking like it narrowed every session.
+// applies to a session whose app came from the default app, so on its own it
+// would do nothing while looking like it narrowed every session.
 func ValidateDefaultScope(appID, tenantID string) error {
 	if err := checkConfiguredID("chronicle.dashboard.app_id", appID); err != nil {
 		return err
@@ -234,14 +234,16 @@ func appFromClaims(p fcontract.Principal, deps Deps) (appID string, fromClaim bo
 // either one is a guess about which layer to trust, so it is refused with the
 // same code as an unreadable claim.
 //
-// The tenant is absent only when BOTH keys are absent. Then, if the resolved
-// app is the configured default app and a default tenant is configured, the
-// session takes that tenant. The default tenant belongs to the default app:
-// a session whose claims put it in some other app must not be narrowed to a
-// tenant id that was chosen for a different one, since the same id can name
-// an unrelated tenant there. With no default, an absent tenant is a
-// legitimate app-wide operator and the result is "" (app-wide).
-func tenantFromClaims(p fcontract.Principal, deps Deps, appID string) (string, error) {
+// The tenant is absent only when BOTH keys are absent. Then, if the app came
+// from the config (no app claim at all) and a default tenant is configured,
+// the session takes that tenant. The default tenant belongs to the config
+// session only. A session whose app came from a claim never takes it, even
+// when that app is the configured one: a member who cleared their active
+// organisation arrives with an app claim and no tenant claim, and handing them
+// the configured tenant would put them in a tenant they never chose. With no
+// tenant the result is "" (app-wide), which scopeFromPrincipal then holds to
+// the app-wide grant.
+func tenantFromClaims(p fcontract.Principal, deps Deps, appFromClaim bool) (string, error) {
 	var tenant string
 	for _, key := range []string{"tenant_id", "org_id"} {
 		raw, present := p.Claims[key]
@@ -267,7 +269,7 @@ func tenantFromClaims(p fcontract.Principal, deps Deps, appID string) (string, e
 		return tenant, nil
 	}
 
-	if deps.DefaultTenantID != "" && deps.DefaultAppID != "" && appID == deps.DefaultAppID {
+	if !appFromClaim && deps.DefaultTenantID != "" {
 		return deps.DefaultTenantID, nil
 	}
 	return "", nil

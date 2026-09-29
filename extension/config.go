@@ -92,9 +92,11 @@ type DashboardConfig struct {
 	// (chronicle.dashboard.app_id).
 	AppID string `json:"app_id" mapstructure:"app_id" yaml:"app_id"`
 
-	// TenantID is the tenant a session in AppID is narrowed to when its claims
-	// name none (chronicle.dashboard.tenant_id). It applies only inside AppID,
-	// so it cannot be set without it. Empty leaves such a session app-wide.
+	// TenantID is the tenant a session is narrowed to when its app came from
+	// AppID and its claims name no tenant (chronicle.dashboard.tenant_id). It
+	// applies to that config session only: a session that claims its app, even
+	// this one, never takes it. It cannot be set without AppID. Empty leaves
+	// the config session app-wide.
 	TenantID string `json:"tenant_id" mapstructure:"tenant_id" yaml:"tenant_id"`
 }
 

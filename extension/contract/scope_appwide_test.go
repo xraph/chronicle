@@ -48,6 +48,7 @@ func TestScopeAppWideViewNeedsTheAdminScopeWhenTheAppIsClaimed(t *testing.T) {
 		"no defaults":                          {},
 		"default app, another app":             {DefaultAppID: "app-2"},
 		"default app equal, no tenant default": {DefaultAppID: "app-1"},
+		"default app equal, tenant default":    {DefaultAppID: "app-1", DefaultTenantID: "tenant-default"},
 	}
 	for dn, deps := range deployments {
 		for pn, p := range refused {
@@ -109,19 +110,32 @@ func TestScopeConfigAppWideViewNeedsNoScope(t *testing.T) {
 	}
 }
 
-// A claimed app that equals the configured app takes the configured tenant, so
-// it is a tenant view and needs no scope. A claimed app that differs does not
-// take it, resolves app-wide, and needs the scope.
-func TestScopeClaimedAppEqualToTheConfigAppTakesTheDefaultTenantWithoutAScope(t *testing.T) {
+// A claimed app never takes the configured tenant, even when it equals the
+// configured app. With no tenant claim it is app-wide, so it needs the scope:
+// an org member who cleared their active organisation must not land in the
+// configured tenant and read it, nor see the whole app.
+func TestScopeClaimedAppEqualToTheConfigAppDoesNotTakeTheDefaultTenant(t *testing.T) {
 	deps := Deps{DefaultAppID: "app-1", DefaultTenantID: "tenant-default"}
 
-	t.Run("equal app: tenant view, no scope", func(t *testing.T) {
+	t.Run("equal app, no scopes: refused", func(t *testing.T) {
 		v, err := scopeFromPrincipal(principalWithoutScopes(map[string]any{"app_id": "app-1"}), deps)
+		if !isPermissionDenied(err) {
+			t.Fatalf("err = %v (scope %+v), want PERMISSION_DENIED", err, v)
+		}
+	})
+	t.Run("equal app, with chronicle.admin: app-wide", func(t *testing.T) {
+		v, err := scopeFromPrincipal(principalWithScopes(map[string]any{"app_id": "app-1"}, "chronicle.admin"), deps)
 		if err != nil {
 			t.Fatalf("scopeFromPrincipal: %v", err)
 		}
-		if v.AppID != "app-1" || v.TenantID != "tenant-default" {
-			t.Fatalf("scope = %+v, want app-1/tenant-default", v)
+		if v.AppID != "app-1" || v.TenantID != "" {
+			t.Fatalf("scope = %+v, want app-1 app-wide", v)
+		}
+	})
+	t.Run("equal app with its own tenant claim: that tenant, no scope", func(t *testing.T) {
+		v, err := scopeFromPrincipal(principalWithoutScopes(map[string]any{"app_id": "app-1", "org_id": "tenant-a"}), deps)
+		if err != nil || v.TenantID != "tenant-a" {
+			t.Fatalf("scope = %+v, err = %v, want app-1/tenant-a", v, err)
 		}
 	})
 	t.Run("other app, no scope: refused", func(t *testing.T) {

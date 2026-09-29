@@ -72,8 +72,9 @@ func TestScopeUnresolvedAppNamesTheSetting(t *testing.T) {
 }
 
 // Every cell of the tenant dimension, under both spellings, with and without a
-// configured default tenant. The default is bound to defaultsApp and the
-// claims put the session in that same app, so it is eligible to apply.
+// configured default tenant. The claims put the session in the configured app
+// by claim, which is not the config session, so the default tenant never
+// applies in this table.
 func TestScopeTenantDimensionTable(t *testing.T) {
 	appOnly := Deps{DefaultAppID: defaultsApp}
 	appAndTenant := Deps{DefaultAppID: defaultsApp, DefaultTenantID: "tenant-default"}
@@ -102,7 +103,9 @@ func TestScopeTenantDimensionTable(t *testing.T) {
 		{"org_id nil, no default", claims("org_id", nil), appOnly, "", true},
 
 		// A default tenant is configured.
-		{"neither, default: takes the default", claims(), appAndTenant, "tenant-default", false},
+		// The app is claimed here, so the configured tenant does not apply: the
+		// session is app-wide (these principals hold chronicle.admin).
+		{"neither, default: a claimed app never takes the default tenant", claims(), appAndTenant, "", false},
 		{"tenant_id only beats a different default", claims("tenant_id", "tenant-a"), appAndTenant, "tenant-a", false},
 		{"org_id only beats a different default", claims("org_id", "tenant-a"), appAndTenant, "tenant-a", false},
 		{"both equal beat a different default", claims("tenant_id", "tenant-a", "org_id", "tenant-a"), appAndTenant, "tenant-a", false},
@@ -134,10 +137,11 @@ func TestScopeTenantDimensionTable(t *testing.T) {
 	}
 }
 
-// Both dimensions can come from the config at once: a session with no claims
-// at all, in a deployment that names an app and a tenant.
+// Both dimensions come from the config for the config session: no claims at
+// all, in a deployment that names an app and a tenant. No scope is needed, the
+// configuration being the operator's own choice.
 func TestScopeTakesBothDefaultsWhenClaimsAreAbsent(t *testing.T) {
-	v, err := scopeFromPrincipal(principalWith(nil),
+	v, err := scopeFromPrincipal(principalWithoutScopes(nil),
 		Deps{DefaultAppID: defaultsApp, DefaultTenantID: "tenant-default"})
 	if err != nil {
 		t.Fatalf("scopeFromPrincipal: %v", err)
@@ -229,13 +233,27 @@ func TestScopeRefusesATenantClaimWithNoAppClaim(t *testing.T) {
 	}
 }
 
-// The default tenant belongs to the default app. A session whose claims put it
-// in some other app is not narrowed to a tenant id chosen for a different app,
-// because the same id can name an unrelated tenant there.
-func TestScopeDefaultTenantAppliesOnlyInTheDefaultApp(t *testing.T) {
+// The default tenant belongs to the config session, the one whose app came
+// from DefaultAppID. A session that claims its app never takes it, not even
+// when the claimed app is the configured one: a member who cleared their active
+// organisation arrives with an app claim and no tenant claim, and would
+// otherwise land in the configured tenant and read it. With no tenant it falls
+// to the app-wide rule, so chronicle.admin sees the whole app and anyone else
+// is refused.
+func TestScopeDefaultTenantAppliesOnlyToTheConfigSession(t *testing.T) {
 	deps := Deps{DefaultAppID: "app-y", DefaultTenantID: "tenant-t"}
 
-	t.Run("claim app is foreign: no tenant is imposed", func(t *testing.T) {
+	t.Run("config session takes the default tenant", func(t *testing.T) {
+		v, err := scopeFromPrincipal(principalWithoutScopes(nil), deps)
+		if err != nil {
+			t.Fatalf("scopeFromPrincipal: %v", err)
+		}
+		if v.AppID != "app-y" || v.TenantID != "tenant-t" {
+			t.Fatalf("scope = %+v, want app-y/tenant-t", v)
+		}
+	})
+
+	t.Run("claimed foreign app: no tenant is imposed", func(t *testing.T) {
 		v, err := scopeFromPrincipal(principalWith(map[string]any{"app_id": "app-x"}), deps)
 		if err != nil {
 			t.Fatalf("scopeFromPrincipal: %v", err)
@@ -245,17 +263,24 @@ func TestScopeDefaultTenantAppliesOnlyInTheDefaultApp(t *testing.T) {
 		}
 	})
 
-	t.Run("claim app is the default app: the default tenant applies", func(t *testing.T) {
+	t.Run("claimed app equal to the config app: no tenant is imposed either", func(t *testing.T) {
 		v, err := scopeFromPrincipal(principalWith(map[string]any{"app_id": "app-y"}), deps)
 		if err != nil {
 			t.Fatalf("scopeFromPrincipal: %v", err)
 		}
-		if v.AppID != "app-y" || v.TenantID != "tenant-t" {
-			t.Fatalf("scope = %+v, want app-y/tenant-t", v)
+		if v.AppID != "app-y" || v.TenantID != "" {
+			t.Fatalf("scope = %+v, want app-y app-wide, not narrowed to tenant-t", v)
 		}
 	})
 
-	t.Run("claim app is foreign and claims a tenant: the claim stands", func(t *testing.T) {
+	t.Run("claimed app equal to the config app, no admin scope: refused", func(t *testing.T) {
+		v, err := scopeFromPrincipal(principalWithoutScopes(map[string]any{"app_id": "app-y"}), deps)
+		if !isPermissionDenied(err) {
+			t.Fatalf("err = %v (scope %+v), want PERMISSION_DENIED", err, v)
+		}
+	})
+
+	t.Run("claimed foreign app and a tenant claim: the claim stands", func(t *testing.T) {
 		v, err := scopeFromPrincipal(principalWith(map[string]any{"app_id": "app-x", "tenant_id": "tenant-a"}), deps)
 		if err != nil {
 			t.Fatalf("scopeFromPrincipal: %v", err)

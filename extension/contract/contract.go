@@ -82,10 +82,12 @@ type Deps struct {
 	// takes it. Empty means every session must bring its own app.
 	DefaultAppID string
 
-	// DefaultTenantID is the tenant a session takes when its claims carry
-	// neither "tenant_id" nor "org_id" and its resolved app is DefaultAppID.
-	// It is meaningless without DefaultAppID and Register refuses that
-	// combination. Empty leaves such a session app-wide.
+	// DefaultTenantID is the tenant a session takes when its app came from
+	// DefaultAppID, that is when its claims carry no "app_id" at all, and
+	// carry neither "tenant_id" nor "org_id". A session whose app came from a
+	// claim never takes it, even for the same app. It is meaningless without
+	// DefaultAppID and Register refuses that combination. Empty leaves such a
+	// session app-wide.
 	DefaultTenantID string
 
 	// Logger receives the underlying cause of every store error that reaches

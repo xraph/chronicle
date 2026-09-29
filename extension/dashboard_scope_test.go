@@ -430,10 +430,27 @@ func TestClaimedAppWithNoTenantNeedsTheAdminScope(t *testing.T) {
 		}
 		wantActions(t, got, all...)
 	})
-	t.Run("claimed app equal to the config app with a config tenant, no scopes: that tenant only", func(t *testing.T) {
+	t.Run("claimed app equal to the config app with a config tenant, no scopes: refused, not narrowed", func(t *testing.T) {
 		ext := registerTenantedExtension(t, forge.New(forge.WithAppName("t")),
 			extension.DashboardConfig{AppID: dashScopeApp, TenantID: "tenant-x"}, dashScopeApp)
-		got, err := actionsSeenByPrincipal(t, ext, claimedPrincipal(appClaim))
+		_, err := actionsSeenByPrincipal(t, ext, claimedPrincipal(appClaim))
+		if !errors.Is(err, fcontract.ErrPermissionDenied) {
+			t.Fatalf("err = %v, want PERMISSION_DENIED: a claimed app never takes the configured tenant", err)
+		}
+	})
+	t.Run("claimed app equal to the config app with a config tenant, with chronicle.admin: app-wide", func(t *testing.T) {
+		ext := registerTenantedExtension(t, forge.New(forge.WithAppName("t")),
+			extension.DashboardConfig{AppID: dashScopeApp, TenantID: "tenant-x"}, dashScopeApp)
+		got, err := actionsSeenByPrincipal(t, ext, claimedPrincipal(appClaim, "chronicle.admin"))
+		if err != nil {
+			t.Fatalf("events.list: %v", err)
+		}
+		wantActions(t, got, all...)
+	})
+	t.Run("config session with a config tenant: that tenant only", func(t *testing.T) {
+		ext := registerTenantedExtension(t, forge.New(forge.WithAppName("t")),
+			extension.DashboardConfig{AppID: dashScopeApp, TenantID: "tenant-x"}, dashScopeApp)
+		got, err := actionsSeenByPrincipal(t, ext, claimedPrincipal(nil))
 		if err != nil {
 			t.Fatalf("events.list: %v", err)
 		}

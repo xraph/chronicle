@@ -331,10 +331,18 @@ chronicle:
 The configured values are only a fallback for a session whose claims say nothing.
 A claim that is present but unreadable (empty, null, or not a string) is still
 refused, and a request with no signed-in user never takes either value. The
-tenant applies only inside the configured app, so a session that claims a
-different app is not narrowed to it, and `tenant_id` without `app_id` is refused
-at startup. Values with leading or trailing whitespace or a control character are
-refused at startup too, not trimmed.
+configured tenant applies to that session only, the one whose app came from
+`dashboard.app_id`. A session that claims its app never takes it, even for the
+same app, and `tenant_id` without `app_id` is refused at startup. Values with
+leading or trailing whitespace or a control character are refused at startup
+too, not trimmed.
+
+A session that claims an app but no tenant is not treated as an operator by
+default. An app-wide view over a claimed app needs the `chronicle.admin` scope,
+and without it the session is refused. The reason is a member who clears their
+active organisation: they arrive with an app and no tenant, and must not see
+every tenant. A session with a tenant claim needs no scope, and neither does the
+`dashboard.app_id` session.
 
 ## Configuration
 
