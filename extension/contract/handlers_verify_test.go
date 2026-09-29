@@ -927,14 +927,14 @@ func (s *verifyPolicyCountSpy) ListPolicies(context.Context, retention.ListPolic
 	return nil, nil
 }
 
-func verifySeedChain(t *testing.T, s store.Store) {
+func verifySeedChain(t *testing.T, s store.Store, tenantID string) {
 	t.Helper()
 	c, err := chronicle.New(chronicle.WithStore(store.NewAdapter(s)))
 	if err != nil {
 		t.Fatalf("chronicle.New: %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		e := &audit.Event{AppID: "app-1", TenantID: "tenant-a", Action: "test.action", Resource: "res", Category: "auth"}
+		e := &audit.Event{AppID: "app-1", TenantID: tenantID, Action: "test.action", Resource: "res", Category: "auth"}
 		if err := c.Record(context.Background(), e); err != nil {
 			t.Fatalf("record event %d: %v", i, err)
 		}
@@ -953,39 +953,53 @@ func verifySavePolicy(t *testing.T, s store.Store, appID, tenantID, category str
 }
 
 // Retention purges read as gaps and tampering, and Chronicle cannot yet tell
-// them from deletion, so the report says how many policies the viewer's
-// scope has. Counted over the viewer's own scope only: a sibling tenant's,
-// an app-level and another app's policy do not count for a tenant viewer.
-func TestVerifyRunCountsTheViewersRetentionPolicies(t *testing.T) {
+// them from deletion, so the report says how many policies can purge the
+// chain it verified. A chain is one (app, tenant). An app-level policy
+// (empty tenant) purges every tenant's chain in its app; a tenant policy
+// purges only its own tenant's. So a tenant chain counts its own tenant's
+// policies plus the app-level ones, an app-wide chain counts only the
+// app-level ones, and sibling-tenant and other-app policies count for
+// neither. Counting the viewer's scope instead gets both chains wrong.
+func TestVerifyRunCountsThePoliciesThatCanPurgeTheChain(t *testing.T) {
 	ctx := context.Background()
 	s := newSQLiteStore(t)
-	verifySeedChain(t, s)
-	viewer := principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"})
+	verifySeedChain(t, s, "tenant-a")
+	verifySeedChain(t, s, "")
+	tenantChain := principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"})
+	appChain := principalWith(map[string]any{"app_id": "app-1"})
 	h := verifyRunHandler(Deps{Store: s})
 
-	out, err := h(ctx, VerifyInput{}, viewer)
-	if err != nil {
-		t.Fatalf("verify.run: %v", err)
-	}
-	if out.Report == nil || out.Report.RetentionPolicies != 0 {
-		t.Fatalf("report = %+v, want retentionPolicies 0 with none configured", out.Report)
+	count := func(viewer fcontract.Principal) int {
+		t.Helper()
+		out, err := h(ctx, VerifyInput{}, viewer)
+		if err != nil {
+			t.Fatalf("verify.run: %v", err)
+		}
+		if out.Report == nil || !out.Report.Valid || out.Report.Verified != 3 {
+			t.Fatalf("report = %+v, want a valid chain of 3", out.Report)
+		}
+		return out.Report.RetentionPolicies
 	}
 
-	verifySavePolicy(t, s, "app-1", "tenant-a", "auth")
-	verifySavePolicy(t, s, "app-1", "tenant-a", "billing")
-	verifySavePolicy(t, s, "app-1", "tenant-b", "auth")
-	verifySavePolicy(t, s, "app-1", "", "auth")
-	verifySavePolicy(t, s, "app-2", "tenant-a", "auth")
+	if got := count(tenantChain); got != 0 {
+		t.Fatalf("tenant chain with no policies: retentionPolicies = %d, want 0", got)
+	}
+	if got := count(appChain); got != 0 {
+		t.Fatalf("app-wide chain with no policies: retentionPolicies = %d, want 0", got)
+	}
 
-	out, err = h(ctx, VerifyInput{}, viewer)
-	if err != nil {
-		t.Fatalf("verify.run: %v", err)
+	verifySavePolicy(t, s, "app-1", "tenant-a", "auth")    // tenant chain only
+	verifySavePolicy(t, s, "app-1", "tenant-a", "billing") // tenant chain only
+	verifySavePolicy(t, s, "app-1", "", "auth")            // both chains
+	verifySavePolicy(t, s, "app-1", "tenant-b", "auth")    // neither
+	verifySavePolicy(t, s, "app-2", "", "auth")            // neither
+	verifySavePolicy(t, s, "app-2", "tenant-a", "auth")    // neither
+
+	if got := count(tenantChain); got != 3 {
+		t.Fatalf("tenant chain: retentionPolicies = %d, want 3 (two of tenant-a's, one app-level)", got)
 	}
-	if out.Report == nil || out.Report.RetentionPolicies != 2 {
-		t.Fatalf("report = %+v, want retentionPolicies 2, tenant-a's own", out.Report)
-	}
-	if !out.Report.Valid || out.Report.Verified != 3 {
-		t.Fatalf("report = %+v, want a valid chain of 3", out.Report)
+	if got := count(appChain); got != 1 {
+		t.Fatalf("app-wide chain: retentionPolicies = %d, want 1 (the app-level policy only)", got)
 	}
 }
 
@@ -993,7 +1007,7 @@ func TestVerifyRunCountsTheViewersRetentionPolicies(t *testing.T) {
 // is still true without the number, which answers -1 for "unknown".
 func TestVerifyRunWithAnUncountablePolicyListSaysUnknown(t *testing.T) {
 	s := newSQLiteStore(t)
-	verifySeedChain(t, s)
+	verifySeedChain(t, s, "tenant-a")
 
 	out, err := verifyRunHandler(Deps{Store: verifyPoliciesFailStore{Store: s}})(context.Background(), VerifyInput{},
 		principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"}))

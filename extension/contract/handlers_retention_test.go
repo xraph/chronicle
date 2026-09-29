@@ -987,15 +987,17 @@ func TestRetentionArchivesListsOnlyTheViewersScopeAndPages(t *testing.T) {
 }
 
 // store/redis keys a policy as app:tenant:category, and a save that finds a
-// different policy under that key deletes it. With free-text categories,
-// tenant "t" creating "x:auth" lands on tenant "t:x"'s "auth" key. So a
-// category is "*" or a plain identifier, on create and on update, whatever
-// the store does with it.
-func TestRetentionSavePolicyRefusesACategoryThatIsNotAPlainIdentifier(t *testing.T) {
-	tooLong := "a" + strings.Repeat("b", 64) // 65 characters
+// different policy under that key deletes it. Tenant "t" creating "x:auth"
+// lands on tenant "t:x"'s "auth" key, so a new category may not carry ":".
+// Control characters and edge whitespace are refused too, and so is a
+// category over 64 characters.
+func TestRetentionSavePolicyCreateRefusesAnUnsafeCategory(t *testing.T) {
 	viewer := map[string]any{"app_id": "app-1", "tenant_id": "t"}
-	for _, cat := range []string{"x:auth", "a|b", "", tooLong, " auth", "-auth", "a/b", "**"} {
-		t.Run("create "+cat, func(t *testing.T) {
+	for _, cat := range []string{
+		"x:auth", "a:b", ":auth", "x:auth\n", "", strings.Repeat("a", 65), strings.Repeat("é", 65),
+		" auth", "auth ", "a\tb", "a\x7fb", "\xff",
+	} {
+		t.Run(fmt.Sprintf("%q", cat), func(t *testing.T) {
 			spy := &retentionPolicySpy{}
 			_, err := retentionSavePolicyHandler(Deps{Store: spy})(context.Background(),
 				SavePolicyInput{Category: retentionStr(cat), Duration: retentionStr("720h")}, principalWith(viewer))
@@ -1006,24 +1008,16 @@ func TestRetentionSavePolicyRefusesACategoryThatIsNotAPlainIdentifier(t *testing
 				t.Fatalf("SavePolicy was called with category %q", cat)
 			}
 		})
-		t.Run("update "+cat, func(t *testing.T) {
-			existing := retentionPolicy("app-1", "t", "auth", 720*time.Hour)
-			spy := &retentionPolicySpy{existing: existing}
-			_, err := retentionSavePolicyHandler(Deps{Store: spy})(context.Background(),
-				SavePolicyInput{ID: retentionStr(existing.ID.String()), Category: retentionStr(cat)}, principalWith(viewer))
-			if got := retentionErrCode(t, err); got != fcontract.CodeBadRequest {
-				t.Fatalf("category %q: code = %s, want %s", cat, got, fcontract.CodeBadRequest)
-			}
-			if spy.gets != 0 || spy.saveCalls != 0 {
-				t.Fatalf("the store was touched for category %q", cat)
-			}
-		})
 	}
 }
 
-func TestRetentionSavePolicyAcceptsPlainCategories(t *testing.T) {
-	longest := "a" + strings.Repeat("b", 63) // 64 characters, the limit
-	for _, cat := range []string{"*", "auth", "user.login", "billing-v2", "under_score", "9lives", longest} {
+// Anything without ":" and without control characters or edge whitespace
+// cannot collide, and operators use slashes, spaces and non-ASCII names.
+func TestRetentionSavePolicyCreateAcceptsCategoriesOperatorsUse(t *testing.T) {
+	for _, cat := range []string{
+		"*", "auth", "user.login", "billing-v2", "auth/session", "user login", "a|b",
+		"Überprüfung", "支払い", strings.Repeat("a", 64), strings.Repeat("é", 64),
+	} {
 		t.Run(cat, func(t *testing.T) {
 			s := newSQLiteStore(t)
 			out, err := retentionSavePolicyHandler(Deps{Store: s})(context.Background(),
@@ -1035,6 +1029,43 @@ func TestRetentionSavePolicyAcceptsPlainCategories(t *testing.T) {
 				t.Fatalf("stored category %q, want %q", out.Category, cat)
 			}
 		})
+	}
+}
+
+// A legacy policy created through the HTTP API can carry a category the
+// create rule now refuses. Resending it unchanged on an update must still
+// work, since an unchanged category writes no new key; changing it is still
+// refused.
+func TestRetentionSavePolicyUpdateKeepsALegacyCategory(t *testing.T) {
+	s := newSQLiteStore(t)
+	legacy := retentionSavePolicyIn(t, s, retentionPolicy("app-1", "tenant-a", "user:login", 720*time.Hour))
+	h := retentionSavePolicyHandler(Deps{Store: s})
+
+	out, err := h(context.Background(),
+		SavePolicyInput{ID: retentionStr(legacy.ID.String()), Category: retentionStr("user:login"), Duration: retentionStr("1440h")},
+		principalWith(retentionApp1TenantA))
+	if err != nil {
+		t.Fatalf("updating a legacy policy's duration: %v", err)
+	}
+	if out.Category != "user:login" || out.Duration != "1440h0m0s" {
+		t.Fatalf("updated = %+v, want user:login at 1440h", out)
+	}
+
+	if _, err = h(context.Background(),
+		SavePolicyInput{ID: retentionStr(legacy.ID.String()), Duration: retentionStr("48h")},
+		principalWith(retentionApp1TenantA)); err != nil {
+		t.Fatalf("updating a legacy policy without naming its category: %v", err)
+	}
+
+	_, err = h(context.Background(),
+		SavePolicyInput{ID: retentionStr(legacy.ID.String()), Category: retentionStr("user-login")},
+		principalWith(retentionApp1TenantA))
+	if got := retentionErrCode(t, err); got != fcontract.CodeBadRequest {
+		t.Fatalf("changing the category: code = %s, want %s", got, fcontract.CodeBadRequest)
+	}
+	got, _ := s.GetPolicy(context.Background(), legacy.ID)
+	if got.Category != "user:login" || got.Duration != 48*time.Hour {
+		t.Fatalf("stored = %+v, want user:login at 48h", got)
 	}
 }
 

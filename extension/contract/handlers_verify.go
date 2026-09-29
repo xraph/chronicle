@@ -93,16 +93,24 @@ type VerifyReport struct {
 	Coverage    []CoverageSpan     `json:"coverage,omitempty"`
 	Checkpoints []CheckpointResult `json:"checkpoints,omitempty"`
 
-	// RetentionPolicies is how many retention policies the viewer's scope
-	// has configured. A non-zero value means gaps and tampered sequences in
-	// this report may be authorised retention purges, which Chronicle
-	// cannot currently distinguish from deletion: a purge removes events
-	// from the middle of the chain, so the purged sequences read as gaps
-	// and the events after them as tampered. It counts the policies
-	// configured NOW, so purges made under policies that have since been
-	// deleted are not reflected. -1 means unknown: listing the policies
-	// failed, and that is not allowed to fail the verification itself.
-	// No omitempty, because zero is an answer the page needs.
+	// RetentionPolicies is how many retention policies can purge the chain
+	// this report verified. A non-zero value means gaps and tampered
+	// sequences in this report may be authorised retention purges, which
+	// Chronicle cannot currently distinguish from deletion: a purge removes
+	// events from the middle of the chain, so the purged sequences read as
+	// gaps and the events after them as tampered.
+	//
+	// A chain is one (app, tenant). A policy purges it when the policy's
+	// app is the chain's app and the policy's tenant is either empty (the
+	// stores apply an app-level policy to every tenant in the app) or the
+	// chain's own tenant. A policy with no app at all, which only trusted
+	// in-process code can create, is not counted.
+	//
+	// It counts the policies configured NOW, so purges made under policies
+	// that have since been deleted are not reflected. -1 means unknown:
+	// listing the policies failed, and that is not allowed to fail the
+	// verification itself. No omitempty, because zero is an answer the
+	// page needs.
 	RetentionPolicies int `json:"retentionPolicies"`
 }
 
@@ -335,20 +343,23 @@ func verifyRunHandler(deps Deps) func(context.Context, VerifyInput, fcontract.Pr
 
 		out := VerifyResponse{Report: projectReport(report)}
 		if out.Report != nil {
-			out.Report.RetentionPolicies = verifyRetentionPolicyCount(ctx, deps, v)
+			out.Report.RetentionPolicies = verifyRetentionPolicyCount(ctx, deps, st.AppID, st.TenantID)
 		}
 		return out, nil
 	}
 }
 
-// verifyRetentionPolicyCount counts the viewer's retention policies for
-// VerifyReport.RetentionPolicies, over the same scope retention.policies
-// lists. A store error is logged and answered as -1 ("unknown"): the
-// report is still true without this number, and failing it would hide a
-// verification result over an annotation.
-func verifyRetentionPolicyCount(ctx context.Context, deps Deps, v viewScope) int {
+// verifyRetentionPolicyCount counts the policies that can purge the chain
+// (appID, tenantID), for VerifyReport.RetentionPolicies. It lists the whole
+// app, because an app-level policy (empty TenantID) covers every tenant's
+// chain and a tenant viewer's own scope would miss it; then it keeps the
+// app-level policies and the chain's own tenant's. A sibling tenant's policy
+// never touches this chain, so counting it would read a real deletion as a
+// possible purge. A store error is logged and answered as -1 ("unknown"):
+// the report is still true without this number.
+func verifyRetentionPolicyCount(ctx context.Context, deps Deps, appID, tenantID string) int {
 	policies, err := deps.Store.ListPolicies(ctx, retention.ListPoliciesOpts{
-		Scope: v.retentionScope(),
+		Scope: retention.Scope{AppID: appID},
 		Limit: -1,
 	})
 	if err != nil {
@@ -359,7 +370,16 @@ func verifyRetentionPolicyCount(ctx context.Context, deps Deps, v viewScope) int
 		)
 		return -1
 	}
-	return len(policies)
+
+	n := 0
+	for _, p := range policies {
+		// AppID is checked again here rather than trusted to the listing:
+		// the stores read an empty AppID as every app.
+		if p != nil && p.AppID == appID && (p.TenantID == "" || p.TenantID == tenantID) {
+			n++
+		}
+	}
+	return n
 }
 
 func verifyEventHandler(deps Deps) func(context.Context, VerifyEventInput, fcontract.Principal) (VerifyEventResponse, error) {

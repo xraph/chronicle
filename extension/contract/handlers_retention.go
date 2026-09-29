@@ -2,9 +2,10 @@ package contract
 
 import (
 	"context"
-	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	fcontract "github.com/xraph/forge/extensions/dashboard/contract"
 	log "github.com/xraph/go-utils/log"
@@ -252,21 +253,39 @@ func projectArchive(a *retention.Archive) ArchiveSummary {
 	}
 }
 
-// policyCategoryPattern is what a policy category may look like, apart from
-// "*". The stores build lookup keys out of the category, and store/redis
-// joins app, tenant and category with ":" into one key. A category carrying
-// a separator could then name another tenant's key: tenant "t" creating
-// category "x:auth" lands on the key of tenant "t:x"'s "auth" policy, and
-// redis deletes the policy it finds there. Refusing separators and anything
-// else outside a plain identifier closes that at the contract, whatever a
-// store does with the string.
-var policyCategoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+// maxPolicyCategoryLen bounds a policy category, in characters.
+const maxPolicyCategoryLen = 64
 
-// validPolicyCategory reports whether c may be stored as a policy category:
-// exactly "*" (every category), or a plain identifier of at most 64
-// characters. It is checked on create and on update.
+// validPolicyCategory reports whether c may be used as the category of a new
+// policy: exactly "*" (every category), or 1 to 64 characters with no ":",
+// no control characters, and no leading or trailing whitespace.
+//
+// ":" is the one character that matters for safety. store/redis joins app,
+// tenant and category with ":" into one lookup key, and deletes whatever
+// different policy it finds under that key, so a category carrying ":" can
+// name another tenant's key: tenant "t" creating "x:auth" lands on tenant
+// "t:x"'s "auth" key and deletes that policy. Control characters and edge
+// whitespace are refused because a category that looks like another one on
+// the page is its own trap. Everything else operators really use, such as
+// "auth/session", "user login" or non-ASCII names, is allowed.
+//
+// It is checked on create only. An update may not change the category at
+// all, and an unchanged category writes no new key.
 func validPolicyCategory(c string) bool {
-	return c == "*" || policyCategoryPattern.MatchString(c)
+	if c == "*" {
+		return true
+	}
+	if c == "" || !utf8.ValidString(c) || utf8.RuneCountInString(c) > maxPolicyCategoryLen {
+		return false
+	}
+	for _, r := range c {
+		if r == ':' || unicode.Is(unicode.Cc, r) {
+			return false
+		}
+	}
+	first, _ := utf8.DecodeRuneInString(c)
+	last, _ := utf8.DecodeLastRuneInString(c)
+	return !unicode.IsSpace(first) && !unicode.IsSpace(last)
 }
 
 // errPolicyNotFound is the answer for a policy ID that does not parse, does
@@ -370,15 +389,10 @@ func retentionSavePolicyHandler(deps Deps) func(context.Context, SavePolicyInput
 
 		var category *string
 		if in.Category != nil {
-			// Checked exactly as supplied, with no trimming, so what is
-			// validated is what is stored.
+			// Taken exactly as supplied, with no trimming. createPolicy
+			// validates it; updatePolicy only allows it to equal the stored
+			// category.
 			c := *in.Category
-			if !validPolicyCategory(c) {
-				return PolicySummary{}, &fcontract.Error{
-					Code:    fcontract.CodeBadRequest,
-					Message: `category must be "*" or 1 to 64 letters, digits, '.', '_' or '-', starting with a letter or digit`,
-				}
-			}
 			category = &c
 		}
 
@@ -454,6 +468,12 @@ func createPolicy(
 	}
 	if duration == nil {
 		return PolicySummary{}, &fcontract.Error{Code: fcontract.CodeBadRequest, Message: "duration is required"}
+	}
+	if !validPolicyCategory(*category) {
+		return PolicySummary{}, &fcontract.Error{
+			Code:    fcontract.CodeBadRequest,
+			Message: `category must be "*" or 1 to 64 characters with no ':', no control characters, and no leading or trailing spaces`,
+		}
 	}
 
 	existing, err := listViewerPolicies(ctx, deps, v)
