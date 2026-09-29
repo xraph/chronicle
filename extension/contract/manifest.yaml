@@ -6,12 +6,20 @@ contributor:
     preferred: v1
   capabilities: [chronicle.read, chronicle.write]
 
-# Each task declares only the intents it registers, so the parity test in
-# manifest_test.go passes at every commit. Every query is capability: read
-# and every command capability: write; loader.Validate enforces that pairing.
+# Every query is capability: read and every command capability: write;
+# loader.Validate enforces that pairing.
+#
+# verify.run and verify.event are queries with no side effects, but a verdict
+# is only true of the rows at the moment it ran, so the client never caches
+# them. As a second line of defence they are also listed under every command
+# that can change what they would say: a checkpoint, a policy change and a
+# purge. The other reads are cached, and each command lists what it changes.
 intents:
-  # The viewer's own chain. There is exactly one per app and tenant, so this
-  # takes no input: the stream resolves from scope.
+  # One chain. There is exactly one per app and tenant, so with no input it
+  # is the viewer's own, resolved from scope. An optional streamId names
+  # another chain the viewer owns, which is how an app-wide viewer reaches a
+  # tenant's chain. verify.run, checkpoints.list and checkpoints.take take the
+  # same optional streamId.
   - { name: streams.mine, kind: query, version: 1, capability: read }
   # Every chain inside the viewer's own app (or own tenant), for operators
   # who look after more than one tenant. It never crosses an app boundary.
@@ -23,27 +31,31 @@ intents:
   # moment it ran: the same range or the same event can be rewritten a
   # moment later, and a cached "valid" would keep saying so after the row no
   # longer is. They are lazy on the client (an explicit run, not a mount-time
-  # fetch), which is why plan B adds an `enabled` option to useQuery rather
-  # than making these commands.
+  # fetch), so the client's useQuery needs an `enabled` option, and they stay
+  # queries rather than becoming commands.
   - { name: verify.run,   kind: query, version: 1, capability: read }
   - { name: verify.event, kind: query, version: 1, capability: read }
-  # The viewer's own chain's signed checkpoints. checkpoints.list carries no
-  # total -- see CheckpointListResponse's doc in handlers_checkpoints.go --
-  # only hasMore, computed by fetching one row past the requested page.
+  # One chain's signed checkpoints (the viewer's own, or the chain named by
+  # streamId). checkpoints.list carries no total -- see
+  # CheckpointListResponse's doc in handlers_checkpoints.go -- only hasMore,
+  # computed by fetching one row past the requested page.
   - { name: checkpoints.list,   kind: query, version: 1, capability: read }
   - { name: checkpoints.detail, kind: query, version: 1, capability: read }
   # Write, not admin: taking a checkpoint creates a record and destroys
-  # nothing. It is the one write that makes future verification stronger. A
-  # new checkpoint changes what a subsequent verification can prove, so
-  # verify.run is invalidated alongside the obvious two: a cached report
-  # taken before it is stale in a way the operator would otherwise not see.
+  # nothing. It is the one write that makes future verification stronger. It
+  # needs a write grant (the manifest's capability is not checked against the
+  # user by the transport), and either scope satisfies it. A new checkpoint
+  # is the latest checkpoint that streams.mine and streams.list report, and
+  # changes what a subsequent verification can prove, so verify.run is
+  # invalidated too.
   - { name: checkpoints.take, kind: command, version: 1, capability: write,
-      invalidates: [checkpoints.list, streams.mine, verify.run] }
+      requires: { any: ["scope:chronicle.write", "scope:chronicle.admin"] },
+      invalidates: [checkpoints.list, streams.mine, streams.list, verify.run] }
   # The audit log's search surface. events.byUser is its own intent rather
   # than reusing events.list with a userId filter: it is backed by
-  # Store.Query with UserID set (see RULING 1 in handlers_events.go), not by
-  # Store.ByUser, whose Total is only the returned page's length on every
-  # backend and would misstate the count on the wire.
+  # Store.Query with UserID set, not by Store.ByUser, whose Total is only the
+  # returned page's length on every backend and would misstate the count on
+  # the wire.
   - { name: events.list,      kind: query, version: 1, capability: read }
   - { name: events.detail,    kind: query, version: 1, capability: read }
   - { name: events.aggregate, kind: query, version: 1, capability: read }
@@ -76,14 +88,18 @@ intents:
   # one, purges history without anyone calling retention.enforce. That makes
   # it as destructive in effect as enforce, so it carries the admin scope
   # too. A duration of zero or less is refused outright.
+  # verify.run is invalidated because its report counts the policies that can
+  # purge the chain.
   - { name: retention.savePolicy,   kind: command, version: 1, capability: write,
       requires: { all: ["scope:chronicle.admin"] },
-      invalidates: [retention.policies, retention.policyDetail, retention.preview] }
+      invalidates: [retention.policies, retention.policyDetail, retention.preview,
+                    verify.run] }
   # Deleting a policy switches off that category's retention, so it carries
   # the explicit admin scope on top of write.
   - { name: retention.deletePolicy, kind: command, version: 1, capability: write,
       requires: { all: ["scope:chronicle.admin"] },
-      invalidates: [retention.policies, retention.policyDetail, retention.preview] }
+      invalidates: [retention.policies, retention.policyDetail, retention.preview,
+                    verify.run] }
   # What enforcement would purge if it ran now, for the confirm dialog in
   # front of retention.enforce. It loads at most 10,000 events per policy
   # and says when it was capped. Its counts are eligible events; one enforce
@@ -100,20 +116,24 @@ intents:
       requires: { all: ["scope:chronicle.admin"] },
       invalidates: [retention.policies, retention.archives, retention.preview,
                     events.list, events.detail, events.aggregate, events.byUser,
-                    overview.stats, streams.mine, verify.run, verify.event,
-                    erasures.preview] }
+                    overview.stats, verify.run, verify.event, erasures.preview] }
   - { name: retention.archives,     kind: query, version: 1, capability: read }
   # Compliance reports: SOC2, HIPAA and EU AI Act, plus custom ones, the
   # documents that go to an auditor. Every intent is confined to the viewer's
   # own app and tenant, and no request carries an appId or tenantId. The
-  # generate commands persist through the engine itself and never save twice.
+  # generate commands persist through the engine itself and never save twice,
+  # and each needs a write grant: they store up to 20 sections of embedded
+  # events under the caller's name, and the transport does not check a
+  # command's capability against the user.
   # reports.detail's verification is null when a report carries none, which
   # means unverified and never that verification passed.
   - { name: reports.list,           kind: query,   version: 1, capability: read }
   - { name: reports.detail,         kind: query,   version: 1, capability: read }
   - { name: reports.generate,       kind: command, version: 1, capability: write,
+      requires: { any: ["scope:chronicle.write", "scope:chronicle.admin"] },
       invalidates: [reports.list] }
   - { name: reports.generateCustom, kind: command, version: 1, capability: write,
+      requires: { any: ["scope:chronicle.write", "scope:chronicle.admin"] },
       invalidates: [reports.list] }
   # A query: it renders a stored report and writes nothing. The client saves
   # the returned content as a file.

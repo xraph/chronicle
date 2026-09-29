@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
+	dashauth "github.com/xraph/forge/extensions/dashboard/auth"
 	fcontract "github.com/xraph/forge/extensions/dashboard/contract"
 	"github.com/xraph/forge/extensions/dashboard/contract/loader"
 )
@@ -76,6 +78,85 @@ func TestEveryCommandDeclaresInvalidations(t *testing.T) {
 			t.Errorf("command %q declares no invalidates", in.Name)
 		}
 	}
+}
+
+// The transport never checks a command's capability against the user: it runs
+// the intent's requires predicate and nothing else. So a command with no
+// requires is open to every principal that can reach the dashboard, and for a
+// command that writes that is a hole. Every command must say who may run it.
+func TestEveryCommandRequiresAGrant(t *testing.T) {
+	m, err := loader.Load(bytes.NewReader(manifestYAML), "manifest.yaml")
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	for _, in := range m.Intents {
+		if in.Kind != fcontract.IntentKindCommand {
+			continue
+		}
+		p := in.Requires
+		if len(p.All) == 0 && len(p.Any) == 0 && p.Warden == "" {
+			t.Errorf("command %q declares no requires, so any principal may run it", in.Name)
+		}
+	}
+}
+
+// The commands that create records but destroy nothing accept either write
+// or admin, and refuse a principal holding neither. Loading the manifest and
+// evaluating the predicate is what proves the yaml key is one the loader
+// reads: a misspelt key would load as an empty predicate and allow everyone.
+func TestWriteCommandsAcceptEitherWriteOrAdminAndNobodyElse(t *testing.T) {
+	m, err := loader.Load(bytes.NewReader(manifestYAML), "manifest.yaml")
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	intents := map[string]fcontract.Intent{}
+	for _, in := range m.Intents {
+		intents[in.Name] = in
+	}
+
+	user := func(scopes ...string) *dashauth.UserInfo {
+		return &dashauth.UserInfo{Subject: "operator-1", Scopes: scopes}
+	}
+	for _, name := range []string{"reports.generate", "reports.generateCustom", "checkpoints.take"} {
+		p := intents[name].Requires
+		// UserInfo.Scopes holds the scope names the predicate's "scope:" token
+		// is matched against, without the token's own prefix.
+		if !p.Allow(user("chronicle.write"), nil) {
+			t.Errorf("%s refuses a principal with chronicle.write", name)
+		}
+		if !p.Allow(user("chronicle.admin"), nil) {
+			t.Errorf("%s refuses a principal with chronicle.admin", name)
+		}
+		if p.Allow(user(), nil) {
+			t.Errorf("%s allows a principal with no scopes", name)
+		}
+		if p.Allow(user("chronicle.read"), nil) {
+			t.Errorf("%s allows a read-only principal", name)
+		}
+		if p.Allow(nil, nil) {
+			t.Errorf("%s allows an anonymous principal", name)
+		}
+	}
+}
+
+// A checkpoint is the latest checkpoint that both stream intents report, and
+// changes what verification can prove.
+func TestCheckpointsTakeDeclaresEverythingItChanges(t *testing.T) {
+	m, err := loader.Load(bytes.NewReader(manifestYAML), "manifest.yaml")
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	for _, in := range m.Intents {
+		if in.Name != "checkpoints.take" {
+			continue
+		}
+		want := []string{"checkpoints.list", "streams.mine", "streams.list", "verify.run"}
+		if !reflect.DeepEqual(in.Invalidates, want) {
+			t.Fatalf("checkpoints.take invalidates %v, want %v", in.Invalidates, want)
+		}
+		return
+	}
+	t.Fatal("checkpoints.take is not in the manifest")
 }
 
 // The contributor name is the join key to the React plugin. A typo here

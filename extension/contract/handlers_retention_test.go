@@ -1322,8 +1322,7 @@ func TestRetentionDestructiveCommandsRequireTheAdminScope(t *testing.T) {
 	wantInvalidates := []string{
 		"retention.policies", "retention.archives", "retention.preview",
 		"events.list", "events.detail", "events.aggregate", "events.byUser",
-		"overview.stats", "streams.mine", "verify.run", "verify.event",
-		"erasures.preview",
+		"overview.stats", "verify.run", "verify.event", "erasures.preview",
 	}
 	if got := intents["retention.enforce"].Invalidates; !reflect.DeepEqual(got, wantInvalidates) {
 		t.Errorf("retention.enforce invalidates %v, want %v", got, wantInvalidates)
@@ -1339,10 +1338,11 @@ func TestRetentionSavePolicyRequiresTheAdminScope(t *testing.T) {
 }
 
 // Changing or removing a policy changes the policy list, the policy's own
-// detail, and what a preview would show.
+// detail, what a preview would show, and the count of policies that verify.run
+// reports for the chain.
 func TestRetentionPolicyCommandsDeclareTheirInvalidations(t *testing.T) {
 	intents := retentionManifestIntents(t)
-	want := []string{"retention.policies", "retention.policyDetail", "retention.preview"}
+	want := []string{"retention.policies", "retention.policyDetail", "retention.preview", "verify.run"}
 	for _, name := range []string{"retention.savePolicy", "retention.deletePolicy"} {
 		if got := intents[name].Invalidates; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s invalidates %v, want %v", name, got, want)

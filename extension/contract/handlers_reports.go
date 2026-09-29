@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	fcontract "github.com/xraph/forge/extensions/dashboard/contract"
 	log "github.com/xraph/go-utils/log"
@@ -32,6 +33,17 @@ const defaultReportPeriodDays = 90
 // operator build a report of arbitrary size in a single call. The fixed
 // frameworks have five or six sections; this leaves generous room above that.
 const maxCustomReportSections = 20
+
+// maxCustomReportTitleLen bounds a custom report's title, in characters. The
+// title is stored with the report and shown in every list of them, so an
+// unbounded one is caller-chosen storage.
+const maxCustomReportTitleLen = 200
+
+// maxCustomSectionFilters bounds each of a section's filter lists
+// (categories, actions and severity) to this many values. Each value widens
+// the section's query, and a list of thousands is a request built to be slow,
+// not a filter anybody wrote by hand.
+const maxCustomSectionFilters = 50
 
 // Report types accepted by reports.generate, matched exactly. A whitelist
 // that quietly normalised case is one somebody later widens.
@@ -502,6 +514,10 @@ func reportsGenerateCustomHandler(deps Deps) func(context.Context, GenerateCusto
 		if strings.TrimSpace(in.Title) == "" {
 			return GenerateReportResponse{}, reportBadRequest("title is required")
 		}
+		if utf8.RuneCountInString(in.Title) > maxCustomReportTitleLen {
+			return GenerateReportResponse{}, reportBadRequest(
+				fmt.Sprintf("title can be at most %d characters", maxCustomReportTitleLen))
+		}
 		if len(in.Sections) == 0 {
 			return GenerateReportResponse{}, reportBadRequest("at least one section is required")
 		}
@@ -513,6 +529,15 @@ func reportsGenerateCustomHandler(deps Deps) func(context.Context, GenerateCusto
 		for i, s := range in.Sections {
 			if strings.TrimSpace(s.Title) == "" {
 				return GenerateReportResponse{}, reportBadRequest(fmt.Sprintf("section %d needs a title", i+1))
+			}
+			for _, f := range []struct {
+				name   string
+				values []string
+			}{{"categories", s.Categories}, {"actions", s.Actions}, {"severity", s.Severity}} {
+				if len(f.values) > maxCustomSectionFilters {
+					return GenerateReportResponse{}, reportBadRequest(fmt.Sprintf(
+						"section %d can filter on at most %d %s", i+1, maxCustomSectionFilters, f.name))
+				}
 			}
 			sections = append(sections, compliance.CustomSection{
 				Title:      s.Title,
