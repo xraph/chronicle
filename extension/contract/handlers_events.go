@@ -227,7 +227,7 @@ func badGroupByError(err error) error {
 
 func eventsListHandler(deps Deps) func(context.Context, EventListInput, fcontract.Principal) (EventListResponse, error) {
 	return func(ctx context.Context, in EventListInput, p fcontract.Principal) (EventListResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return EventListResponse{}, err
 		}
@@ -292,7 +292,7 @@ func eventsListHandler(deps Deps) func(context.Context, EventListInput, fcontrac
 
 func eventsDetailHandler(deps Deps) func(context.Context, GetEventInput, fcontract.Principal) (EventDetail, error) {
 	return func(ctx context.Context, in GetEventInput, p fcontract.Principal) (EventDetail, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return EventDetail{}, err
 		}
@@ -342,7 +342,7 @@ func eventsDetailHandler(deps Deps) func(context.Context, GetEventInput, fcontra
 // instead, before the store ever sees the request.
 func eventsAggregateHandler(deps Deps) func(context.Context, AggregateInput, fcontract.Principal) (AggregateResponse, error) {
 	return func(ctx context.Context, in AggregateInput, p fcontract.Principal) (AggregateResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return AggregateResponse{}, err
 		}
@@ -399,7 +399,7 @@ func eventsAggregateHandler(deps Deps) func(context.Context, AggregateInput, fco
 // this goes through Store.Query rather than Store.ByUser.
 func eventsByUserHandler(deps Deps) func(context.Context, EventsByUserInput, fcontract.Principal) (EventListResponse, error) {
 	return func(ctx context.Context, in EventsByUserInput, p fcontract.Principal) (EventListResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return EventListResponse{}, err
 		}

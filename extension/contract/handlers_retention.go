@@ -414,7 +414,7 @@ func parsePolicyDuration(s string) (time.Duration, error) {
 
 func retentionPoliciesHandler(deps Deps) func(context.Context, struct{}, fcontract.Principal) (PolicyListResponse, error) {
 	return func(ctx context.Context, _ struct{}, p fcontract.Principal) (PolicyListResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return PolicyListResponse{}, err
 		}
@@ -442,7 +442,7 @@ func retentionPoliciesHandler(deps Deps) func(context.Context, struct{}, fcontra
 
 func retentionPolicyDetailHandler(deps Deps) func(context.Context, GetPolicyInput, fcontract.Principal) (PolicySummary, error) {
 	return func(ctx context.Context, in GetPolicyInput, p fcontract.Principal) (PolicySummary, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return PolicySummary{}, err
 		}
@@ -457,7 +457,7 @@ func retentionPolicyDetailHandler(deps Deps) func(context.Context, GetPolicyInpu
 
 func retentionSavePolicyHandler(deps Deps) func(context.Context, SavePolicyInput, fcontract.Principal) (PolicySummary, error) {
 	return func(ctx context.Context, in SavePolicyInput, p fcontract.Principal) (PolicySummary, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return PolicySummary{}, err
 		}
@@ -589,7 +589,7 @@ func createPolicy(
 
 func retentionDeletePolicyHandler(deps Deps) func(context.Context, DeletePolicyInput, fcontract.Principal) (DeletePolicyResponse, error) {
 	return func(ctx context.Context, in DeletePolicyInput, p fcontract.Principal) (DeletePolicyResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return DeletePolicyResponse{}, err
 		}
@@ -612,7 +612,7 @@ func retentionDeletePolicyHandler(deps Deps) func(context.Context, DeletePolicyI
 
 func retentionPreviewHandler(deps Deps) func(context.Context, struct{}, fcontract.Principal) (RetentionPreviewResponse, error) {
 	return func(ctx context.Context, _ struct{}, p fcontract.Principal) (RetentionPreviewResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return RetentionPreviewResponse{}, err
 		}
@@ -675,7 +675,7 @@ func retentionPreviewHandler(deps Deps) func(context.Context, struct{}, fcontrac
 
 func retentionEnforceHandler(deps Deps) func(context.Context, struct{}, fcontract.Principal) (EnforceResponse, error) {
 	return func(ctx context.Context, _ struct{}, p fcontract.Principal) (EnforceResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return EnforceResponse{}, err
 		}
@@ -769,7 +769,7 @@ func retentionMoreRemain(ctx context.Context, deps Deps, v viewScope) bool {
 
 func retentionArchivesHandler(deps Deps) func(context.Context, ArchiveListInput, fcontract.Principal) (ArchiveListResponse, error) {
 	return func(ctx context.Context, in ArchiveListInput, p fcontract.Principal) (ArchiveListResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return ArchiveListResponse{}, err
 		}

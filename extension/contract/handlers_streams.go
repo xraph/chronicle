@@ -71,7 +71,7 @@ func streamsRegistrations() []registration {
 
 func streamsMineHandler(deps Deps) func(context.Context, MineInput, fcontract.Principal) (MineResponse, error) {
 	return func(ctx context.Context, in MineInput, p fcontract.Principal) (MineResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return MineResponse{}, err
 		}
@@ -186,7 +186,7 @@ func selectStream(ctx context.Context, deps Deps, op string, v viewScope, stream
 // Only an app-wide viewer, who owns every chain in its app, needs the scan.
 func streamsListHandler(deps Deps) func(context.Context, StreamListInput, fcontract.Principal) (StreamListResponse, error) {
 	return func(ctx context.Context, in StreamListInput, p fcontract.Principal) (StreamListResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return StreamListResponse{}, err
 		}

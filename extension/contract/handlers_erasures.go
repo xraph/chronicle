@@ -96,7 +96,7 @@ func projectErasureSummary(e *erasure.Erasure) ErasureSummary {
 
 func erasuresListHandler(deps Deps) func(context.Context, ErasureListInput, fcontract.Principal) (ErasureListResponse, error) {
 	return func(ctx context.Context, in ErasureListInput, p fcontract.Principal) (ErasureListResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return ErasureListResponse{}, err
 		}
@@ -145,7 +145,7 @@ func erasuresListHandler(deps Deps) func(context.Context, ErasureListInput, fcon
 
 func erasuresDetailHandler(deps Deps) func(context.Context, GetErasureInput, fcontract.Principal) (ErasureSummary, error) {
 	return func(ctx context.Context, in GetErasureInput, p fcontract.Principal) (ErasureSummary, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return ErasureSummary{}, err
 		}
@@ -185,7 +185,7 @@ func erasuresDetailHandler(deps Deps) func(context.Context, GetErasureInput, fco
 
 func erasuresPreviewHandler(deps Deps) func(context.Context, ErasurePreviewInput, fcontract.Principal) (ErasurePreviewResponse, error) {
 	return func(ctx context.Context, in ErasurePreviewInput, p fcontract.Principal) (ErasurePreviewResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return ErasurePreviewResponse{}, err
 		}

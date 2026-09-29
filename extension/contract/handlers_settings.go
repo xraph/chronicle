@@ -63,7 +63,7 @@ func settingsRegistrations() []registration {
 // by scope.
 func settingsDetailHandler(deps Deps) func(context.Context, struct{}, fcontract.Principal) (SettingsDetail, error) {
 	return func(ctx context.Context, _ struct{}, p fcontract.Principal) (SettingsDetail, error) {
-		if _, err := scopeFromPrincipal(p); err != nil {
+		if _, err := scopeFromPrincipal(p, deps); err != nil {
 			return SettingsDetail{}, err
 		}
 

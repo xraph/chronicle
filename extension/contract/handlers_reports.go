@@ -354,7 +354,7 @@ func reportsEngineUnavailable() error {
 
 func reportsListHandler(deps Deps) func(context.Context, ReportListInput, fcontract.Principal) (ReportListResponse, error) {
 	return func(ctx context.Context, in ReportListInput, p fcontract.Principal) (ReportListResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return ReportListResponse{}, err
 		}
@@ -408,7 +408,7 @@ func reportsListHandler(deps Deps) func(context.Context, ReportListInput, fcontr
 
 func reportsDetailHandler(deps Deps) func(context.Context, GetReportInput, fcontract.Principal) (ReportDetail, error) {
 	return func(ctx context.Context, in GetReportInput, p fcontract.Principal) (ReportDetail, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return ReportDetail{}, err
 		}
@@ -440,7 +440,7 @@ func reportsDetailHandler(deps Deps) func(context.Context, GetReportInput, fcont
 
 func reportsGenerateHandler(deps Deps) func(context.Context, GenerateReportInput, fcontract.Principal) (GenerateReportResponse, error) {
 	return func(ctx context.Context, in GenerateReportInput, p fcontract.Principal) (GenerateReportResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return GenerateReportResponse{}, err
 		}
@@ -495,7 +495,7 @@ func reportsGenerateHandler(deps Deps) func(context.Context, GenerateReportInput
 
 func reportsGenerateCustomHandler(deps Deps) func(context.Context, GenerateCustomReportInput, fcontract.Principal) (GenerateReportResponse, error) {
 	return func(ctx context.Context, in GenerateCustomReportInput, p fcontract.Principal) (GenerateReportResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return GenerateReportResponse{}, err
 		}
@@ -583,7 +583,7 @@ var reportExportFormats = map[string]struct {
 
 func reportsExportHandler(deps Deps) func(context.Context, ExportReportInput, fcontract.Principal) (ExportReportResponse, error) {
 	return func(ctx context.Context, in ExportReportInput, p fcontract.Principal) (ExportReportResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return ExportReportResponse{}, err
 		}

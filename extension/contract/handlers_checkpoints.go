@@ -110,7 +110,7 @@ func checkpointsAvailable(deps Deps) bool {
 
 func checkpointsListHandler(deps Deps) func(context.Context, CheckpointListInput, fcontract.Principal) (CheckpointListResponse, error) {
 	return func(ctx context.Context, in CheckpointListInput, p fcontract.Principal) (CheckpointListResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return CheckpointListResponse{}, err
 		}
@@ -172,7 +172,7 @@ func checkpointsListHandler(deps Deps) func(context.Context, CheckpointListInput
 
 func checkpointsDetailHandler(deps Deps) func(context.Context, GetCheckpointInput, fcontract.Principal) (GetCheckpointResponse, error) {
 	return func(ctx context.Context, in GetCheckpointInput, p fcontract.Principal) (GetCheckpointResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return GetCheckpointResponse{}, err
 		}
@@ -237,7 +237,7 @@ func checkpointsDetailHandler(deps Deps) func(context.Context, GetCheckpointInpu
 
 func checkpointsTakeHandler(deps Deps) func(context.Context, TakeCheckpointInput, fcontract.Principal) (TakeCheckpointResponse, error) {
 	return func(ctx context.Context, in TakeCheckpointInput, p fcontract.Principal) (TakeCheckpointResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return TakeCheckpointResponse{}, err
 		}

@@ -83,7 +83,7 @@ func projectAggregateGroups(groups []audit.AggregateGroup) []AggregateGroupDTO {
 // normal, empty result on every backend, not a failure.
 func overviewStatsHandler(deps Deps) func(context.Context, struct{}, fcontract.Principal) (OverviewStats, error) {
 	return func(ctx context.Context, _ struct{}, p fcontract.Principal) (OverviewStats, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return OverviewStats{}, err
 		}

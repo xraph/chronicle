@@ -290,7 +290,7 @@ func resolveVerifySpan(in VerifyInput, headSeq uint64) (fromSeq, toSeq uint64) {
 
 func verifyRunHandler(deps Deps) func(context.Context, VerifyInput, fcontract.Principal) (VerifyResponse, error) {
 	return func(ctx context.Context, in VerifyInput, p fcontract.Principal) (VerifyResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return VerifyResponse{}, err
 		}
@@ -401,7 +401,7 @@ func verifyRetentionPolicyCount(ctx context.Context, deps Deps, appID, tenantID 
 
 func verifyEventHandler(deps Deps) func(context.Context, VerifyEventInput, fcontract.Principal) (VerifyEventResponse, error) {
 	return func(ctx context.Context, in VerifyEventInput, p fcontract.Principal) (VerifyEventResponse, error) {
-		v, err := scopeFromPrincipal(p)
+		v, err := scopeFromPrincipal(p, deps)
 		if err != nil {
 			return VerifyEventResponse{}, err
 		}

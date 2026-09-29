@@ -75,6 +75,19 @@ type Deps struct {
 
 	Config SurfaceConfig
 
+	// DefaultAppID is the app a session takes when its claims carry no
+	// "app_id" at all. It is what lets a single-app deployment run before its
+	// auth provider populates claims. A claim that is present but unusable
+	// never falls back to it, and a session with no signed-in user never
+	// takes it. Empty means every session must bring its own app.
+	DefaultAppID string
+
+	// DefaultTenantID is the tenant a session takes when its claims carry
+	// neither "tenant_id" nor "org_id" and its resolved app is DefaultAppID.
+	// It is meaningless without DefaultAppID and Register refuses that
+	// combination. Empty leaves such a session app-wide.
+	DefaultTenantID string
+
 	// Logger receives the underlying cause of every store error that reaches
 	// the caller as CodeInternal. The contract error carries only a generic
 	// message, so this log line is the one place the cause survives. Nil
@@ -108,6 +121,9 @@ func Register(
 ) error {
 	if deps.Store == nil {
 		return errStoreRequired
+	}
+	if err := ValidateDefaultScope(deps.DefaultAppID, deps.DefaultTenantID); err != nil {
+		return err
 	}
 
 	m, err := loader.Load(bytes.NewReader(manifestYAML), "chronicle/contract/manifest.yaml")

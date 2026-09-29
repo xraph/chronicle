@@ -21,7 +21,7 @@ func TestScopeFromPrincipalRefusesMissingAppID(t *testing.T) {
 		"nil app_id":   {"app_id": nil},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := scopeFromPrincipal(principalWith(claims)); err == nil {
+			if _, err := scopeFromPrincipal(principalWith(claims), Deps{}); err == nil {
 				t.Fatal("scopeFromPrincipal accepted a principal with no usable app_id")
 			}
 		})
@@ -32,7 +32,7 @@ func TestScopeFromPrincipalReadsAppAndTenant(t *testing.T) {
 	v, err := scopeFromPrincipal(principalWith(map[string]any{
 		"app_id":    "app-1",
 		"tenant_id": "tenant-a",
-	}))
+	}), Deps{})
 	if err != nil {
 		t.Fatalf("scopeFromPrincipal: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestScopeFromPrincipalFallsBackToOrgID(t *testing.T) {
 	v, err := scopeFromPrincipal(principalWith(map[string]any{
 		"app_id": "app-1",
 		"org_id": "tenant-b",
-	}))
+	}), Deps{})
 	if err != nil {
 		t.Fatalf("scopeFromPrincipal: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestScopeFromPrincipalTenantClaimShapes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			v, err := scopeFromPrincipal(principalWith(tc.claims))
+			v, err := scopeFromPrincipal(principalWith(tc.claims), Deps{})
 			if tc.refused {
 				if !errors.Is(err, fcontract.ErrPermissionDenied) {
 					t.Fatalf("err = %v (scope %+v), want PERMISSION_DENIED", err, v)
@@ -114,7 +114,7 @@ func TestScopeFromPrincipalRefusesAPresentButUnusableTenant(t *testing.T) {
 				_, err := scopeFromPrincipal(principalWith(map[string]any{
 					"app_id": "app-1",
 					key:      value,
-				}))
+				}), Deps{})
 				if !errors.Is(err, fcontract.ErrPermissionDenied) {
 					t.Fatalf("scopeFromPrincipal with %s=%#v: err = %v, want PERMISSION_DENIED", key, value, err)
 				}
@@ -134,7 +134,7 @@ func TestScopeFromPrincipalRefusesABadTenantBesideAGoodOne(t *testing.T) {
 		"good tenant_id, empty org_id": {"app_id": "app-1", "tenant_id": "tenant-a", "org_id": ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := scopeFromPrincipal(principalWith(claims)); !errors.Is(err, fcontract.ErrPermissionDenied) {
+			if _, err := scopeFromPrincipal(principalWith(claims), Deps{}); !errors.Is(err, fcontract.ErrPermissionDenied) {
 				t.Fatalf("err = %v, want PERMISSION_DENIED", err)
 			}
 		})
@@ -142,7 +142,7 @@ func TestScopeFromPrincipalRefusesABadTenantBesideAGoodOne(t *testing.T) {
 }
 
 func TestScopeFromPrincipalAllowsAbsentTenant(t *testing.T) {
-	v, err := scopeFromPrincipal(principalWith(map[string]any{"app_id": "app-1"}))
+	v, err := scopeFromPrincipal(principalWith(map[string]any{"app_id": "app-1"}), Deps{})
 	if err != nil {
 		t.Fatalf("scopeFromPrincipal: %v", err)
 	}
