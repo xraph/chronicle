@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/drivers/pgdriver"
 	"github.com/xraph/grove/drivers/pgdriver/pgmigrate"
+	"github.com/xraph/grove/migrate"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
@@ -81,17 +83,44 @@ func New(db *grove.DB, opts ...Option) *Store {
 	return s
 }
 
-// Migrate runs grove migrations for the Chronicle schema.
+// Migrate applies the Chronicle migrations this database hasn't had yet.
+//
+// grove records each one in grove_migrations as it lands, so on a current
+// schema this runs no DDL at all. It used to run every ALTER TABLE on each
+// call, and ALTER TABLE waits for an exclusive lock on the table even when the
+// column is already there, so a process starting up could deadlock with one
+// that was appending. Concurrent callers take turns on grove's advisory lock,
+// and the ones that go second find nothing left to apply.
+//
+// A database migrated before this kept no record, so its first call here runs
+// every migration once more. They are all written to be re-run.
 func (s *Store) Migrate(ctx context.Context) error {
-	exec := pgmigrate.New(s.pg)
-	for _, m := range Migrations.Migrations() {
-		if m.Up != nil {
-			if err := m.Up(ctx, exec); err != nil {
-				return fmt.Errorf("%w: %s: %w", chronicle.ErrMigrationFailed, m.Name, err)
-			}
+	orch := migrate.NewOrchestrator(pgmigrate.New(s.pg), Migrations)
+	var err error
+	for range 3 {
+		if _, err = orch.Migrate(ctx); err == nil || !lostCreateRace(err) {
+			break
 		}
 	}
+	if err != nil {
+		return fmt.Errorf("%w: %w", chronicle.ErrMigrationFailed, err)
+	}
 	return nil
+}
+
+// lostCreateRace reports an error from two sessions running the same CREATE
+// TABLE IF NOT EXISTS at once. grove creates its own bookkeeping tables before
+// it takes the migration lock, and Postgres doesn't make that statement atomic
+// against itself: the loser gets 23505 on the table's row type or 42P07 on the
+// table. grove swallows the first and not the second (pgdriver v1.6.4). The
+// winner has committed by then, so running Migrate again gets past it.
+func lostCreateRace(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "42P07" || pgErr.Code == "23505"
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SQLSTATE 42P07") || strings.Contains(msg, "SQLSTATE 23505")
 }
 
 // Ping checks database connectivity.
