@@ -23,6 +23,26 @@ engine := compliance.NewEngine(
 
 All three store arguments typically point to the same composite backend.
 
+### Chain verification
+
+Pass the deployment's hash chain and every report verifies the chain behind its scope:
+
+```go
+engine := compliance.NewEngine(s, s, s, logger,
+    compliance.WithChain(s, chain),                // the chain you record under, key provider included
+    compliance.WithCheckpoints(s, signer),         // optional, only if you sign checkpoints
+    compliance.WithVerifyWindow(50_000),           // optional, the default
+)
+```
+
+The Forge extension does this for you. If you build the engine yourself, give it the same `*hash.Chain` your `Chronicle` writes with. An HMAC chain needs its key provider to recompute a digest, so the engine never falls back to an unkeyed chain: without `WithChain` a report says verification was not configured.
+
+When a report is generated the engine looks up the stream for the report's `AppID` and `TenantID`, then verifies it with the pin and head from that stream row. The range is the newest `WithVerifyWindow` sequences, ending at the head. If your chain is shorter than the window, that's the whole chain, genesis to head, and the tail is anchored against the head. If it's longer, only the newest window is checked. The window exists because verification holds every event in its range in memory at once.
+
+The result lands on two fields. `Verification` is the verifier's own `*verify.Report`. `VerificationScope` says what it covered: the stream, the exact sequences, whether the window cut the chain short, and notes a reader needs, such as a range being unkeyed (which detects corruption, not tampering) or a report without a tenant only verifying the app's untenanted stream. A scope with no stream gets status `no_chain`, which is not an error.
+
+Every export renders the verification. Paired checks such as the head check come out as one of three states, `passed`, `failed` or `not checked`, so a check that never ran can't read as a pass. In CSV the verification rows follow the events and keep the same eleven columns: section is `Chain verification`, action names the check, outcome holds the result and reason the detail.
+
 ## Report types
 
 ### SOC2 Type II
@@ -99,7 +119,8 @@ A `compliance.Report` contains:
 
 - **Sections** — `[]Section`, each with a `Title`, `Events`, aggregate `Stats`, and `Notes`
 - **Stats** — `*Stats` with `TotalEvents`, `CriticalEvents`, `FailedEvents`, `DeniedEvents`
-- **Verification** — optional `*verify.Report` snapshot of chain integrity at generation time
+- **Verification**: the `*verify.Report` from generation time, or nil when no verification ran
+- **VerificationScope**: what that verification covered and why, see [Chain verification](#chain-verification)
 - **Data** — raw exported bytes (populated by `Export`)
 
 ## HTTP endpoints

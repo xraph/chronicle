@@ -19,7 +19,13 @@ func exportJSON(r *Report, w io.Writer) error {
 	return nil
 }
 
-// exportCSV flattens all events from every section into CSV rows.
+// exportCSV flattens all events from every section into CSV rows, then
+// appends the chain verification.
+//
+// Verification rows keep the event header's eleven columns, so any reader
+// that expects a rectangular file still parses it: section is "Chain
+// verification", action names the check, outcome carries its result and
+// reason the detail.
 func exportCSV(r *Report, w io.Writer) error {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
@@ -62,9 +68,23 @@ func exportCSV(r *Report, w io.Writer) error {
 		}
 	}
 
+	for _, v := range verificationRows(r) {
+		row := make([]string, len(header))
+		row[0] = csvVerificationSection
+		row[2] = csvSafe(v.Check)
+		row[6] = csvSafe(v.Result)
+		row[10] = csvSafe(v.Detail)
+		if err := cw.Write(row); err != nil {
+			return fmt.Errorf("writing CSV verification row: %w", err)
+		}
+	}
+
 	cw.Flush()
 	return cw.Error()
 }
+
+// csvVerificationSection is the section column every verification row carries.
+const csvVerificationSection = "Chain verification"
 
 // csvSafe neutralises spreadsheet formula injection in an exported field.
 //
@@ -129,6 +149,14 @@ func exportMarkdown(r *Report, w io.Writer) error {
 		b.WriteString("\n")
 	}
 
+	b.WriteString("## Chain Verification\n\n")
+	b.WriteString("| Check | Result | Detail |\n")
+	b.WriteString("| --- | --- | --- |\n")
+	for _, v := range verificationRows(r) {
+		fmt.Fprintf(&b, "| %s | %s | %s |\n", mdCell(v.Check), mdCell(v.Result), mdCell(v.Detail))
+	}
+	b.WriteString("\n")
+
 	for _, s := range r.Sections {
 		b.WriteString("## ")
 		b.WriteString(s.Title)
@@ -168,6 +196,12 @@ func exportMarkdown(r *Report, w io.Writer) error {
 	return nil
 }
 
+// mdCell keeps a value inside its Markdown table cell.
+func mdCell(v string) string {
+	v = strings.ReplaceAll(v, "|", "\\|")
+	return strings.ReplaceAll(v, "\n", " ")
+}
+
 // htmlTemplate is the HTML template for compliance report rendering.
 var htmlTemplate = template.Must(template.New("report").Parse(`<!DOCTYPE html>
 <html lang="en">
@@ -194,6 +228,7 @@ var htmlTemplate = template.Must(template.New("report").Parse(`<!DOCTYPE html>
   tr:hover td { background: #f8fafc; }
   .notes { color: #64748b; font-style: italic; margin-bottom: 1rem; }
   .empty { color: #94a3b8; font-style: italic; }
+  .verification .result { font-weight: bold; white-space: nowrap; }
   footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #e2e8f0; color: #94a3b8; font-size: 0.85rem; }
 </style>
 </head>
@@ -228,6 +263,22 @@ var htmlTemplate = template.Must(template.New("report").Parse(`<!DOCTYPE html>
 </div>
 {{end}}
 
+<h2>Chain Verification</h2>
+<table class="verification">
+<thead>
+<tr><th>Check</th><th>Result</th><th>Detail</th></tr>
+</thead>
+<tbody>
+{{range .VerificationRows}}
+<tr>
+  <td>{{.Check}}</td>
+  <td class="result">{{.Result}}</td>
+  <td>{{.Detail}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+
 {{range .Sections}}
 <h2>{{.Title}}</h2>
 {{if .Notes}}<p class="notes">{{.Notes}}</p>{{end}}
@@ -261,9 +312,16 @@ var htmlTemplate = template.Must(template.New("report").Parse(`<!DOCTYPE html>
 </html>
 `))
 
+// htmlReport is what the HTML template renders: the report, plus its
+// verification projected into the same rows the other formats use.
+type htmlReport struct {
+	*Report
+	VerificationRows []verificationRow
+}
+
 // exportHTML renders the report using an HTML template.
 func exportHTML(r *Report, w io.Writer) error {
-	if err := htmlTemplate.Execute(w, r); err != nil {
+	if err := htmlTemplate.Execute(w, htmlReport{Report: r, VerificationRows: verificationRows(r)}); err != nil {
 		return fmt.Errorf("rendering HTML: %w", err)
 	}
 	return nil

@@ -499,7 +499,7 @@ type ReportModel struct {
 	AppID       string `grove:"app_id"`
 	TenantID    string `grove:"tenant_id"`
 	Format      string `grove:"format"`
-	Data        string `grove:"data"` // JSON TEXT for sections
+	Data        string `grove:"data"` // JSON TEXT from compliance.EncodeReportBody
 	GeneratedBy string `grove:"generated_by"`
 	CreatedAt   string `grove:"created_at"` // TEXT, written with timeLayout
 }
@@ -508,11 +508,6 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 	reportID, err := id.ParseReportID(m.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse report id %q: %w", m.ID, err)
-	}
-
-	var sections []compliance.Section
-	if unmarshalErr := json.Unmarshal([]byte(m.Data), &sections); unmarshalErr != nil {
-		return nil, fmt.Errorf("failed to unmarshal report sections: %w", unmarshalErr)
 	}
 
 	periodFrom, err := time.Parse(time.RFC3339Nano, m.PeriodFrom)
@@ -530,7 +525,7 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		return nil, fmt.Errorf("failed to parse created_at: %w", err)
 	}
 
-	return &compliance.Report{
+	r := &compliance.Report{
 		Entity: chronicle.Entity{
 			CreatedAt: createdAt,
 		},
@@ -544,15 +539,18 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		AppID:       m.AppID,
 		TenantID:    m.TenantID,
 		Format:      compliance.Format(m.Format),
-		Sections:    sections,
 		GeneratedBy: m.GeneratedBy,
-	}, nil
+	}
+	if decodeErr := compliance.DecodeReportBody([]byte(m.Data), r); decodeErr != nil {
+		return nil, decodeErr
+	}
+	return r, nil
 }
 
 func fromReport(r *compliance.Report) (*ReportModel, error) {
-	data, err := json.Marshal(r.Sections)
+	data, err := compliance.EncodeReportBody(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal report sections: %w", err)
+		return nil, err
 	}
 
 	return &ReportModel{

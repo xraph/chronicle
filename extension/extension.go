@@ -334,8 +334,13 @@ func (e *Extension) init(fapp forge.App) error {
 	// Sub-components require log.Logger; use the BaseExtension logger.
 	logger := e.Logger()
 
-	// Create compliance engine.
-	e.engine = compliance.NewEngine(s, s, s, logger)
+	// Create compliance engine. Reports verify under the deployment's own
+	// chain and checkpoints, the same evidence POST /v1/verify consults, so a
+	// report and the verify route never disagree about a keyed chain.
+	e.engine = compliance.NewEngine(s, s, s, logger,
+		compliance.WithChain(s, e.hashChain),
+		compliance.WithCheckpoints(checkpointStore, e.checkpointSigner),
+	)
 
 	// Create retention enforcer. Chronicle records every purge in the chain
 	// before the rows go, so the removed sequences verify as retained rather

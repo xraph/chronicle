@@ -15,6 +15,7 @@ import (
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/compliance"
+	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store"
 	"github.com/xraph/chronicle/store/memory"
@@ -95,8 +96,14 @@ func main() {
 
 	// 3. Create the compliance engine.
 	//    It needs audit.Store, verify.Store, and compliance.ReportStore.
-	//    The memory store implements all three.
-	engine := compliance.NewEngine(mem, mem, mem, nil)
+	//    The memory store implements all three. WithChain makes every report
+	//    verify the hash chain behind its scope; pass the same scheme (and key
+	//    provider, for hmac) that Chronicle writes with.
+	chain, err := hash.NewChain(hash.SchemePlainV4, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	engine := compliance.NewEngine(mem, mem, mem, nil, compliance.WithChain(mem, chain))
 
 	// 4. Generate a SOC2 Type II report.
 	fmt.Println("\n--- SOC2 Type II Report ---")
@@ -121,6 +128,8 @@ func main() {
 	fmt.Printf("Critical:       %d\n", soc2Report.Stats.CriticalEvents)
 	fmt.Printf("Failed:         %d\n", soc2Report.Stats.FailedEvents)
 	fmt.Printf("Denied:         %d\n", soc2Report.Stats.DeniedEvents)
+	fmt.Printf("Chain valid:    %v (sequences %d to %d)\n", soc2Report.Verification.Valid,
+		soc2Report.VerificationScope.FromSeq, soc2Report.VerificationScope.ToSeq)
 	fmt.Printf("Sections:       %d\n", len(soc2Report.Sections))
 	for _, s := range soc2Report.Sections {
 		fmt.Printf("  - %-30s events=%d\n", s.Title, len(s.Events))
