@@ -15,6 +15,7 @@ import (
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/metajson"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/stream"
 )
@@ -45,36 +46,36 @@ func safeUint64(v int64) uint64 {
 type EventModel struct {
 	grove.BaseModel `grove:"table:chronicle_events,alias:e"`
 
-	ID              string         `grove:"id,pk"`
-	StreamID        string         `grove:"stream_id"`
-	Sequence        int64          `grove:"sequence"`
-	Hash            string         `grove:"hash"`
-	PrevHash        string         `grove:"prev_hash"`
-	AppID           string         `grove:"app_id"`
-	TenantID        string         `grove:"tenant_id"`
-	UserID          string         `grove:"user_id"`
-	IP              string         `grove:"ip"`
-	UserAgent       string         `grove:"user_agent"`
-	RequestID       string         `grove:"request_id"`
-	SessionID       string         `grove:"session_id"`
-	Action          string         `grove:"action"`
-	Resource        string         `grove:"resource"`
-	Category        string         `grove:"category"`
-	ResourceID      string         `grove:"resource_id"`
-	Metadata        map[string]any `grove:"metadata,type:jsonb"`
-	Outcome         string         `grove:"outcome"`
-	Severity        string         `grove:"severity"`
-	Reason          string         `grove:"reason"`
-	SubjectID       string         `grove:"subject_id"`
-	EncryptionKeyID string         `grove:"encryption_key_id"`
-	Erased          bool           `grove:"erased"`
-	ErasedAt        *time.Time     `grove:"erased_at"`
-	ErasureID       string         `grove:"erasure_id"`
-	Timestamp       time.Time      `grove:"timestamp"`
-	TimestampSubUs  int32          `grove:"timestamp_sub_us"`
-	CreatedAt       time.Time      `grove:"created_at"`
-	HashScheme      string         `grove:"hash_scheme"`
-	HashKeyID       string         `grove:"hash_key_id"`
+	ID              string       `grove:"id,pk"`
+	StreamID        string       `grove:"stream_id"`
+	Sequence        int64        `grove:"sequence"`
+	Hash            string       `grove:"hash"`
+	PrevHash        string       `grove:"prev_hash"`
+	AppID           string       `grove:"app_id"`
+	TenantID        string       `grove:"tenant_id"`
+	UserID          string       `grove:"user_id"`
+	IP              string       `grove:"ip"`
+	UserAgent       string       `grove:"user_agent"`
+	RequestID       string       `grove:"request_id"`
+	SessionID       string       `grove:"session_id"`
+	Action          string       `grove:"action"`
+	Resource        string       `grove:"resource"`
+	Category        string       `grove:"category"`
+	ResourceID      string       `grove:"resource_id"`
+	Metadata        metajson.Map `grove:"metadata,type:jsonb"` // decodes without rounding integers past 2^53
+	Outcome         string       `grove:"outcome"`
+	Severity        string       `grove:"severity"`
+	Reason          string       `grove:"reason"`
+	SubjectID       string       `grove:"subject_id"`
+	EncryptionKeyID string       `grove:"encryption_key_id"`
+	Erased          bool         `grove:"erased"`
+	ErasedAt        *time.Time   `grove:"erased_at"`
+	ErasureID       string       `grove:"erasure_id"`
+	Timestamp       time.Time    `grove:"timestamp"`
+	TimestampSubUs  int32        `grove:"timestamp_sub_us"`
+	CreatedAt       time.Time    `grove:"created_at"`
+	HashScheme      string       `grove:"hash_scheme"`
+	HashKeyID       string       `grove:"hash_key_id"`
 }
 
 func toEvent(m *EventModel) (*audit.Event, error) {

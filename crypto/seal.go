@@ -9,6 +9,7 @@ import (
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/internal/metajson"
 )
 
 // sealPrefix marks a field value as ciphertext produced by [Sealer.Seal].
@@ -187,9 +188,9 @@ func (s *Sealer) Open(event *audit.Event) error {
 			return fmt.Errorf("crypto: open metadata: %w", openErr)
 		}
 
-		var metadata map[string]any
-		if unmarshalErr := json.Unmarshal(plaintext, &metadata); unmarshalErr != nil {
-			return fmt.Errorf("crypto: unmarshal metadata: %w", unmarshalErr)
+		metadata, decodeErr := metajson.Decode(plaintext)
+		if decodeErr != nil {
+			return fmt.Errorf("crypto: unmarshal metadata: %w", decodeErr)
 		}
 		event.Metadata = metadata
 	}
