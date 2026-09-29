@@ -215,8 +215,9 @@ func TestOverviewStatsOnAnEmptyScopeReturnsZeros(t *testing.T) {
 	}
 }
 
-// Real sqlite, two apps: the scope hazard end to end, plus the FailedEvents
-// ruling (failure + denied) and the derived counts.
+// Real sqlite, two apps: the scope hazard end to end, plus the derived
+// counts. FailedEvents is failure only, the same as the report stats, and
+// DeniedEvents is its own count.
 func TestOverviewStatsCountsOnlyTheViewersAppOnSQLite(t *testing.T) {
 	s := newSQLiteStore(t)
 	ctx := context.Background()
@@ -258,9 +259,10 @@ func TestOverviewStatsCountsOnlyTheViewersAppOnSQLite(t *testing.T) {
 	if out.CriticalEvents != 3 {
 		t.Errorf("CriticalEvents = %d, want 3", out.CriticalEvents)
 	}
-	// failure(2) + denied(2) = 4, NOT failure(2) alone.
-	if out.FailedEvents != 4 {
-		t.Errorf("FailedEvents = %d, want 4 (failure + denied)", out.FailedEvents)
+	// failure(2) only. Denied(2) is reported in its own field, so failedEvents
+	// means the same here as in the compliance report stats.
+	if out.FailedEvents != 2 {
+		t.Errorf("FailedEvents = %d, want 2 (failure only, not failure + denied)", out.FailedEvents)
 	}
 	if out.DeniedEvents != 2 {
 		t.Errorf("DeniedEvents = %d, want 2", out.DeniedEvents)

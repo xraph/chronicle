@@ -109,8 +109,9 @@ type VerifyReport struct {
 	// It counts the policies configured NOW, so purges made under policies
 	// that have since been deleted are not reflected. -1 means unknown:
 	// listing the policies failed, and that is not allowed to fail the
-	// verification itself. No omitempty, because zero is an answer the
-	// page needs.
+	// verification itself. It is also -1 on a verification embedded in a
+	// stored report (reports.detail), where no count was taken. No omitempty,
+	// because zero is an answer the page needs.
 	RetentionPolicies int `json:"retentionPolicies"`
 }
 

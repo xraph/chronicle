@@ -17,13 +17,12 @@ type OverviewStats struct {
 	TotalEvents    int64 `json:"totalEvents"`
 	CriticalEvents int64 `json:"criticalEvents"`
 
-	// FailedEvents counts events whose outcome is "failure" OR "denied".
-	// The templ overview this replaces (dashboard/data.go's
-	// fetchFailedEventCount) queried Outcome []string{"failure", "denied"}
-	// for its "failed" tile, so counting "failure" alone here would silently
-	// undercount against the number operators already know from that page.
-	// DeniedEvents is reported alongside it so the page can also show the
-	// split between the two.
+	// FailedEvents counts events whose outcome is "failure" and nothing else,
+	// which is what the compliance report stats call failedEvents too, so the
+	// same key means the same thing on every page. DeniedEvents counts
+	// "denied" separately. The templ overview this replaces showed one
+	// "failed" tile that was failure plus denied; the React page sums the two
+	// fields for that tile, and labels it accordingly.
 	FailedEvents int64 `json:"failedEvents"`
 	DeniedEvents int64 `json:"deniedEvents"`
 
@@ -139,7 +138,6 @@ func overviewStatsHandler(deps Deps) func(context.Context, struct{}, fcontract.P
 			case audit.OutcomeFailure:
 				out.FailedEvents += g.Count
 			case audit.OutcomeDenied:
-				out.FailedEvents += g.Count
 				out.DeniedEvents += g.Count
 			}
 		}

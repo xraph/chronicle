@@ -258,11 +258,19 @@ func projectAggregateResult(a *audit.AggregateResult) *AggregateResponse {
 // projectReportDetail turns a stored report into its wire detail. The
 // embedded verification is projected through projectReport, the same
 // projection verify.run uses, so the two cannot disagree about a field.
+//
+// projectReport leaves RetentionPolicies at zero, and zero is a real answer
+// ("no policy can purge this chain"). Nobody counted policies for a report's
+// embedded verification, so it says -1, unknown, rather than claiming there
+// were none.
 func projectReportDetail(r *compliance.Report) ReportDetail {
 	out := ReportDetail{
 		ReportSummary: projectReportSummary(r),
 		Sections:      make([]ReportSection, 0, len(r.Sections)),
 		Verification:  projectReport(r.Verification),
+	}
+	if out.Verification != nil {
+		out.Verification.RetentionPolicies = -1
 	}
 	for _, s := range r.Sections {
 		sec := ReportSection{

@@ -49,8 +49,9 @@ intents:
   - { name: events.aggregate, kind: query, version: 1, capability: read }
   - { name: events.byUser,    kind: query, version: 1, capability: read }
   # The overview page's count tiles and breakdowns: total, critical, failed
-  # (failure + denied), denied, erasures, and the category/severity/outcome
-  # groups they are derived from.
+  # (failure only, as in the report stats), denied, erasures, and the
+  # category/severity/outcome groups they are derived from. The page's single
+  # "failed" tile is failed plus denied and sums the two fields itself.
   - { name: overview.stats, kind: query, version: 1, capability: read }
   # GDPR erasure records: the evidence that a data subject's right to
   # erasure was honoured. There is no erasures.request here yet: a confirmed

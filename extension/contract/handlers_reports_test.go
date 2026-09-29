@@ -739,8 +739,8 @@ func TestReportDetailLeavesVerificationNullWhenTheReportHasNone(t *testing.T) {
 func TestReportDetailProjectsAnEmbeddedVerificationThroughTheVerifyProjection(t *testing.T) {
 	r := reportsFixture("app-1", "")
 	r.Verification = &verify.Report{
-		Valid:       true,
-		Verified:    7,
+		Valid:       false,
+		Verified:    6,
 		HeadChecked: true,
 		Tampered:    []uint64{4},
 		Coverage:    []verify.Coverage{{FromSeq: 1, ToSeq: 7, Level: verify.LevelUnkeyed}},
@@ -754,6 +754,7 @@ func TestReportDetailProjectsAnEmbeddedVerificationThroughTheVerifyProjection(t 
 		t.Fatal("the embedded verification was dropped")
 	}
 	want := projectReport(r.Verification)
+	want.RetentionPolicies = -1 // nobody counted policies for an embedded verification
 	got, _ := json.Marshal(out.Verification)
 	exp, _ := json.Marshal(want)
 	if !bytes.Equal(got, exp) {
@@ -761,6 +762,34 @@ func TestReportDetailProjectsAnEmbeddedVerificationThroughTheVerifyProjection(t 
 	}
 	if !out.Verification.HeadChecked || out.Verification.CheckpointsChecked || len(out.Verification.Tampered) != 1 {
 		t.Errorf("the checked flags or findings did not survive: %+v", out.Verification)
+	}
+}
+
+// projectReport leaves RetentionPolicies at zero, and zero is a real answer:
+// "no retention policy can purge this chain". Nobody counted policies for a
+// verification embedded in a stored report, so claiming zero would tell an
+// auditor a gap or tampered sequence could not be an authorised purge. The
+// detail says -1, unknown.
+func TestReportDetailSaysUnknownForTheRetentionPoliciesOfAnEmbeddedVerification(t *testing.T) {
+	r := reportsFixture("app-1", "")
+	r.Verification = &verify.Report{Valid: true, Verified: 3}
+
+	out, err := reportsDetailHandler(Deps{Store: &reportsSpyStore{report: r}})(
+		context.Background(), GetReportInput{ID: r.ID.String()}, reportsViewer("app-1", ""))
+	if err != nil {
+		t.Fatalf("reports.detail: %v", err)
+	}
+	if out.Verification == nil {
+		t.Fatal("the embedded verification was dropped")
+	}
+	if out.Verification.RetentionPolicies != -1 {
+		t.Fatalf("retentionPolicies = %d, want -1 (unknown), never 0", out.Verification.RetentionPolicies)
+	}
+
+	// The projection helper alone still leaves zero, which is why the detail
+	// has to overwrite it.
+	if got := projectReport(r.Verification).RetentionPolicies; got != 0 {
+		t.Fatalf("projectReport RetentionPolicies = %d, want 0 (the reason the detail must overwrite it)", got)
 	}
 }
 
