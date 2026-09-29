@@ -253,7 +253,7 @@ func TestRetentionEnforceUsesTheViewersScopeAndNotTheGlobalEnforce(t *testing.T)
 	spy := &retentionListSpy{policies: []*retention.Policy{
 		retentionPolicy("app-1", "tenant-a", "auth", 24*time.Hour),
 	}}
-	h := retentionEnforceHandler(Deps{Store: spy, Enforcer: retention.NewEnforcer(spy, nil, nil)})
+	h := retentionEnforceHandler(Deps{Store: spy, Enforcer: retention.NewEnforcer(spy, nil, nil, retention.WithUnrecordedPurge())})
 
 	if _, err := h(context.Background(), struct{}{}, principalWith(retentionApp1TenantA)); err != nil {
 		t.Fatalf("retention.enforce: %v", err)
@@ -287,7 +287,7 @@ func TestRetentionEnforcePurgesOnlyTheViewersOwnOldEvents(t *testing.T) {
 	app2Old := seed.events("app-2", "", "auth", 48*time.Hour, 5)
 	app2New := seed.events("app-2", "", "auth", time.Hour, 2)
 
-	h := retentionEnforceHandler(Deps{Store: s, Enforcer: retention.NewEnforcer(s, nil, nil)})
+	h := retentionEnforceHandler(Deps{Store: s, Enforcer: retention.NewEnforcer(s, nil, nil, retention.WithUnrecordedPurge())})
 	out, err := h(context.Background(), struct{}{}, principalWith(retentionApp1Wide))
 	if err != nil {
 		t.Fatalf("retention.enforce: %v", err)
@@ -315,7 +315,7 @@ func TestRetentionEnforceAsATenantLeavesTheSiblingTenantAlone(t *testing.T) {
 	aOld := seed.events("app-1", "tenant-a", "auth", 48*time.Hour, 3)
 	bOld := seed.events("app-1", "tenant-b", "auth", 48*time.Hour, 3)
 
-	h := retentionEnforceHandler(Deps{Store: s, Enforcer: retention.NewEnforcer(s, nil, nil)})
+	h := retentionEnforceHandler(Deps{Store: s, Enforcer: retention.NewEnforcer(s, nil, nil, retention.WithUnrecordedPurge())})
 	out, err := h(context.Background(), struct{}{}, principalWith(retentionApp1TenantA))
 	if err != nil {
 		t.Fatalf("retention.enforce: %v", err)
@@ -338,7 +338,7 @@ func TestRetentionEnforceReportsMoreRemainUntilTheBacklogIsCleared(t *testing.T)
 	extra := 10
 	seed.events("app-1", "", "auth", 48*time.Hour, retention.DefaultPurgeBatchSize+extra)
 
-	h := retentionEnforceHandler(Deps{Store: s, Enforcer: retention.NewEnforcer(s, nil, nil)})
+	h := retentionEnforceHandler(Deps{Store: s, Enforcer: retention.NewEnforcer(s, nil, nil, retention.WithUnrecordedPurge())})
 
 	first, err := h(context.Background(), struct{}{}, principalWith(retentionApp1Wide))
 	if err != nil {
@@ -365,7 +365,7 @@ func TestRetentionEnforceFailingPartWayAnswersWithTheTrueCounts(t *testing.T) {
 		retentionPolicy("app-1", "", "auth", 24*time.Hour),
 		retentionPolicy("app-1", "", "billing", 24*time.Hour),
 	}}
-	h := retentionEnforceHandler(Deps{Store: st, Enforcer: retention.NewEnforcer(st, nil, nil)})
+	h := retentionEnforceHandler(Deps{Store: st, Enforcer: retention.NewEnforcer(st, nil, nil, retention.WithUnrecordedPurge())})
 
 	out, err := h(context.Background(), struct{}{}, principalWith(retentionApp1Wide))
 	if err != nil {
@@ -386,7 +386,7 @@ func TestRetentionEnforceFailingPartWayAnswersWithTheTrueCounts(t *testing.T) {
 // protect, and the error goes through mapStoreError like any other.
 func TestRetentionEnforceWithNothingRunIsAnError(t *testing.T) {
 	st := storeReturning(errors.New("connection refused"))
-	h := retentionEnforceHandler(Deps{Store: st, Enforcer: retention.NewEnforcer(st, nil, nil)})
+	h := retentionEnforceHandler(Deps{Store: st, Enforcer: retention.NewEnforcer(st, nil, nil, retention.WithUnrecordedPurge())})
 
 	_, err := h(context.Background(), struct{}{}, principalWith(retentionApp1Wide))
 	if got := retentionErrCode(t, err); got != fcontract.CodeInternal {
@@ -404,7 +404,7 @@ func TestRetentionEnforceWithoutAnEnforcerIsUnavailable(t *testing.T) {
 
 func TestRetentionEnforceRefusesAPrincipalWithNoApp(t *testing.T) {
 	spy := &retentionListSpy{}
-	h := retentionEnforceHandler(Deps{Store: spy, Enforcer: retention.NewEnforcer(spy, nil, nil)})
+	h := retentionEnforceHandler(Deps{Store: spy, Enforcer: retention.NewEnforcer(spy, nil, nil, retention.WithUnrecordedPurge())})
 	_, err := h(context.Background(), struct{}{}, principalWith(nil))
 	if !errors.Is(err, fcontract.ErrPermissionDenied) {
 		t.Fatalf("err = %v, want PERMISSION_DENIED", err)
@@ -483,7 +483,7 @@ func TestRetentionPreviewMatchesWhatEnforceThenPurges(t *testing.T) {
 	kept := seed.events("app-1", "", "billing", 36*time.Hour, 5)
 	other := seed.events("app-2", "", "auth", 72*time.Hour, 7)
 
-	deps := Deps{Store: s, Enforcer: retention.NewEnforcer(s, nil, nil)}
+	deps := Deps{Store: s, Enforcer: retention.NewEnforcer(s, nil, nil, retention.WithUnrecordedPurge())}
 	preview, err := retentionPreviewHandler(deps)(context.Background(), struct{}{}, principalWith(retentionApp1Wide))
 	if err != nil {
 		t.Fatalf("retention.preview: %v", err)
@@ -1105,7 +1105,7 @@ func TestRetentionEnforceMoreRemainIsTrueWhenTheCheckFails(t *testing.T) {
 	for name, depsStore := range cases {
 		t.Run(name, func(t *testing.T) {
 			clean := &retentionListSpy{}
-			h := retentionEnforceHandler(Deps{Store: depsStore, Enforcer: retention.NewEnforcer(clean, nil, nil)})
+			h := retentionEnforceHandler(Deps{Store: depsStore, Enforcer: retention.NewEnforcer(clean, nil, nil, retention.WithUnrecordedPurge())})
 			out, err := h(context.Background(), struct{}{}, principalWith(retentionApp1Wide))
 			if err != nil {
 				t.Fatalf("retention.enforce: %v", err)

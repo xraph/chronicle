@@ -138,6 +138,9 @@ func (s *stubStore) MarkErased(context.Context, erasure.SubjectQuery, id.ID) (in
 	return 0, s.err
 }
 func (s *stubStore) RecordErasure(context.Context, *erasure.Erasure) error { return s.err }
+func (s *stubStore) SubjectKeyUsage(context.Context, string) ([]erasure.KeyUsage, error) {
+	return nil, s.err
+}
 
 // retention.Store
 
