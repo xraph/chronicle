@@ -131,11 +131,43 @@ type ReportSection struct {
 // full shape, so the page can show the same three states (not checked,
 // checked and held, checked and failed) as the verify page.
 //
+// VerificationScope says what that verification covered, or why none ran.
+// Read the two together. A valid verification of a capped window proves only
+// the window, so the page shows the range and the notes beside the verdict.
+// A nil VerificationScope comes from a report stored before the engine
+// recorded one, and says nothing about coverage.
+//
 // There is no raw-data field: compliance.Report.Data is never written.
 type ReportDetail struct {
 	ReportSummary
-	Sections     []ReportSection `json:"sections"`
-	Verification *VerifyReport   `json:"verification,omitempty"`
+	Sections          []ReportSection    `json:"sections"`
+	Verification      *VerifyReport      `json:"verification,omitempty"`
+	VerificationScope *VerificationScope `json:"verificationScope,omitempty"`
+}
+
+// VerificationScope is what a report's chain verification covered.
+//
+// Status is "verified" when it ran, and then Verification holds the result.
+// "no_chain" means the report's scope never recorded an event, and
+// "not_configured" means the deployment gave the report engine no hash chain,
+// so nothing was checked. Neither of those is a pass.
+//
+// FromSeq and ToSeq are the sequences verification was asked to cover, ending
+// at HeadSeq. Capped is true when the chain was longer than Window, and then
+// every sequence before FromSeq went unchecked. Notes are the engine's own
+// caveats, and every export renders them, so the page shows them too.
+type VerificationScope struct {
+	Status                string   `json:"status"`
+	StreamID              string   `json:"streamId,omitempty"`
+	Scheme                string   `json:"scheme,omitempty"`
+	SchemeSince           uint64   `json:"schemeSince,omitempty"`
+	HeadSeq               uint64   `json:"headSeq"`
+	FromSeq               uint64   `json:"fromSeq"`
+	ToSeq                 uint64   `json:"toSeq"`
+	Window                uint64   `json:"window"`
+	Capped                bool     `json:"capped"`
+	CheckpointsConfigured bool     `json:"checkpointsConfigured"`
+	Notes                 []string `json:"notes"`
 }
 
 // ReportListInput pages through the viewer's own scope's reports. There is
@@ -298,6 +330,21 @@ func projectReportDetail(r *compliance.Report) ReportDetail {
 	}
 	if out.Verification != nil {
 		out.Verification.RetentionPolicies = -1
+	}
+	if vs := r.VerificationScope; vs != nil {
+		out.VerificationScope = &VerificationScope{
+			Status:                string(vs.Status),
+			StreamID:              vs.StreamID,
+			Scheme:                vs.Scheme,
+			SchemeSince:           vs.SchemeSince,
+			HeadSeq:               vs.HeadSeq,
+			FromSeq:               vs.FromSeq,
+			ToSeq:                 vs.ToSeq,
+			Window:                vs.Window,
+			Capped:                vs.Capped,
+			CheckpointsConfigured: vs.CheckpointsConfigured,
+			Notes:                 append([]string{}, vs.Notes...),
+		}
 	}
 	for _, s := range r.Sections {
 		sec := ReportSection{

@@ -908,6 +908,65 @@ func TestReportDetailSaysUnknownForTheRetentionPoliciesOfAnEmbeddedVerification(
 	}
 }
 
+// A capped verification is valid only for its window. The detail has to carry
+// what the window was, or a page would show a valid verdict for a chain it
+// mostly never read.
+func TestReportDetailCarriesWhatTheVerificationCovered(t *testing.T) {
+	r := reportsFixture("app-1", "")
+	r.Verification = &verify.Report{Valid: true, Verified: 50_000}
+	r.VerificationScope = &compliance.VerificationScope{
+		Status:                compliance.VerificationRan,
+		StreamID:              "stream-1",
+		Scheme:                "hmac-sha256-v5",
+		SchemeSince:           1,
+		HeadSeq:               80_000,
+		FromSeq:               30_001,
+		ToSeq:                 80_000,
+		Window:                50_000,
+		Capped:                true,
+		CheckpointsConfigured: true,
+		Notes:                 []string{"sequences 1 to 30000 were not verified"},
+	}
+
+	out, err := reportsDetailHandler(Deps{Store: &reportsSpyStore{report: r}})(
+		context.Background(), GetReportInput{ID: r.ID.String()}, reportsViewer("app-1", ""))
+	if err != nil {
+		t.Fatalf("reports.detail: %v", err)
+	}
+	want := &VerificationScope{
+		Status: "verified", StreamID: "stream-1", Scheme: "hmac-sha256-v5", SchemeSince: 1,
+		HeadSeq: 80_000, FromSeq: 30_001, ToSeq: 80_000, Window: 50_000, Capped: true,
+		CheckpointsConfigured: true, Notes: []string{"sequences 1 to 30000 were not verified"},
+	}
+	got, _ := json.Marshal(out.VerificationScope)
+	exp, _ := json.Marshal(want)
+	if !bytes.Equal(got, exp) {
+		t.Fatalf("verificationScope = %s, want %s", got, exp)
+	}
+}
+
+// When no verification ran, the scope says why. That reason has to reach the
+// page, because a report with no verification and no reason reads the same
+// as one nobody tried to verify.
+func TestReportDetailSaysWhyNoVerificationRan(t *testing.T) {
+	for _, status := range []compliance.VerificationStatus{compliance.VerificationNoChain, compliance.VerificationNotConfigured} {
+		r := reportsFixture("app-1", "")
+		r.VerificationScope = &compliance.VerificationScope{Status: status}
+
+		out, err := reportsDetailHandler(Deps{Store: &reportsSpyStore{report: r}})(
+			context.Background(), GetReportInput{ID: r.ID.String()}, reportsViewer("app-1", ""))
+		if err != nil {
+			t.Fatalf("reports.detail: %v", err)
+		}
+		if out.Verification != nil {
+			t.Errorf("%s: verification = %+v, want nil", status, out.Verification)
+		}
+		if out.VerificationScope == nil || out.VerificationScope.Status != string(status) {
+			t.Errorf("%s: verificationScope = %+v, want status %q", status, out.VerificationScope, status)
+		}
+	}
+}
+
 // The store is never touched for an ID that does not parse, and the answer
 // is the same as for a real miss.
 func TestReportDetailAndExportRefuseAnUnparseableIDWithoutTouchingTheStore(t *testing.T) {
