@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/xraph/grove"
 
 	"github.com/xraph/chronicle"
@@ -87,7 +89,7 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		Resource:        m.Resource,
 		Category:        m.Category,
 		ResourceID:      m.ResourceID,
-		Metadata:        m.Metadata,
+		Metadata:        normalizeMetadata(m.Metadata),
 		Outcome:         m.Outcome,
 		Severity:        m.Severity,
 		Reason:          m.Reason,
@@ -563,4 +565,55 @@ func fromCheckpoint(cp *checkpoint.Checkpoint) *CheckpointModel {
 		SignedPayload:  cp.SignedPayload,
 		CreatedAt:      cp.CreatedAt,
 	}
+}
+
+// normalizeMetadata turns the driver's decoded metadata back into the plain Go
+// values it was recorded as.
+//
+// The driver decodes an embedded document inside a map[string]any as a bson.D,
+// which keeps the order the keys were stored in, and json.Marshal writes a
+// bson.D in that order. The digest was computed over json.Marshal of the
+// original map[string]any, which sorts its keys. So an event with nested
+// metadata read back its nested keys in a different order and failed
+// verification, while its top-level keys, already in a map, were fine.
+func normalizeMetadata(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = normalizeBSONValue(v)
+	}
+	return out
+}
+
+// normalizeBSONValue converts the driver's document and array types, at any
+// depth, into map[string]any and []any. Every other value is returned as is.
+func normalizeBSONValue(v any) any {
+	switch val := v.(type) {
+	case bson.D:
+		out := make(map[string]any, len(val))
+		for _, e := range val {
+			out[e.Key] = normalizeBSONValue(e.Value)
+		}
+		return out
+	case bson.M:
+		return normalizeMetadata(val)
+	case map[string]any:
+		return normalizeMetadata(val)
+	case bson.A:
+		return normalizeSlice(val)
+	case []any:
+		return normalizeSlice(val)
+	default:
+		return v
+	}
+}
+
+func normalizeSlice(s []any) []any {
+	out := make([]any, len(s))
+	for i, v := range s {
+		out[i] = normalizeBSONValue(v)
+	}
+	return out
 }
