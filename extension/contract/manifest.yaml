@@ -117,3 +117,8 @@ intents:
   # A query: it renders a stored report and writes nothing. The client saves
   # the returned content as a file.
   - { name: reports.export,         kind: query,   version: 1, capability: read }
+  # What this deployment writes and can prove: the digest scheme it writes
+  # under now, whether checkpointing is configured, and which backend it runs
+  # on. Takes no input. It reports the process's configuration, so a chain
+  # pinned to an older scheme is described by streams.mine, not here.
+  - { name: settings.detail, kind: query, version: 1, capability: read }

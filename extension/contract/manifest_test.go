@@ -152,3 +152,18 @@ func TestRegisterRefusesDepsWithNoStore(t *testing.T) {
 		t.Fatalf("Register with no store = %v, want errStoreRequired", err)
 	}
 }
+
+// 28, not the 29 the spec lists: erasures.request is held out until
+// crypto.KeyStore scopes its keys by app and tenant, because an erasure
+// currently destroys every scope's data for the same subject ID.
+func TestManifestDeclaresTwentyEightIntents(t *testing.T) {
+	m, err := loader.Load(bytes.NewReader(manifestYAML), "manifest.yaml")
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	if len(m.Intents) != 28 {
+		t.Fatalf("manifest declares %d intents, want 28. If you added or removed one "+
+			"deliberately, update this number and the spec's intent table together",
+			len(m.Intents))
+	}
+}
