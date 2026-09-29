@@ -97,7 +97,7 @@ Response: `verify.Report` JSON.
 | `Valid` | `bool` | `true` if no gaps and no tampered hashes |
 | `Verified` | `int64` | Number of events checked |
 | `Gaps` | `[]uint64` | Sequence numbers absent from the store that nothing accounts for |
-| `Retained` | `[]RetainedRange` | Sequence ranges a retention policy removed, each naming the retention record that lists them. These don't make the chain invalid. |
+| `Retained` | `[]RetainedRange` | Sequence ranges a retention policy removed, each naming the retention record that lists them. These don't make the chain invalid. `Backfill` is set when the record was backfilled from an archive (see [Retention](/docs/subsystems/retention#backfilling-from-an-archive)). |
 | `Tampered` | `[]uint64` | Sequence numbers with hash mismatches |
 | `FirstEvent` | `uint64` | First sequence number checked |
 | `LastEvent` | `uint64` | Last sequence number checked |

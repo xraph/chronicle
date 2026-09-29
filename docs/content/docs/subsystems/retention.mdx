@@ -111,11 +111,60 @@ Purging a tampered event would destroy the evidence, and the record would then v
 
 ### Streams purged before retention records
 
-If you ran retention on an earlier version, those purges have no records. Their sequences still report as gaps and the chain stays `valid=false`. We can't turn them into retained sequences after the fact, because a tool that marks existing gaps as authorised can't be told apart from one that covers up a deletion.
+If you ran retention on an earlier version, those purges have no records. Their sequences still report as gaps and the chain stays `valid=false`. Nothing in Chronicle will mark them as retained on your say-so, because a tool that marks existing gaps as authorised can't be told apart from one that covers up a deletion.
 
 One thing does change for those streams. The event after a gap is no longer reported as tampered as well: its content is checked against its own `prev_hash` and only the gap is reported, so `gaps=[1 3 5] tampered=[4 6]` becomes `gaps=[1 3 5] tampered=[]`.
 
-Where the purging policy had `Archive: true` and your chain is keyed, the archived copies still carry their hashes and could be re-verified under the key. That would make a backfill provable. Nothing does it yet.
+If the policy that purged them had `Archive: true` and your chain is keyed, you can backfill them from the archive, as long as every copy checks out.
+
+### Backfilling from an archive
+
+`Chronicle.BackfillRetention` reads the archive back, proves each archived copy is the event that was removed, and writes a retention record for the ones that pass. You run it by hand, once per stream, after upgrading:
+
+```go
+archive := sink.NewFileArchive("/var/lib/chronicle/archive", "audit")
+// or: sink.NewS3Archive(myS3Reader, "audit-bucket", "chronicle")
+
+report, err := c.BackfillRetention(ctx, &chronicle.BackfillInput{
+    AppID:    "myapp",
+    TenantID: "acme",
+    Archive:  archive,
+    DryRun:   true, // look first, write nothing
+})
+fmt.Println("gaps", report.Gaps)
+for _, r := range report.Recovered {
+    fmt.Println("recovered", r.Seq, "from", r.Location)
+}
+for _, r := range report.Refused {
+    fmt.Println("left as a gap", r.Seq, r.Reason)
+}
+for _, r := range report.Rejected {
+    fmt.Println("bad archived copy", r.Seq, r.Location, r.Reason)
+}
+```
+
+Read the dry run, then run it again with `DryRun: false`. `report.Records` lists the records it wrote and `report.After` is the stream verified afterwards. Running it twice is harmless: the second run finds no gaps left to fill.
+
+`sink.FileArchive` reads every `prefix-*.jsonl` (and `prefix-*.jsonl.gz`) file a `FileSink` wrote. `sink.S3Archive` reads the `events-*.jsonl.gz` objects an `S3Sink` wrote, through an `S3Reader` you implement with two calls (`ListObjects` and `GetObject`), so there's still no AWS SDK dependency. For anything else, implement `sink.ArchiveReader` yourself; `sink.DecodeArchive` decodes a JSONL or gzip JSONL stream for you.
+
+A gap is recovered only when all of these hold:
+
+1. The stream is pinned to `chronicle/v5` and the process running the backfill writes `chronicle/v5`. Otherwise it returns `chronicle.ErrBackfillUnkeyed` before it reads anything.
+2. The archive has a copy of the event at that sequence, for this stream and scope, and the copy isn't itself a retention record. Retention never purges records, so an archived one was removed by something else.
+3. The copy claims `chronicle/v5` and its digest recomputes under the HMAC key it names. Copies under `chronicle/v4` are refused even on a stream that's keyed now, since they're from before the pin moved. So are `chronicle/v3` copies, because that encoding lets someone move content between fields without the key.
+4. Every sequence in the same run of consecutive gaps has a copy like that, and the run links end to end. The first copy's `prev_hash` has to be the hash of the event before the run, each copy has to follow from the one before it, and the last copy's `hash` has to be the `prev_hash` of the event after the run. Those neighbours can be events still in the store (as long as they verify), sequences an existing record already covers, genesis, or the stream head.
+
+A run goes in whole or not at all. Say retention purged 3 and 5 and someone deleted 4 with no archive copy. Then 3, 4 and 5 all stay gaps, because nothing can link across 4 and a record listing 3 and 5 on their own would claim more than anyone can check. Identical copies of one event (a retried archive write leaves those) count as one. Two different copies that both verify mean the sequence stays a gap.
+
+The records it writes are ordinary retention records with the archive's name in them. Verification reports those sequences in `Retained` with `RetainedRange.Backfill` set to that name, so you can always tell a backfilled range from one the enforcer wrote at purge time. Verification never reads the archive again. After the backfill, what vouches for those sequences is the record, which is as hard to forge as any other `chronicle/v5` event.
+
+### What a backfill proves
+
+It proves that each recovered sequence held an event the chain writer produced, that nobody has changed it since, and that its complete content is sitting in your archive. It doesn't prove a retention policy removed it. Someone with access to your database could copy a row into the archive and then delete it, and the backfill would accept that copy. That's acceptable only because nothing was hidden: the content is still there for anyone to read, and hiding content is the thing a gap warns you about. So keep the archive. Once it's gone, the record is the only evidence left, and it can't tell you what the events said.
+
+It can't help an unkeyed chain at all. Under `chronicle/v4`, anyone who can write your store can compute a valid digest for anything, so they could delete an event, write an archive to match, and have a backfill excuse the deletion. On a chain like that the archive is only somebody's word, and the backfill refuses it with `ErrBackfillUnkeyed` so nobody mistakes it for proof. On any chain, there's no switch for accepting gaps without evidence.
+
+Two practical points. Archives from a store that decrypts on read would hold plaintext, which doesn't match a digest taken over the sealed bytes, but `sealedstore` hands retention the sealed form, so its archives verify fine. And an archived copy can only verify if the key it names can still be resolved, so a copy digested under a key you've since deleted is rejected with the reason.
 
 ## Archive sink
 
