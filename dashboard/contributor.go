@@ -460,10 +460,10 @@ func (c *Contributor) renderRetention(ctx context.Context, params contributor.Pa
 			if err != nil {
 				data.Error = fmt.Sprintf("Invalid duration: %v", err)
 			} else {
-				// Security-critical: stamp the viewer's scope. A policy with an
-				// empty AppID matches every app in the purge query, so an
-				// unscoped policy created here would delete every tenant's
-				// audit history on the next enforcement run.
+				// Security-critical: stamp the viewer's scope. The policy
+				// purges exactly the (AppID, TenantID) it carries, so a policy
+				// saved without the viewer's scope would govern the wrong
+				// events on the next enforcement run.
 				policy := &retention.Policy{
 					Entity:   chronicle.NewEntity(),
 					ID:       id.New(id.PrefixPolicy),

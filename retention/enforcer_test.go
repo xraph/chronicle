@@ -148,6 +148,92 @@ func TestEnforceIsolatesTenantsWithinAnApp(t *testing.T) {
 	}
 }
 
+// TestEnforceUntenantedPolicySparesTenants pins what an empty TenantID means on
+// a policy: the app's untenanted events, not "every tenant in the app". An app
+// admin saving a one-hour "auth" policy must not wipe each tenant's auth
+// history, which those tenants may be retaining under their own policies.
+func TestEnforceUntenantedPolicySparesTenants(t *testing.T) {
+	for _, category := range []string{"auth", "*"} {
+		t.Run("category "+category, func(t *testing.T) {
+			s, sink := setupEnforcerTest(t)
+			ctx := context.Background()
+
+			untenanted := seedEventsForApp(t, s, "app1", "", "auth", 2, 48*time.Hour)
+			tenantA := seedEventsForApp(t, s, "app1", "tenant-a", "auth", 3, 48*time.Hour)
+			tenantB := seedEventsForApp(t, s, "app1", "tenant-b", "billing", 2, 48*time.Hour)
+
+			policy := &retention.Policy{
+				ID:       id.NewPolicyID(),
+				Category: category,
+				Duration: 1 * time.Hour,
+				AppID:    "app1",
+			}
+			policy.CreatedAt = time.Now()
+			policy.UpdatedAt = time.Now()
+			if err := s.SavePolicy(ctx, policy); err != nil {
+				t.Fatalf("save policy: %v", err)
+			}
+
+			result, err := retention.NewEnforcer(s, sink, nil).Enforce(ctx)
+			if err != nil {
+				t.Fatalf("enforce: %v", err)
+			}
+
+			if result.Purged != int64(len(untenanted)) {
+				t.Errorf("purged = %d, want %d", result.Purged, len(untenanted))
+			}
+			for _, e := range untenanted {
+				if _, getErr := s.Get(ctx, e.ID); getErr == nil {
+					t.Errorf("untenanted event %s survived the app's own policy", e.ID)
+				}
+			}
+			for _, e := range append(tenantA, tenantB...) {
+				if _, getErr := s.Get(ctx, e.ID); getErr != nil {
+					t.Errorf("%s event %s purged by the app's untenanted policy: %v",
+						e.TenantID, e.ID, getErr)
+				}
+			}
+		})
+	}
+}
+
+// TestEnforceTenantPolicySparesUntenanted is the same boundary from the other
+// side: a tenant's policy stays out of the app's untenanted events.
+func TestEnforceTenantPolicySparesUntenanted(t *testing.T) {
+	s, sink := setupEnforcerTest(t)
+	ctx := context.Background()
+
+	untenanted := seedEventsForApp(t, s, "app1", "", "auth", 2, 48*time.Hour)
+	tenantA := seedEventsForApp(t, s, "app1", "tenant-a", "auth", 3, 48*time.Hour)
+
+	policy := &retention.Policy{
+		ID:       id.NewPolicyID(),
+		Category: "auth",
+		Duration: 1 * time.Hour,
+		AppID:    "app1",
+		TenantID: "tenant-a",
+	}
+	policy.CreatedAt = time.Now()
+	policy.UpdatedAt = time.Now()
+	if err := s.SavePolicy(ctx, policy); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+
+	result, err := retention.NewEnforcer(s, sink, nil).Enforce(ctx)
+	if err != nil {
+		t.Fatalf("enforce: %v", err)
+	}
+
+	if result.Purged != int64(len(tenantA)) {
+		t.Errorf("purged = %d, want %d", result.Purged, len(tenantA))
+	}
+	for _, e := range untenanted {
+		if _, getErr := s.Get(ctx, e.ID); getErr != nil {
+			t.Errorf("untenanted event %s purged by tenant-a's policy: %v", e.ID, getErr)
+		}
+	}
+}
+
 // TestEnforceForAppOnlyRunsThatApp pins that the HTTP enforce endpoint can run
 // one caller's policies without touching anyone else's.
 func TestEnforceForAppOnlyRunsThatApp(t *testing.T) {
