@@ -3,6 +3,7 @@ package contract
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -39,7 +40,11 @@ type viewScope struct {
 // dispatcher, server or transport puts a forge scope into the handler's
 // context, so porting its resolveScope here would silently return empty.
 //
-// Each dimension resolves on its own, in this order:
+// A session with no signed-in user is refused first, as UNAUTHENTICATED,
+// before any claim or default is read. A subject that is empty or only
+// whitespace is no user: it names nobody, and would otherwise pass for one.
+//
+// Then each dimension resolves on its own, in this order:
 //
 //  1. A claim that is present and usable wins.
 //  2. A claim that is present and unusable refuses. It never falls back to
@@ -47,28 +52,47 @@ type viewScope struct {
 //     value has failed to resolve one, and letting a legitimate default
 //     cover for that failure is how a session ends up in a scope nobody
 //     assigned it.
-//  3. A claim that is absent takes the configured default, but only for a
-//     session with a signed-in user. The default exists so a single-app
-//     deployment can answer without claims, not so a request with no
-//     identity at all can be served under that app.
+//  3. A claim that is absent takes the configured default.
 //  4. An app still unresolved is refused, and the message names the setting
 //     to add. A tenant still unresolved is an app-wide view.
 //
+// A tenant claim with no app claim beside it is refused whatever the config
+// says. The tenant was written by an upstream that also owned the app, and it
+// lost the app on the way here. Pairing that tenant with the configured app
+// would guess which app the tenant was ever meant for.
+//
 // Every handler calls this before it touches the store.
 func scopeFromPrincipal(p fcontract.Principal, deps Deps) (viewScope, error) {
-	authenticated := p.User != nil && p.User.Subject != ""
+	if p.User == nil || strings.TrimSpace(p.User.Subject) == "" {
+		return viewScope{}, &fcontract.Error{
+			Code:    fcontract.CodeUnauthenticated,
+			Message: "no signed-in user on this session",
+		}
+	}
 
-	appID, err := appFromClaims(p, deps, authenticated)
+	appID, appFromClaim, err := appFromClaims(p, deps)
 	if err != nil {
 		return viewScope{}, err
 	}
+	if !appFromClaim && (hasClaim(p, "tenant_id") || hasClaim(p, "org_id")) {
+		return viewScope{}, &fcontract.Error{
+			Code:    fcontract.CodePermissionDenied,
+			Message: "session names a tenant but no app: refusing rather than pairing it with the configured app",
+		}
+	}
 
-	tenantID, err := tenantFromClaims(p, deps, appID, authenticated)
+	tenantID, err := tenantFromClaims(p, deps, appID)
 	if err != nil {
 		return viewScope{}, err
 	}
 
 	return viewScope{AppID: appID, TenantID: tenantID}, nil
+}
+
+// hasClaim reports whether key is in the claims map at all, whatever its value.
+func hasClaim(p fcontract.Principal, key string) bool {
+	_, present := p.Claims[key]
+	return present
 }
 
 // ValidateDefaultScope checks the configured default app and tenant, the values
@@ -119,38 +143,26 @@ func checkConfiguredID(key, v string) error {
 	return nil
 }
 
-// errNoSubject is the refusal for a session with no signed-in user that would
-// otherwise have been served from a configured default.
-func errNoSubject() error {
-	return &fcontract.Error{
-		Code:    fcontract.CodePermissionDenied,
-		Message: "no signed-in user on this session",
-	}
-}
-
 // appFromClaims resolves the app dimension. See scopeFromPrincipal for the
 // order; the distinction that matters here is between an "app_id" key that is
 // missing and one that is in the map with a value that cannot be used.
-func appFromClaims(p fcontract.Principal, deps Deps, authenticated bool) (string, error) {
+func appFromClaims(p fcontract.Principal, deps Deps) (appID string, fromClaim bool, err error) {
 	if raw, present := p.Claims["app_id"]; present {
 		s, ok := raw.(string)
 		if !ok || s == "" {
-			return "", &fcontract.Error{
+			return "", false, &fcontract.Error{
 				Code:    fcontract.CodePermissionDenied,
 				Message: "app scope on this session is unreadable",
 			}
 		}
-		return s, nil
+		return s, true, nil
 	}
 
 	if deps.DefaultAppID != "" {
-		if !authenticated {
-			return "", errNoSubject()
-		}
-		return deps.DefaultAppID, nil
+		return deps.DefaultAppID, false, nil
 	}
 
-	return "", &fcontract.Error{
+	return "", false, &fcontract.Error{
 		Code: fcontract.CodePermissionDenied,
 		Message: "no app scope on this session: chronicle cannot tell which app this request is for. " +
 			"Set chronicle.dashboard.app_id for a single-app deployment.",
@@ -185,7 +197,7 @@ func appFromClaims(p fcontract.Principal, deps Deps, authenticated bool) (string
 // tenant id that was chosen for a different one, since the same id can name
 // an unrelated tenant there. With no default, an absent tenant is a
 // legitimate app-wide operator and the result is "" (app-wide).
-func tenantFromClaims(p fcontract.Principal, deps Deps, appID string, authenticated bool) (string, error) {
+func tenantFromClaims(p fcontract.Principal, deps Deps, appID string) (string, error) {
 	var tenant string
 	for _, key := range []string{"tenant_id", "org_id"} {
 		raw, present := p.Claims[key]
@@ -212,9 +224,6 @@ func tenantFromClaims(p fcontract.Principal, deps Deps, appID string, authentica
 	}
 
 	if deps.DefaultTenantID != "" && deps.DefaultAppID != "" && appID == deps.DefaultAppID {
-		if !authenticated {
-			return "", errNoSubject()
-		}
 		return deps.DefaultTenantID, nil
 	}
 	return "", nil

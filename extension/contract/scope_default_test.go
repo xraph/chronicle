@@ -147,37 +147,86 @@ func TestScopeTakesBothDefaultsWhenClaimsAreAbsent(t *testing.T) {
 	}
 }
 
-// A request with no signed-in user must not be served from the configured app.
-// The default exists so a single-app deployment can answer without claims, not
-// so an anonymous request can read that app's audit log.
-func TestScopeDefaultNeverServesAnUnauthenticatedRequest(t *testing.T) {
-	deps := Deps{DefaultAppID: defaultsApp, DefaultTenantID: "tenant-default"}
+func isUnauthenticated(err error) bool {
+	return errors.Is(err, fcontract.ErrUnauthenticated)
+}
 
-	for name, p := range map[string]fcontract.Principal{
-		"zero principal":  {},
-		"nil user":        {Claims: map[string]any{}},
-		"empty subject":   {User: &dashauth.UserInfo{}},
-		"blank subject":   {User: &dashauth.UserInfo{Subject: ""}, Claims: map[string]any{"x": 1}},
-		"claims no user":  {Claims: map[string]any{"other": "x"}},
-		"user w/o claims": {User: &dashauth.UserInfo{DisplayName: "someone"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			v, err := scopeFromPrincipal(p, deps)
-			if !isPermissionDenied(err) {
-				t.Fatalf("err = %v (scope %+v), want PERMISSION_DENIED", err, v)
-			}
-		})
+// A request with no signed-in user is refused before any claim or default is
+// read. The default exists so a single-app deployment can answer without
+// claims, not so an anonymous request can read that app's audit log, and a
+// session whose claims happen to carry a full scope is no more a user than
+// one with none. A subject that is empty or only whitespace names nobody.
+func TestScopeRefusesAPrincipalWithNoUserBeforeReadingAnythingElse(t *testing.T) {
+	full := map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"}
+	deployments := map[string]Deps{
+		"no defaults":            {},
+		"default app":            {DefaultAppID: defaultsApp},
+		"default app and tenant": {DefaultAppID: defaultsApp, DefaultTenantID: "tenant-default"},
 	}
-
-	// The tenant default is a default too. A session whose claims name the
-	// default app but has no subject must not pick the default tenant up.
-	t.Run("app from claim, tenant from default, no subject", func(t *testing.T) {
-		p := fcontract.Principal{Claims: map[string]any{"app_id": defaultsApp}}
-		v, err := scopeFromPrincipal(p, deps)
-		if !isPermissionDenied(err) {
-			t.Fatalf("err = %v (scope %+v), want PERMISSION_DENIED", err, v)
+	principals := map[string]fcontract.Principal{
+		"zero principal":              {},
+		"nil user, no claims":         {Claims: map[string]any{}},
+		"nil user, full claims":       {Claims: full},
+		"nil user, default app claim": {Claims: map[string]any{"app_id": defaultsApp}},
+		"empty subject":               {User: &dashauth.UserInfo{}},
+		"empty subject, full claims":  {User: &dashauth.UserInfo{Claims: full}, Claims: full},
+		"space subject":               {User: &dashauth.UserInfo{Subject: "   "}, Claims: full},
+		"tab and newline subject":     {User: &dashauth.UserInfo{Subject: "\t\n"}, Claims: full},
+		"nbsp subject":                {User: &dashauth.UserInfo{Subject: "\u00a0"}, Claims: full},
+		"user w/o subject or claims":  {User: &dashauth.UserInfo{DisplayName: "someone"}},
+	}
+	for dn, deps := range deployments {
+		for pn, p := range principals {
+			t.Run(dn+"/"+pn, func(t *testing.T) {
+				v, err := scopeFromPrincipal(p, deps)
+				if !isUnauthenticated(err) {
+					t.Fatalf("err = %v (scope %+v), want UNAUTHENTICATED", err, v)
+				}
+			})
 		}
-	})
+	}
+}
+
+// A subject that merely has whitespace around a name is still a user.
+func TestScopeAcceptsASubjectWithSurroundingWhitespace(t *testing.T) {
+	p := fcontract.Principal{
+		User:   &dashauth.UserInfo{Subject: " operator-1 "},
+		Claims: map[string]any{"app_id": "app-1"},
+	}
+	if _, err := scopeFromPrincipal(p, Deps{}); err != nil {
+		t.Fatalf("scopeFromPrincipal: %v", err)
+	}
+}
+
+// A tenant claim with no app claim is a tenant whose app was lost on the way
+// here. It is refused whether or not a default app is configured: pairing it
+// with the configured app would guess which app the tenant was written for.
+// The same holds for a tenant that is unusable, which refuses either way.
+func TestScopeRefusesATenantClaimWithNoAppClaim(t *testing.T) {
+	deployments := map[string]Deps{
+		"no default app":            {},
+		"default app":               {DefaultAppID: defaultsApp},
+		"default app, same tenant":  {DefaultAppID: defaultsApp, DefaultTenantID: "tenant-a"},
+		"default app, other tenant": {DefaultAppID: defaultsApp, DefaultTenantID: "tenant-default"},
+	}
+	claims := map[string]map[string]any{
+		"tenant_id":         {"tenant_id": "tenant-a"},
+		"org_id":            {"org_id": "tenant-a"},
+		"both, equal":       {"tenant_id": "tenant-a", "org_id": "tenant-a"},
+		"tenant_id empty":   {"tenant_id": ""},
+		"org_id nil":        {"org_id": nil},
+		"app_id nil beside": {"app_id": nil, "tenant_id": "tenant-a"},
+	}
+	for dn, deps := range deployments {
+		for cn, c := range claims {
+			t.Run(dn+"/"+cn, func(t *testing.T) {
+				v, err := scopeFromPrincipal(principalWith(c), deps)
+				if !isPermissionDenied(err) {
+					t.Fatalf("err = %v (scope %+v), want PERMISSION_DENIED", err, v)
+				}
+			})
+		}
+	}
 }
 
 // The default tenant belongs to the default app. A session whose claims put it
