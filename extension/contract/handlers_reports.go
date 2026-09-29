@@ -156,6 +156,10 @@ type ReportDetail struct {
 // at HeadSeq. Capped is true when the chain was longer than Window, and then
 // every sequence before FromSeq went unchecked. Notes are the engine's own
 // caveats, and every export renders them, so the page shows them too.
+//
+// A report generated with no tenant verified only the app's untenanted
+// stream, never any tenant's chain, and the engine says so in Notes. So
+// "verified, not capped" on an app-wide report is not a pass for the tenants.
 type VerificationScope struct {
 	Status                string   `json:"status"`
 	StreamID              string   `json:"streamId,omitempty"`

@@ -967,6 +967,50 @@ func TestReportDetailSaysWhyNoVerificationRan(t *testing.T) {
 	}
 }
 
+// A report stored before the engine recorded a scope has none, and the wire
+// says nothing about coverage rather than carrying an empty scope that reads
+// as an answer. The key must be absent, not null.
+func TestReportDetailOmitsAVerificationScopeThatWasNeverRecorded(t *testing.T) {
+	r := reportsFixture("app-1", "")
+	r.VerificationScope = nil
+
+	out, err := reportsDetailHandler(Deps{Store: &reportsSpyStore{report: r}})(
+		context.Background(), GetReportInput{ID: r.ID.String()}, reportsViewer("app-1", ""))
+	if err != nil {
+		t.Fatalf("reports.detail: %v", err)
+	}
+	if out.VerificationScope != nil {
+		t.Fatalf("verificationScope = %+v, want nil", out.VerificationScope)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(raw, []byte("verificationScope")) {
+		t.Fatalf("wire form %s carries a verificationScope key for a report that has none", raw)
+	}
+}
+
+// A scope with no notes goes out as an empty list, never null, so a page can
+// iterate it without a nil check.
+func TestReportDetailSendsNoNotesAsAnEmptyList(t *testing.T) {
+	r := reportsFixture("app-1", "")
+	r.VerificationScope = &compliance.VerificationScope{Status: compliance.VerificationNoChain, Notes: nil}
+
+	out, err := reportsDetailHandler(Deps{Store: &reportsSpyStore{report: r}})(
+		context.Background(), GetReportInput{ID: r.ID.String()}, reportsViewer("app-1", ""))
+	if err != nil {
+		t.Fatalf("reports.detail: %v", err)
+	}
+	raw, err := json.Marshal(out.VerificationScope)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"notes":[]`)) {
+		t.Fatalf("verificationScope = %s, want \"notes\": []", raw)
+	}
+}
+
 // The store is never touched for an ID that does not parse, and the answer
 // is the same as for a real miss.
 func TestReportDetailAndExportRefuseAnUnparseableIDWithoutTouchingTheStore(t *testing.T) {
