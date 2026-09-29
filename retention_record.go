@@ -56,7 +56,7 @@ func (c *Chronicle) RecordRetention(ctx context.Context, ref audit.RetentionRef,
 
 		for start := 0; start < len(entries); start += audit.MaxRetentionEntries {
 			end := min(start+audit.MaxRetentionEntries, len(entries))
-			if err := c.appendRetentionRecord(ctx, ref, group[0], entries[start:end]); err != nil {
+			if _, err := c.appendRetentionRecord(ctx, ref, group[0], entries[start:end]); err != nil {
 				return recorded, err
 			}
 			recorded = append(recorded, ids[start:end]...)
@@ -132,30 +132,31 @@ func (c *Chronicle) retentionEntries(
 	return entries, ids, withheld, nil
 }
 
-// appendRetentionRecord links one retention record into like's stream.
+// appendRetentionRecord links one retention record into like's stream and
+// returns the record's sequence.
 func (c *Chronicle) appendRetentionRecord(
 	ctx context.Context, ref audit.RetentionRef, like *audit.Event, entries []audit.RetentionEntry,
-) error {
+) (uint64, error) {
 	rec := audit.NewRetentionRecord(ref, like.StreamID, entries)
 	rec.ID = id.NewAuditID()
 	rec.Timestamp = time.Now().UTC()
 	rec.AppID, rec.TenantID = like.AppID, like.TenantID
 
 	if err := validateEvent(rec); err != nil {
-		return err
+		return 0, err
 	}
 	// No sealing: a record carries sequences and hashes, never a subject's
 	// personal data, and it has to stay readable after any erasure.
 	if err := c.appendToChain(ctx, rec); err != nil {
-		return fmt.Errorf("chronicle: record retention: %w", err)
+		return 0, fmt.Errorf("chronicle: record retention: %w", err)
 	}
 	if rec.StreamID != like.StreamID {
 		// The scope resolved to a different stream between the check in
 		// retentionEntries and the append. The record landed somewhere it
 		// explains nothing, so report the events as unrecorded.
-		return fmt.Errorf("chronicle: retention record for stream %s landed in stream %s", like.StreamID, rec.StreamID)
+		return 0, fmt.Errorf("chronicle: retention record for stream %s landed in stream %s", like.StreamID, rec.StreamID)
 	}
-	return nil
+	return rec.Sequence, nil
 }
 
 // groupByStream splits events by stream, each group in sequence order, groups

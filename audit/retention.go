@@ -40,6 +40,7 @@ const (
 	retentionKeyCategory = "policy_category"
 	retentionKeyStream   = "stream_id"
 	retentionKeyEntries  = "entries"
+	retentionKeyBackfill = "backfill_source"
 )
 
 // ErrNotRetentionRecord is returned by ParseRetentionRecord for an event that
@@ -50,6 +51,14 @@ var ErrNotRetentionRecord = errors.New("audit: not a retention record")
 type RetentionRef struct {
 	PolicyID string `json:"policy_id"`
 	Category string `json:"category"`
+
+	// Backfill names the archive a backfilled record was recovered from, and
+	// is empty on a record the enforcer wrote at purge time. A backfilled
+	// record explains a purge that happened before retention records existed:
+	// every entry in it was checked against an archived copy of the event,
+	// whose keyed digest was recomputed and whose hashes link to the events
+	// either side of it. See Chronicle.BackfillRetention.
+	Backfill string `json:"backfill,omitempty"`
 }
 
 // RetentionEntry is one removed event, reduced to exactly what the chain needs
@@ -86,6 +95,20 @@ func NewRetentionRecord(ref RetentionRef, streamID id.ID, entries []RetentionEnt
 	for i, e := range entries {
 		encoded[i] = strconv.FormatUint(e.Seq, 10) + ":" + e.PrevHash + ":" + e.Hash
 	}
+	meta := map[string]any{
+		retentionKeyFormat:   retentionFormat,
+		retentionKeyPolicy:   ref.PolicyID,
+		retentionKeyCategory: ref.Category,
+		retentionKeyStream:   streamID.String(),
+		retentionKeyEntries:  encoded,
+	}
+	reason := fmt.Sprintf("retention policy %s (%s)", ref.PolicyID, ref.Category)
+	if ref.Backfill != "" {
+		// Only set when present, so a record the enforcer writes hashes
+		// exactly as it did before backfills existed.
+		meta[retentionKeyBackfill] = ref.Backfill
+		reason = "retention backfill from archive " + ref.Backfill
+	}
 	return &Event{
 		Action:     ActionRetentionPurge,
 		Resource:   "stream",
@@ -93,14 +116,8 @@ func NewRetentionRecord(ref RetentionRef, streamID id.ID, entries []RetentionEnt
 		Category:   CategoryRetention,
 		Outcome:    OutcomeSuccess,
 		Severity:   SeverityInfo,
-		Reason:     fmt.Sprintf("retention policy %s (%s)", ref.PolicyID, ref.Category),
-		Metadata: map[string]any{
-			retentionKeyFormat:   retentionFormat,
-			retentionKeyPolicy:   ref.PolicyID,
-			retentionKeyCategory: ref.Category,
-			retentionKeyStream:   streamID.String(),
-			retentionKeyEntries:  encoded,
-		},
+		Reason:     reason,
+		Metadata:   meta,
 	}
 }
 
@@ -124,6 +141,7 @@ func ParseRetentionRecord(e *Event) (*RetentionRecord, error) {
 		Ref: RetentionRef{
 			PolicyID: metaString(e, retentionKeyPolicy),
 			Category: metaString(e, retentionKeyCategory),
+			Backfill: metaString(e, retentionKeyBackfill),
 		},
 		StreamID: metaString(e, retentionKeyStream),
 	}

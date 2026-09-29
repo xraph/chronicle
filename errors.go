@@ -100,4 +100,21 @@ var (
 	ErrRetentionWithheld = errors.New(
 		"chronicle: retention withheld events that do not verify; they are kept as evidence",
 	)
+
+	// ErrBackfillUnkeyed is returned when a retention backfill is asked to
+	// run against a stream that is not pinned to chronicle/v5, or by a
+	// process that does not write chronicle/v5.
+	//
+	// A backfill turns gaps into retained sequences on the strength of
+	// archived copies of the purged events. That is only evidence when
+	// nobody but the chain writer could have produced those copies. Under an
+	// unkeyed scheme anyone with write access to the store can compute a
+	// valid digest, fabricate an archive to match, and have the backfill
+	// excuse a deletion. The result would be an attestation dressed up as a
+	// proof, so it is refused outright.
+	ErrBackfillUnkeyed = errors.New(
+		"chronicle: retention backfill needs a keyed chronicle/v5 chain; under an unkeyed " +
+			"scheme an archived copy proves nothing, because anyone who can write the store " +
+			"can fabricate one",
+	)
 )

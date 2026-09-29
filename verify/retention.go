@@ -19,6 +19,11 @@ type RetainedRange struct {
 
 	// PolicyID is the retention policy the record says it acted under.
 	PolicyID string `json:"policy_id,omitempty"`
+
+	// Backfill names the archive the record was recovered from, when the
+	// record was backfilled for a purge that predates retention records. It
+	// is empty for a record the enforcer wrote at purge time.
+	Backfill string `json:"backfill,omitempty"`
 }
 
 // retainedEntry is one removed event as an authenticated record lists it.
@@ -26,6 +31,27 @@ type retainedEntry struct {
 	audit.RetentionEntry
 	recordSeq uint64
 	policyID  string
+	backfill  string
+}
+
+// RetainedEntries returns every removed sequence the stream's authentic
+// retention records account for, keyed by sequence, with the hashes either
+// side of each one.
+//
+// It applies exactly the rules VerifyChain does: a record counts only if its
+// own digest verifies under input.Pin, an entry at or after its record's
+// sequence is dropped, and a sequence two records disagree about is left out.
+// input needs StreamID, AppID, TenantID and Pin.
+func (v *Verifier) RetainedEntries(ctx context.Context, input *Input) (map[uint64]audit.RetentionEntry, error) {
+	entries, err := v.retentionEntries(ctx, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uint64]audit.RetentionEntry, len(entries))
+	for seq, e := range entries {
+		out[seq] = e.RetentionEntry
+	}
+	return out, nil
 }
 
 // eventQuerier is how the verifier finds a stream's retention records. Every
@@ -118,7 +144,10 @@ func (v *Verifier) collectRetention(
 		if e.Seq >= rec.Sequence {
 			continue
 		}
-		next := retainedEntry{RetentionEntry: e, recordSeq: rec.Sequence, policyID: parsed.Ref.PolicyID}
+		next := retainedEntry{
+			RetentionEntry: e, recordSeq: rec.Sequence,
+			policyID: parsed.Ref.PolicyID, backfill: parsed.Ref.Backfill,
+		}
 		prev, seen := entries[e.Seq]
 		switch {
 		case !seen:
@@ -172,7 +201,10 @@ func splitGaps(gaps []uint64, retained map[uint64]retainedEntry) (unexplained []
 			ranges[n-1].ToSeq = seq
 			continue
 		}
-		ranges = append(ranges, RetainedRange{FromSeq: seq, ToSeq: seq, RecordSeq: e.recordSeq, PolicyID: e.policyID})
+		ranges = append(ranges, RetainedRange{
+			FromSeq: seq, ToSeq: seq, RecordSeq: e.recordSeq,
+			PolicyID: e.policyID, Backfill: e.backfill,
+		})
 	}
 	return unexplained, ranges
 }

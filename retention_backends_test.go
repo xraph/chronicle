@@ -38,6 +38,15 @@ import (
 // disturb other data in the database. It still refuses the default ports: on
 // the machine this was written on, those are another project's live databases.
 func TestRetentionProbeOnEachBackend(t *testing.T) {
+	forEachBackend(t, func(t *testing.T, s store.Store) {
+		runProbe(t, s, "probe-"+id.NewAuditID().String())
+	})
+}
+
+// forEachBackend runs fn against a migrated store for each backend whose
+// environment variable is set, and skips the rest.
+func forEachBackend(t *testing.T, fn func(t *testing.T, s store.Store)) {
+	t.Helper()
 	for _, b := range []struct {
 		name, env string
 		open      func(t *testing.T, dsn string) store.Store
@@ -61,7 +70,7 @@ func TestRetentionProbeOnEachBackend(t *testing.T) {
 			if err := s.Migrate(context.Background()); err != nil {
 				t.Fatalf("Migrate: %v", err)
 			}
-			runProbe(t, s, "probe-"+id.NewAuditID().String())
+			fn(t, s)
 		})
 	}
 }
