@@ -400,7 +400,7 @@ func TestGenerateRecordsThePrincipalsSubjectAsGeneratedBy(t *testing.T) {
 	s := memory.New()
 	deps := Deps{Store: s, Engine: reportsEngineOver(s)}
 	p := fcontract.Principal{
-		User:   &dashauth.UserInfo{Subject: "auditor-7"},
+		User:   &dashauth.UserInfo{Subject: "auditor-7", Scopes: []string{appWideScope}},
 		Claims: map[string]any{"app_id": "app-1"},
 	}
 	out, err := reportsGenerateHandler(deps)(context.Background(), GenerateReportInput{Type: "soc2"}, p)

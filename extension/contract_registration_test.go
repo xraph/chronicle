@@ -17,7 +17,7 @@ import (
 // contractPrincipal builds a dashboard principal carrying the given claims.
 func contractPrincipal(claims map[string]any) fcontract.Principal {
 	return fcontract.Principal{
-		User:   &dashauth.UserInfo{Subject: "operator-1", Claims: claims},
+		User:   &dashauth.UserInfo{Subject: "operator-1", Claims: claims, Scopes: []string{"chronicle.admin"}},
 		Claims: claims,
 	}
 }

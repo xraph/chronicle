@@ -27,10 +27,23 @@ import (
 	"github.com/xraph/chronicle/stream"
 )
 
-// principalWith builds a dashboard principal carrying the given claims.
+// principalWith builds a dashboard principal carrying the given claims and the
+// chronicle.admin scope, so a claims map with an app and no tenant reads as the
+// app-wide operator most tests mean. A test about what a session without that
+// scope may see uses principalWithScopes or principalWithoutScopes.
 func principalWith(claims map[string]any) fcontract.Principal {
+	return principalWithScopes(claims, appWideScope)
+}
+
+// principalWithoutScopes builds a principal with claims and no scopes at all.
+func principalWithoutScopes(claims map[string]any) fcontract.Principal {
+	return principalWithScopes(claims)
+}
+
+// principalWithScopes builds a principal with claims and exactly these scopes.
+func principalWithScopes(claims map[string]any, scopes ...string) fcontract.Principal {
 	return fcontract.Principal{
-		User:   &dashauth.UserInfo{Subject: "operator-1", Claims: claims},
+		User:   &dashauth.UserInfo{Subject: "operator-1", Claims: claims, Scopes: scopes},
 		Claims: claims,
 	}
 }

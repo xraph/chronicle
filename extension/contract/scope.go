@@ -61,6 +61,9 @@ type viewScope struct {
 // lost the app on the way here. Pairing that tenant with the configured app
 // would guess which app the tenant was ever meant for.
 //
+// Last comes the app-wide grant: when the app came from a claim and no tenant
+// resolves, the session must hold chronicle.admin.
+//
 // Every handler calls this before it touches the store.
 func scopeFromPrincipal(p fcontract.Principal, deps Deps) (viewScope, error) {
 	if !hasUser(p) {
@@ -87,7 +90,41 @@ func scopeFromPrincipal(p fcontract.Principal, deps Deps) (viewScope, error) {
 		return viewScope{}, err
 	}
 
+	// An app-wide view over a claimed app needs an explicit grant. Upstreams
+	// derive the tenant claim from a session's active organisation, and a user
+	// can clear that, so "app claim, no tenant claim" is what a tenant member
+	// who cleared their org looks like as much as what an operator looks like.
+	// Reading it as app-wide would show them every tenant in the app. A tenant
+	// view needs no grant, and neither does an app taken from the config: there
+	// are no claims there to trust or distrust, and naming the app was the
+	// operator's own choice.
+	if tenantID == "" && appFromClaim && !hasScope(p, appWideScope) {
+		return viewScope{}, &fcontract.Error{
+			Code: fcontract.CodePermissionDenied,
+			Message: "an app-wide view needs the " + appWideScope + " scope, or a tenant claim " +
+				"(tenant_id or org_id) on this session",
+		}
+	}
+
 	return viewScope{AppID: appID, TenantID: tenantID}, nil
+}
+
+// appWideScope is the scope that lets a session with an app claim and no
+// tenant claim see every tenant in that app. It is matched the way forge's
+// "scope:X" predicate is: exactly, against the user's Scopes.
+const appWideScope = "chronicle.admin"
+
+// hasScope reports whether the signed-in user holds scope exactly.
+func hasScope(p fcontract.Principal, scope string) bool {
+	if p.User == nil {
+		return false
+	}
+	for _, s := range p.User.Scopes {
+		if s == scope {
+			return true
+		}
+	}
+	return false
 }
 
 // hasUser reports whether the principal names a signed-in user. A subject that

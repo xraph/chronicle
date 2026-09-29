@@ -346,3 +346,97 @@ func TestYAMLDashboardTenantWithoutAppIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// claimedPrincipal is a signed-in user whose claims name an app (and
+// optionally more) and who holds exactly the given scopes.
+func claimedPrincipal(claims map[string]any, scopes ...string) fcontract.Principal {
+	return fcontract.Principal{
+		User:   &dashauth.UserInfo{Subject: "operator-1", Claims: claims, Scopes: scopes},
+		Claims: claims,
+	}
+}
+
+func actionsSeenByPrincipal(t *testing.T, ext *extension.Extension, p fcontract.Principal) ([]string, error) {
+	t.Helper()
+	d := registerContract(t, ext)
+	data, err := dispatchQuery(d, "events.list", p)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Events []struct {
+			Action string `json:"action"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("decode %s: %v", data, err)
+	}
+	actions := make([]string, 0, len(out.Events))
+	for _, e := range out.Events {
+		actions = append(actions, e.Action)
+	}
+	sort.Strings(actions)
+	return actions, nil
+}
+
+// Through a Register-wired extension: a session with an app claim and no
+// tenant claim sees every tenant only if it holds chronicle.admin. Without it
+// the session is refused, which is what an org member who cleared their active
+// organisation looks like. A tenant claim needs no scope, and an app named by
+// the config needs none either.
+func TestClaimedAppWithNoTenantNeedsTheAdminScope(t *testing.T) {
+	appClaim := map[string]any{"app_id": dashScopeApp}
+	all := []string{"app-level", "x-1", "x-2", "y-1"}
+
+	t.Run("with chronicle.admin: app-wide", func(t *testing.T) {
+		ext := registerTenantedExtension(t, forge.New(forge.WithAppName("t")), extension.DashboardConfig{}, dashScopeApp)
+		got, err := actionsSeenByPrincipal(t, ext, claimedPrincipal(appClaim, "chronicle.admin"))
+		if err != nil {
+			t.Fatalf("events.list: %v", err)
+		}
+		wantActions(t, got, all...)
+	})
+	for name, scopes := range map[string][]string{
+		"without it":      nil,
+		"with only write": {"chronicle.write"},
+		"with only read":  {"chronicle.read"},
+	} {
+		t.Run(name+": refused", func(t *testing.T) {
+			ext := registerTenantedExtension(t, forge.New(forge.WithAppName("t")), extension.DashboardConfig{}, dashScopeApp)
+			_, err := actionsSeenByPrincipal(t, ext, claimedPrincipal(appClaim, scopes...))
+			if !errors.Is(err, fcontract.ErrPermissionDenied) {
+				t.Fatalf("err = %v, want PERMISSION_DENIED", err)
+			}
+			if err != nil && !strings.Contains(err.Error(), "chronicle.admin") {
+				t.Errorf("error %q does not say an app-wide view needs chronicle.admin", err.Error())
+			}
+		})
+	}
+	t.Run("with an org_id claim and no scopes: that tenant only", func(t *testing.T) {
+		ext := registerTenantedExtension(t, forge.New(forge.WithAppName("t")), extension.DashboardConfig{}, dashScopeApp)
+		got, err := actionsSeenByPrincipal(t, ext, claimedPrincipal(
+			map[string]any{"app_id": dashScopeApp, "org_id": "tenant-x"}))
+		if err != nil {
+			t.Fatalf("events.list: %v", err)
+		}
+		wantActions(t, got, "x-1", "x-2")
+	})
+	t.Run("no claims, app from the config, no scopes: app-wide", func(t *testing.T) {
+		ext := registerTenantedExtension(t, forge.New(forge.WithAppName("t")),
+			extension.DashboardConfig{AppID: dashScopeApp}, dashScopeApp)
+		got, err := actionsSeenByPrincipal(t, ext, claimedPrincipal(nil))
+		if err != nil {
+			t.Fatalf("events.list: %v", err)
+		}
+		wantActions(t, got, all...)
+	})
+	t.Run("claimed app equal to the config app with a config tenant, no scopes: that tenant only", func(t *testing.T) {
+		ext := registerTenantedExtension(t, forge.New(forge.WithAppName("t")),
+			extension.DashboardConfig{AppID: dashScopeApp, TenantID: "tenant-x"}, dashScopeApp)
+		got, err := actionsSeenByPrincipal(t, ext, claimedPrincipal(appClaim))
+		if err != nil {
+			t.Fatalf("events.list: %v", err)
+		}
+		wantActions(t, got, "x-1", "x-2")
+	})
+}

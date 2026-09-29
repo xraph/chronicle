@@ -190,7 +190,7 @@ func TestScopeRefusesAPrincipalWithNoUserBeforeReadingAnythingElse(t *testing.T)
 // A subject that merely has whitespace around a name is still a user.
 func TestScopeAcceptsASubjectWithSurroundingWhitespace(t *testing.T) {
 	p := fcontract.Principal{
-		User:   &dashauth.UserInfo{Subject: " operator-1 "},
+		User:   &dashauth.UserInfo{Subject: " operator-1 ", Scopes: []string{appWideScope}},
 		Claims: map[string]any{"app_id": "app-1"},
 	}
 	if _, err := scopeFromPrincipal(p, Deps{}); err != nil {

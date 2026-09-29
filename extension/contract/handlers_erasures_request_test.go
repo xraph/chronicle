@@ -77,7 +77,7 @@ func (s *erasureRequestSpyStore) deps() Deps {
 // test can tell "taken from the principal" from a value it happened to share.
 func erasureAdmin(claims map[string]any) fcontract.Principal {
 	return fcontract.Principal{
-		User:   &dashauth.UserInfo{Subject: "dpo-9", Claims: claims},
+		User:   &dashauth.UserInfo{Subject: "dpo-9", Claims: claims, Scopes: []string{appWideScope}},
 		Claims: claims,
 	}
 }
