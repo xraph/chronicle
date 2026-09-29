@@ -56,19 +56,39 @@ func TestScopeFromPrincipalFallsBackToOrgID(t *testing.T) {
 	}
 }
 
-// tenant_id is checked first, so a session carrying both spellings is
-// scoped by tenant_id.
-func TestScopeFromPrincipalPrefersTenantIDOverOrgID(t *testing.T) {
-	v, err := scopeFromPrincipal(principalWith(map[string]any{
-		"app_id":    "app-1",
-		"tenant_id": "tenant-a",
-		"org_id":    "tenant-b",
-	}))
-	if err != nil {
-		t.Fatalf("scopeFromPrincipal: %v", err)
+// tenant_id and org_id are two spellings of one dimension, so a session can
+// carry neither (app-wide), one, or both. Both is only accepted when they
+// agree. Two different tenants on one session means some layer wrote a tenant
+// the upstream did not, and picking either one would be a guess.
+func TestScopeFromPrincipalTenantClaimShapes(t *testing.T) {
+	cases := []struct {
+		name    string
+		claims  map[string]any
+		want    string
+		refused bool
+	}{
+		{"neither", map[string]any{"app_id": "app-1"}, "", false},
+		{"tenant_id only", map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"}, "tenant-a", false},
+		{"org_id only", map[string]any{"app_id": "app-1", "org_id": "tenant-a"}, "tenant-a", false},
+		{"both equal", map[string]any{"app_id": "app-1", "tenant_id": "tenant-a", "org_id": "tenant-a"}, "tenant-a", false},
+		{"both different", map[string]any{"app_id": "app-1", "tenant_id": "tenant-a", "org_id": "tenant-b"}, "", true},
 	}
-	if v.TenantID != "tenant-a" {
-		t.Fatalf("TenantID = %q, want tenant-a", v.TenantID)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, err := scopeFromPrincipal(principalWith(tc.claims))
+			if tc.refused {
+				if !errors.Is(err, fcontract.ErrPermissionDenied) {
+					t.Fatalf("err = %v (scope %+v), want PERMISSION_DENIED", err, v)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("scopeFromPrincipal: %v", err)
+			}
+			if v.AppID != "app-1" || v.TenantID != tc.want {
+				t.Fatalf("scope = %+v, want app-1/%q", v, tc.want)
+			}
+		})
 	}
 }
 

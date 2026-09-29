@@ -67,7 +67,10 @@ func scopeFromPrincipal(p fcontract.Principal) (viewScope, error) {
 // Both keys are checked, and a bad value in either refuses the session even
 // when the other is good: treating one spelling as a stand-in for a claim we
 // could not read is a guess about what the upstream meant. When both are
-// present and readable, tenant_id wins.
+// present and readable they must be equal. Two different tenants on one
+// session means some layer wrote a tenant the upstream did not, and picking
+// either one is a guess about which layer to trust, so it is refused with the
+// same code as an unreadable claim.
 func tenantFromClaims(p fcontract.Principal) (string, error) {
 	var tenant string
 	for _, key := range []string{"tenant_id", "org_id"} {
@@ -82,9 +85,13 @@ func tenantFromClaims(p fcontract.Principal) (string, error) {
 				Message: "tenant scope on this session is unreadable",
 			}
 		}
-		if tenant == "" {
-			tenant = s
+		if tenant != "" && tenant != s {
+			return "", &fcontract.Error{
+				Code:    fcontract.CodePermissionDenied,
+				Message: "tenant scope on this session is ambiguous",
+			}
 		}
+		tenant = s
 	}
 	return tenant, nil
 }
