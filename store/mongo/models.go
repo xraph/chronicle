@@ -22,6 +22,8 @@ import (
 // ──────────────────────────────────────────────────
 
 // EventModel is the grove ORM model for the chronicle_events collection.
+//
+// Timestamp is split across two fields. See splitTimestamp for why.
 type EventModel struct {
 	grove.BaseModel `grove:"table:chronicle_events"`
 
@@ -48,6 +50,7 @@ type EventModel struct {
 	ErasedAt        *time.Time     `grove:"erased_at"          bson:"erased_at,omitempty"`
 	ErasureID       string         `grove:"erasure_id"         bson:"erasure_id,omitempty"`
 	Timestamp       time.Time      `grove:"timestamp"          bson:"timestamp"`
+	TimestampSubMs  int32          `grove:"timestamp_sub_ms"   bson:"timestamp_sub_ms"`
 	CreatedAt       time.Time      `grove:"created_at"         bson:"created_at"`
 	HashScheme      string         `grove:"hash_scheme"        bson:"hash_scheme,omitempty"`
 	HashKeyID       string         `grove:"hash_key_id"        bson:"hash_key_id,omitempty"`
@@ -87,13 +90,14 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		Erased:          m.Erased,
 		ErasedAt:        m.ErasedAt,
 		ErasureID:       m.ErasureID,
-		Timestamp:       m.Timestamp,
+		Timestamp:       joinTimestamp(m.Timestamp, m.TimestampSubMs),
 		HashScheme:      m.HashScheme,
 		HashKeyID:       m.HashKeyID,
 	}, nil
 }
 
 func fromEvent(e *audit.Event) *EventModel {
+	ts, subMs := splitTimestamp(e.Timestamp)
 	return &EventModel{
 		ID:              e.ID.String(),
 		StreamID:        e.StreamID.String(),
@@ -117,11 +121,51 @@ func fromEvent(e *audit.Event) *EventModel {
 		Erased:          e.Erased,
 		ErasedAt:        e.ErasedAt,
 		ErasureID:       e.ErasureID,
-		Timestamp:       e.Timestamp,
+		Timestamp:       ts,
+		TimestampSubMs:  subMs,
 		CreatedAt:       time.Now().UTC(),
 		HashScheme:      e.HashScheme,
 		HashKeyID:       e.HashKeyID,
 	}
+}
+
+// splitTimestamp divides an event timestamp into the part a BSON date can hold
+// and the nanoseconds below it.
+//
+// The hash chain covers the timestamp to the nanosecond (hash.Chain formats it
+// with time.RFC3339Nano), and a BSON date keeps milliseconds. Storing the
+// timestamp as a date alone handed every reader a different instant from the
+// one that was hashed, so every event with a sub-millisecond component read
+// back as tampered. On a clock with microsecond or nanosecond resolution that
+// is nearly all of them.
+//
+// We keep the full value rather than truncating before hashing. An audit log
+// records when something happened as the caller reported it. Rounding that to
+// suit one backend's storage would change the evidence, and would mean events
+// hashed on a different backend or an earlier release could never verify here.
+// The date stays the millisecond floor, so the timestamp indexes, range
+// filters and sort order behave exactly as they did.
+//
+// The date is truncated here rather than left for the driver to floor, so the
+// two halves are guaranteed to add back up to the original.
+func splitTimestamp(t time.Time) (date time.Time, subMs int32) {
+	date = t.Truncate(time.Millisecond)
+	return date, int32(t.Sub(date)) //nolint:gosec // always in [0, 1e6)
+}
+
+// joinTimestamp reverses splitTimestamp.
+//
+// A row written before timestamp_sub_ms existed decodes it as zero and reads
+// back as the millisecond date it holds, as it always did. Those rows lost
+// their sub-millisecond digits on insert and the row no longer holds them, so a
+// row whose original timestamp had any will still fail verification. It is not
+// reported wrongly: the stored digest covers an instant the row no longer
+// holds.
+//
+// The remainder is not range-checked. A tampered value moves the timestamp,
+// and verification reports that event as tampered, which is the right answer.
+func joinTimestamp(date time.Time, subMs int32) time.Time {
+	return date.Add(time.Duration(subMs))
 }
 
 // toEventSlice converts a slice of EventModel to a slice of audit.Event.
