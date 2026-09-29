@@ -44,7 +44,7 @@ type viewScope struct {
 // before any claim or default is read. A subject that is empty or only
 // whitespace is no user: it names nobody, and would otherwise pass for one.
 //
-// Then each dimension resolves on its own, in this order:
+// Then the app and the tenant resolve in this order:
 //
 //  1. A claim that is present and usable wins.
 //  2. A claim that is present and unusable refuses. It never falls back to
@@ -52,9 +52,13 @@ type viewScope struct {
 //     value has failed to resolve one, and letting a legitimate default
 //     cover for that failure is how a session ends up in a scope nobody
 //     assigned it.
-//  3. A claim that is absent takes the configured default.
+//  3. An absent app claim takes the configured app. An absent tenant claim
+//     takes the configured tenant only when the app came from the config
+//     too. A session whose app came from a claim never takes it: a user
+//     who cleared their active org would otherwise land in that tenant.
 //  4. An app still unresolved is refused, and the message names the setting
-//     to add. A tenant still unresolved is an app-wide view.
+//     to add. A tenant still unresolved is an app-wide view, which a claimed
+//     app only gets with the chronicle.admin scope.
 //
 // A tenant claim with no app claim beside it is refused whatever the config
 // says. The tenant was written by an upstream that also owned the app, and it
