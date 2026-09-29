@@ -34,7 +34,23 @@ if err := s.Migrate(ctx); err != nil {
 }
 ```
 
-Migrations create collections with JSON Schema validation (auto-generated from Grove model structs) and apply indexes on all Chronicle collections. They are idempotent -- safe to run on every startup.
+Migrations create collections with JSON Schema validation (auto-generated from Grove model structs) and apply indexes on all Chronicle collections. They are idempotent, so you can run them on every startup.
+
+Retention policies are unique per `(app_id, tenant_id, category)`. Older releases indexed `category` alone, which meant only the first app or tenant to save a policy for a category could ever have one, and everyone after it got `E11000`. `Migrate` and the `scope_chronicle_retention_policy_index` migration both drop that old `category_1` index for you.
+
+## Timestamps and chain verification
+
+A BSON date holds milliseconds. The hash chain covers an event's timestamp to the nanosecond, so the store writes it across two fields: `timestamp` keeps the millisecond part and `timestamp_sub_ms` keeps the nanoseconds below it. Reads add the two back together, and you get the exact instant that was hashed.
+
+Nothing is rounded before hashing. The timestamp you record is the one that's kept, and an event verifies the same way whichever backend wrote it.
+
+The indexes, range filters and sort order all still run on `timestamp`, so they work at millisecond resolution. An event that shares a millisecond with a query bound can land on either side of it.
+
+### Rows from earlier releases
+
+Earlier releases stored the BSON date alone, so those rows lost their sub-millisecond digits on insert. Their digests were computed over the full timestamp and the rows no longer hold it, which means the digests can't be recomputed. `VerifyChain` reports each of those events as tampered and will keep doing so after you upgrade. Nobody edited them. Verification just has no way to tell a store that dropped digits apart from someone who changed a row, and it doesn't try.
+
+Events whose timestamp had nothing below the millisecond are unaffected and still verify. Everything written after you upgrade verifies normally.
 
 ## Full setup with `chronicle.New`
 
