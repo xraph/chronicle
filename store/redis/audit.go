@@ -13,36 +13,37 @@ import (
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/metajson"
 )
 
 // eventModel is the JSON representation stored in Redis.
 type eventModel struct {
-	ID              string         `json:"id"`
-	StreamID        string         `json:"stream_id"`
-	Sequence        uint64         `json:"sequence"`
-	Hash            string         `json:"hash"`
-	PrevHash        string         `json:"prev_hash"`
-	AppID           string         `json:"app_id"`
-	TenantID        string         `json:"tenant_id"`
-	UserID          string         `json:"user_id"`
-	IP              string         `json:"ip"`
-	Action          string         `json:"action"`
-	Resource        string         `json:"resource"`
-	Category        string         `json:"category"`
-	ResourceID      string         `json:"resource_id"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
-	Outcome         string         `json:"outcome"`
-	Severity        string         `json:"severity"`
-	Reason          string         `json:"reason"`
-	SubjectID       string         `json:"subject_id"`
-	EncryptionKeyID string         `json:"encryption_key_id"`
-	Erased          bool           `json:"erased"`
-	ErasedAt        *time.Time     `json:"erased_at,omitempty"`
-	ErasureID       string         `json:"erasure_id,omitempty"`
-	Timestamp       time.Time      `json:"timestamp"`
-	CreatedAt       time.Time      `json:"created_at"`
-	HashScheme      string         `json:"hash_scheme,omitempty"`
-	HashKeyID       string         `json:"hash_key_id,omitempty"`
+	ID              string       `json:"id"`
+	StreamID        string       `json:"stream_id"`
+	Sequence        uint64       `json:"sequence"`
+	Hash            string       `json:"hash"`
+	PrevHash        string       `json:"prev_hash"`
+	AppID           string       `json:"app_id"`
+	TenantID        string       `json:"tenant_id"`
+	UserID          string       `json:"user_id"`
+	IP              string       `json:"ip"`
+	Action          string       `json:"action"`
+	Resource        string       `json:"resource"`
+	Category        string       `json:"category"`
+	ResourceID      string       `json:"resource_id"`
+	Metadata        metajson.Map `json:"metadata,omitempty"` // decodes without rounding integers past 2^53
+	Outcome         string       `json:"outcome"`
+	Severity        string       `json:"severity"`
+	Reason          string       `json:"reason"`
+	SubjectID       string       `json:"subject_id"`
+	EncryptionKeyID string       `json:"encryption_key_id"`
+	Erased          bool         `json:"erased"`
+	ErasedAt        *time.Time   `json:"erased_at,omitempty"`
+	ErasureID       string       `json:"erasure_id,omitempty"`
+	Timestamp       time.Time    `json:"timestamp"`
+	CreatedAt       time.Time    `json:"created_at"`
+	HashScheme      string       `json:"hash_scheme,omitempty"`
+	HashKeyID       string       `json:"hash_key_id,omitempty"`
 }
 
 func toEventModel(e *audit.Event) *eventModel {

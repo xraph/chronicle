@@ -13,6 +13,7 @@ import (
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/metajson"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/stream"
 )
@@ -90,11 +91,11 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		return nil, fmt.Errorf("failed to parse stream id %q: %w", m.StreamID, err)
 	}
 
-	var metadata map[string]any
-	if m.Metadata != "" {
-		if unmarshalErr := json.Unmarshal([]byte(m.Metadata), &metadata); unmarshalErr != nil {
-			return nil, fmt.Errorf("failed to unmarshal metadata: %w", unmarshalErr)
-		}
+	// Not json.Unmarshal: it reads every number as float64, rounding integers
+	// past 2^53, and the digest covers the encoding of what Record was given.
+	metadata, err := metajson.Decode([]byte(m.Metadata))
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
 
 	ts, err := time.Parse(time.RFC3339Nano, m.Timestamp)
