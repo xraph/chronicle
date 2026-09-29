@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"unicode"
 
 	"github.com/xraph/chronicle/audit"
 )
@@ -20,18 +21,27 @@ import (
 type contextKey int
 
 const (
-	appIDKey    contextKey = iota
-	tenantIDKey contextKey = iota
-	userIDKey   contextKey = iota
-	ipKey       contextKey = iota
+	appIDKey     contextKey = iota
+	tenantIDKey  contextKey = iota
+	userIDKey    contextKey = iota
+	ipKey        contextKey = iota
+	userAgentKey contextKey = iota
+	requestIDKey contextKey = iota
 )
+
+// maxRequestIDLength bounds an inbound X-Request-ID. The value is written into
+// every event for the request, so an unbounded one lets a client inflate the
+// audit trail at will.
+const maxRequestIDLength = 128
 
 // Info holds extracted scope information from the context.
 type Info struct {
-	AppID    string
-	TenantID string
-	UserID   string
-	IP       string
+	AppID     string
+	TenantID  string
+	UserID    string
+	IP        string
+	UserAgent string
+	RequestID string
 }
 
 // WithAppID returns a context with the given app ID.
@@ -54,6 +64,16 @@ func WithIP(ctx context.Context, ip string) context.Context {
 	return context.WithValue(ctx, ipKey, ip)
 }
 
+// WithUserAgent returns a context with the given User-Agent string.
+func WithUserAgent(ctx context.Context, ua string) context.Context {
+	return context.WithValue(ctx, userAgentKey, ua)
+}
+
+// WithRequestID returns a context with the given request correlation id.
+func WithRequestID(ctx context.Context, rid string) context.Context {
+	return context.WithValue(ctx, requestIDKey, rid)
+}
+
 // WithInfo returns a context with all scope info set at once.
 func WithInfo(ctx context.Context, info Info) context.Context {
 	if info.AppID != "" {
@@ -67,6 +87,12 @@ func WithInfo(ctx context.Context, info Info) context.Context {
 	}
 	if info.IP != "" {
 		ctx = WithIP(ctx, info.IP)
+	}
+	if info.UserAgent != "" {
+		ctx = WithUserAgent(ctx, info.UserAgent)
+	}
+	if info.RequestID != "" {
+		ctx = WithRequestID(ctx, info.RequestID)
 	}
 	return ctx
 }
@@ -88,6 +114,12 @@ func FromContext(ctx context.Context) Info {
 	}
 	if v, ok := ctx.Value(ipKey).(string); ok {
 		info.IP = v
+	}
+	if v, ok := ctx.Value(userAgentKey).(string); ok {
+		info.UserAgent = v
+	}
+	if v, ok := ctx.Value(requestIDKey).(string); ok {
+		info.RequestID = v
 	}
 
 	return info
@@ -116,7 +148,29 @@ func FromRequestWithProxies(r *http.Request, trusted []netip.Prefix) Info {
 	if info.IP == "" {
 		info.IP = clientIP(r, trusted)
 	}
+	if info.UserAgent == "" {
+		info.UserAgent = r.UserAgent()
+	}
+	if info.RequestID == "" {
+		info.RequestID = sanitizeRequestID(r.Header.Get("X-Request-ID"))
+	}
 	return info
+}
+
+// sanitizeRequestID accepts a client-supplied correlation id only if it is
+// bounded in length and made of printable, non-space characters. Anything
+// else returns "" so the field is simply absent rather than polluted.
+func sanitizeRequestID(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" || len(v) > maxRequestIDLength {
+		return ""
+	}
+	for _, r := range v {
+		if r <= ' ' || r == 0x7f || !unicode.IsPrint(r) {
+			return ""
+		}
+	}
+	return v
 }
 
 // ParseTrustedProxies converts CIDR blocks or bare addresses into prefixes for
@@ -168,6 +222,12 @@ func ApplyToEvent(ctx context.Context, event *audit.Event) {
 	}
 	if event.IP == "" {
 		event.IP = info.IP
+	}
+	if event.UserAgent == "" {
+		event.UserAgent = info.UserAgent
+	}
+	if event.RequestID == "" {
+		event.RequestID = info.RequestID
 	}
 }
 

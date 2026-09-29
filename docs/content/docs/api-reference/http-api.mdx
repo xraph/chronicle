@@ -171,6 +171,16 @@ Request body:
 }
 ```
 
+After a retention policy has removed events, the report also carries `retained`, one entry per run of removed sequences:
+
+```json
+"retained": [
+  { "from_seq": 1, "to_seq": 1, "record_seq": 43, "policy_id": "retpol_01h..." }
+]
+```
+
+Those sequences don't count as gaps. `record_seq` is the retention record that lists them.
+
 ---
 
 ## Erasure
@@ -201,6 +211,8 @@ Request body:
   "key_destroyed": true
 }
 ```
+
+The erasure only reaches the caller's app and tenant, keys included. When some of the events were sealed before keys were scoped, under a key another tenant still depends on, the response has `"key_destroyed": false` and `"legacy_key_retained": true`. See [Erasure](/docs/subsystems/erasure#upgrading-from-subject-keyed-seals) for what that means and how the key gets cleaned up.
 
 ### List erasures
 

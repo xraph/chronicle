@@ -9,6 +9,7 @@ import (
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/internal/metajson"
 )
 
 // sealPrefix marks a field value as ciphertext produced by [Sealer.Seal].
@@ -24,13 +25,20 @@ const sealedMetadataKey = "__chronicle_sealed"
 // ErasedMarker replaces a sealed value whose key has been destroyed.
 const ErasedMarker = "[ERASED]"
 
+// ErrKeyScopeMismatch is returned by [Sealer.Open] when an event's recorded
+// key ID names a different app, tenant or subject than the event itself.
+// EncryptionKeyID is not covered by the hash, so this is how an edited row is
+// caught before it can point a read at another scope's key.
+var ErrKeyScopeMismatch = errors.New("crypto: event's key ID names a different scope")
+
 // ErrAlreadySealed is returned when sealing an event that already carries
 // ciphertext, which would make the original unrecoverable behind two layers.
 var ErrAlreadySealed = errors.New("crypto: event is already sealed")
 
 // Sealer encrypts and decrypts the personal payload of an audit event using a
-// per-subject key, which is what makes crypto-erasure work: destroy the key and
-// the payload is unrecoverable while the event's shape and hash chain survive.
+// key per subject within each app and tenant (see [ScopedKeyID]). That is what
+// makes crypto-erasure work: destroy the key and the payload is unrecoverable
+// while the event's shape and hash chain survive.
 //
 // Sealed fields are Metadata, Reason and IP. Deliberately left in plaintext:
 //
@@ -72,7 +80,8 @@ func (s *Sealer) Seal(event *audit.Event) error {
 		return ErrAlreadySealed
 	}
 
-	key, keyID, err := s.keys.GetOrCreate(event.SubjectID)
+	keyID := ScopedKeyID(event.AppID, event.TenantID, event.SubjectID)
+	key, _, err := s.keys.GetOrCreate(keyID)
 	if err != nil {
 		return fmt.Errorf("crypto: resolve key for subject %q: %w", event.SubjectID, err)
 	}
@@ -88,6 +97,13 @@ func (s *Sealer) Seal(event *audit.Event) error {
 		event.IP, err = s.sealString(key, event.IP)
 		if err != nil {
 			return fmt.Errorf("crypto: seal ip: %w", err)
+		}
+	}
+
+	if event.UserAgent != "" {
+		event.UserAgent, err = s.sealString(key, event.UserAgent)
+		if err != nil {
+			return fmt.Errorf("crypto: seal user agent: %w", err)
 		}
 	}
 
@@ -115,28 +131,34 @@ func (s *Sealer) Seal(event *audit.Event) error {
 // a destroyed key is the expected end state of an erasure, not a failure, and the
 // remaining record still has to be readable.
 //
+// An event already flagged Erased is redacted the same way without touching the
+// key. Its key can outlive the erasure when a legacy key is shared with another
+// scope (see the erasure package), and an erased event must never display its
+// payload whether or not the key is still around.
+//
 // Open must not be used on events destined for hash verification. The stored
 // bytes are what the digest covers, so a verifier has to see the sealed form.
 func (s *Sealer) Open(event *audit.Event) error {
 	if event.EncryptionKeyID == "" {
 		return nil
 	}
-
-	// KeyStore is keyed by subject: erasure destroys a subject's key, so that is
-	// what a lookup has to ask for. EncryptionKeyID records only that the event
-	// was sealed, and with which key generation.
-	subject := event.SubjectID
-	if subject == "" {
-		subject = event.EncryptionKeyID
+	if event.Erased {
+		markErased(event)
+		return nil
 	}
 
-	key, err := s.keys.Get(subject)
+	keyID, err := openKeyID(event)
+	if err != nil {
+		return err
+	}
+
+	key, err := s.keys.Get(keyID)
 	if err != nil {
 		if errors.Is(err, chronicle.ErrErasureKeyNotFound) {
 			markErased(event)
 			return nil
 		}
-		return fmt.Errorf("crypto: resolve key for subject %q: %w", subject, err)
+		return fmt.Errorf("crypto: resolve key for subject %q: %w", event.SubjectID, err)
 	}
 
 	if isSealedString(event.Reason) {
@@ -153,20 +175,47 @@ func (s *Sealer) Open(event *audit.Event) error {
 		}
 	}
 
+	if isSealedString(event.UserAgent) {
+		event.UserAgent, err = s.openString(key, event.UserAgent)
+		if err != nil {
+			return fmt.Errorf("crypto: open user agent: %w", err)
+		}
+	}
+
 	if sealed, ok := sealedMetadata(event.Metadata); ok {
 		plaintext, openErr := s.openBytes(key, sealed)
 		if openErr != nil {
 			return fmt.Errorf("crypto: open metadata: %w", openErr)
 		}
 
-		var metadata map[string]any
-		if unmarshalErr := json.Unmarshal(plaintext, &metadata); unmarshalErr != nil {
-			return fmt.Errorf("crypto: unmarshal metadata: %w", unmarshalErr)
+		metadata, decodeErr := metajson.Decode(plaintext)
+		if decodeErr != nil {
+			return fmt.Errorf("crypto: unmarshal metadata: %w", decodeErr)
 		}
 		event.Metadata = metadata
 	}
 
 	return nil
+}
+
+// openKeyID returns the key store ID an event was sealed under.
+//
+// A scoped ID is used as recorded, once it is confirmed to name the event's own
+// app, tenant and subject. Anything else was sealed before keys were scoped,
+// when the key store was addressed by subject ID alone, so that is what the
+// lookup asks for. That fallback is what keeps pre-upgrade events readable.
+func openKeyID(event *audit.Event) (string, error) {
+	appID, tenantID, subjectID, ok := ParseScopedKeyID(event.EncryptionKeyID)
+	if !ok {
+		if event.SubjectID != "" {
+			return event.SubjectID, nil
+		}
+		return event.EncryptionKeyID, nil
+	}
+	if appID != event.AppID || tenantID != event.TenantID || subjectID != event.SubjectID {
+		return "", fmt.Errorf("%w: event %s", ErrKeyScopeMismatch, event.ID)
+	}
+	return event.EncryptionKeyID, nil
 }
 
 // OpenAll decrypts each event in place, stopping at the first hard failure.
@@ -184,7 +233,7 @@ func (s *Sealer) OpenAll(events []*audit.Event) error {
 
 // IsSealed reports whether any of the event's payload fields hold ciphertext.
 func IsSealed(event *audit.Event) bool {
-	if isSealedString(event.Reason) || isSealedString(event.IP) {
+	if isSealedString(event.Reason) || isSealedString(event.IP) || isSealedString(event.UserAgent) {
 		return true
 	}
 	_, ok := sealedMetadata(event.Metadata)
@@ -226,6 +275,9 @@ func markErased(event *audit.Event) {
 	}
 	if isSealedString(event.IP) {
 		event.IP = ErasedMarker
+	}
+	if isSealedString(event.UserAgent) {
+		event.UserAgent = ErasedMarker
 	}
 	if _, ok := sealedMetadata(event.Metadata); ok {
 		event.Metadata = nil

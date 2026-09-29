@@ -72,6 +72,37 @@ func TestVerifyPageCountsDowngradesAsIssues(t *testing.T) {
 	}
 }
 
+// TestVerifyPageShowsRetainedWithoutCountingThem: sequences a retention policy
+// removed must be visible, with the record that lists them, and must not add
+// to the headline issue count. A deployment running retention would otherwise
+// carry a permanent number nothing could clear.
+func TestVerifyPageShowsRetainedWithoutCountingThem(t *testing.T) {
+	report := &verify.Report{
+		Valid:      true,
+		Verified:   4,
+		FirstEvent: 2,
+		LastEvent:  7,
+		Retained: []verify.RetainedRange{
+			{FromSeq: 1, ToSeq: 1, RecordSeq: 7},
+			{FromSeq: 3, ToSeq: 5, RecordSeq: 7},
+		},
+	}
+	if got := issueCount(report); got != 0 {
+		t.Errorf("issueCount = %d, want 0: retained sequences are not issues", got)
+	}
+
+	out := renderVerify(t, VerifyPageData{Report: report})
+	if !strings.Contains(out, "Removed by Retention") {
+		t.Error("the page does not show retained sequences")
+	}
+	if !strings.Contains(out, "3-5 (record 7)") || !strings.Contains(out, "1 (record 7)") {
+		t.Error("retained ranges are not rendered with their record")
+	}
+	if strings.Contains(out, "Sequence Gaps") {
+		t.Error("retained sequences are being presented as gaps")
+	}
+}
+
 // TestVerifyPageShowsTolerantAsACaveat covers the other invisible field.
 //
 // A tolerant resolution is not a failure, and the page must not dress it up as
@@ -304,5 +335,17 @@ func TestVerifyPageStaysQuietWhenTheHeadComparisonAgrees(t *testing.T) {
 				t.Errorf("the page reported a truncation on a report that found none:\n%s", out)
 			}
 		})
+	}
+}
+
+// TestRetainedLabelNamesABackfill: a range recovered from an archive says so,
+// so an operator can tell it from one the enforcer recorded at purge time.
+func TestRetainedLabelNamesABackfill(t *testing.T) {
+	if got := retainedLabel(verify.RetainedRange{FromSeq: 3, ToSeq: 5, RecordSeq: 9}); got != "3-5 (record 9)" {
+		t.Errorf("label = %q", got)
+	}
+	got := retainedLabel(verify.RetainedRange{FromSeq: 1, ToSeq: 1, RecordSeq: 7, Backfill: "s3://b/p"})
+	if got != "1 (record 7, backfilled from s3://b/p)" {
+		t.Errorf("label = %q", got)
 	}
 }

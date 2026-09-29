@@ -8,11 +8,11 @@ This guide walks through a complete GDPR Article 17 (right to erasure) implement
 ## What Chronicle's erasure does
 
 1. Associates events with a data subject via `SubjectID`.
-2. Encrypts sensitive fields with a per-subject AES-256-GCM key stored in `KeyStore`.
-3. On erasure: destroys the key — making encrypted data irrecoverable.
+2. Encrypts sensitive fields with an AES-256-GCM key stored in `KeyStore`. There's one key per subject in each app and tenant, so the same subject ID in two tenants never shares a key.
+3. On erasure: destroys that scope's key, which makes the encrypted data irrecoverable.
 4. Marks affected events as `Erased = true` in the store.
 5. Records an `erasure.Erasure` record for audit and compliance purposes.
-6. The hash chain stays structurally valid (hashes cover metadata, not encrypted payload).
+6. The hash chain stays valid, because hashes cover the stored ciphertext and destroying a key doesn't change it.
 
 ## Step 1: Enable crypto-erasure
 
@@ -144,7 +144,7 @@ fmt.Printf("valid=%v verified=%d gaps=%v tampered=%v\n",
 // valid=true verified=3 gaps=[] tampered=[]
 ```
 
-The chain is valid because hashes are computed over event metadata (action, resource, timestamps), not the encrypted payload.
+The chain is valid because hashes cover the sealed bytes as stored. Destroying the key makes them undecryptable without changing them.
 
 ## Production key store
 
@@ -152,11 +152,13 @@ The `crypto.NewInMemoryKeyStore()` is suitable for development only. For product
 
 ```go
 type KeyStore interface {
-    GetOrCreate(subjectID string) (key []byte, keyID string, err error)
-    Get(subjectID string) (key []byte, err error)
-    Delete(subjectID string) error
+    GetOrCreate(keyID string) (key []byte, storedID string, err error)
+    Get(keyID string) (key []byte, err error)
+    Delete(keyID string) error
 }
 ```
+
+The `keyID` your store receives is opaque. Chronicle builds it with `crypto.ScopedKeyID(appID, tenantID, subjectID)`, and events sealed before keys were scoped still use the bare subject ID. Store and compare it byte for byte. If you map it onto Vault paths or KMS aliases, hash or escape it first, because it contains `|` and `:` and whatever your IDs contain. Upgrading from subject-keyed seals doesn't need any keys moved; see [Erasure](/docs/subsystems/erasure#upgrading-from-subject-keyed-seals) for what happens to keys that more than one tenant shares.
 
 The key store is separate from the Chronicle store — Chronicle does not manage it. Provision it yourself and pass it to `erasure.NewService`.
 

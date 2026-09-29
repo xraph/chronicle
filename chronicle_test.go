@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/crypto"
+	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store"
@@ -779,6 +780,64 @@ func TestSealedEventsReadBackDecrypted(t *testing.T) {
 	}
 }
 
+// TestErasureStaysInsideTheErasingApp runs the cross-app probe end to end.
+// Two apps record events for the same subject ID. Erasing it in one app used to
+// destroy the single key both shared, so the other app's events read back as
+// erased with no erasure record in that app to explain it.
+func TestErasureStaysInsideTheErasingApp(t *testing.T) {
+	c, mem, keys := newSealedChronicle(t)
+	svc := erasure.NewService(mem, keys)
+
+	ctx1 := scope.WithTenantID(scope.WithAppID(context.Background(), "app-1"), "tenant-a")
+	ctx2 := scope.WithTenantID(scope.WithAppID(context.Background(), "app-2"), "tenant-b")
+
+	for _, rec := range []struct {
+		ctx    context.Context
+		reason string
+	}{{ctx1, "mine"}, {ctx2, "theirs"}} {
+		if err := c.Record(rec.ctx, &audit.Event{
+			Action:    "export",
+			Resource:  "user",
+			Category:  "data",
+			SubjectID: "user-42",
+			Reason:    rec.reason,
+		}); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
+	res, err := svc.Erase(ctx1, &erasure.Input{
+		SubjectID:   "user-42",
+		Reason:      "GDPR Article 17",
+		RequestedBy: "dpo@app-1",
+	}, "app-1", "tenant-a")
+	if err != nil {
+		t.Fatalf("Erase: %v", err)
+	}
+	if res.EventsAffected != 1 || !res.KeyDestroyed {
+		t.Fatalf("erase result = %+v", res)
+	}
+
+	theirs, err := c.Query(ctx2, &audit.Query{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query app-2: %v", err)
+	}
+	if len(theirs.Events) != 1 {
+		t.Fatalf("app-2 events = %d, want 1", len(theirs.Events))
+	}
+	if e := theirs.Events[0]; e.Reason != "theirs" || e.Erased {
+		t.Errorf("app-2 event after app-1 erasure: Reason=%q Erased=%v", e.Reason, e.Erased)
+	}
+
+	mine, err := c.Query(ctx1, &audit.Query{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query app-1: %v", err)
+	}
+	if len(mine.Events) != 1 || mine.Events[0].Reason != crypto.ErasedMarker {
+		t.Errorf("app-1 events after erasure = %+v", mine.Events)
+	}
+}
+
 // TestErasureMakesPayloadIrrecoverableButKeepsChainValid is the guarantee the
 // README makes, end to end through the real pipeline.
 func TestErasureMakesPayloadIrrecoverableButKeepsChainValid(t *testing.T) {
@@ -813,8 +872,9 @@ func TestErasureMakesPayloadIrrecoverableButKeepsChainValid(t *testing.T) {
 	}
 	streamID := before.Events[0].StreamID
 
-	// Erase the subject by destroying its key.
-	if delErr := keys.Delete("subject-1"); delErr != nil {
+	// Erase the subject by destroying its key, which is scoped to the app and
+	// tenant the events were recorded under.
+	if delErr := keys.Delete(crypto.ScopedKeyID("app-1", "", "subject-1")); delErr != nil {
 		t.Fatalf("Delete key: %v", delErr)
 	}
 

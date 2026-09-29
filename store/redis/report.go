@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/verify"
 )
 
 // reportModel is the JSON representation stored in Redis.
@@ -26,6 +27,13 @@ type reportModel struct {
 	Sections    []compliance.Section `json:"sections"`
 	GeneratedBy string               `json:"generated_by"`
 	CreatedAt   time.Time            `json:"created_at"`
+
+	// Stats and verification used to be dropped on save, so every report
+	// read back came out unverified. A report saved before they were added
+	// decodes with them nil, which is what it is.
+	Stats             *compliance.Stats             `json:"stats,omitempty"`
+	Verification      *verify.Report                `json:"verification,omitempty"`
+	VerificationScope *compliance.VerificationScope `json:"verification_scope,omitempty"`
 }
 
 func toReportModel(r *compliance.Report) *reportModel {
@@ -41,6 +49,10 @@ func toReportModel(r *compliance.Report) *reportModel {
 		Sections:    r.Sections,
 		GeneratedBy: r.GeneratedBy,
 		CreatedAt:   r.CreatedAt,
+
+		Stats:             r.Stats,
+		Verification:      r.Verification,
+		VerificationScope: r.VerificationScope,
 	}
 }
 
@@ -65,6 +77,10 @@ func fromReportModel(m *reportModel) (*compliance.Report, error) {
 		Format:      compliance.Format(m.Format),
 		Sections:    m.Sections,
 		GeneratedBy: m.GeneratedBy,
+
+		Stats:             m.Stats,
+		Verification:      m.Verification,
+		VerificationScope: m.VerificationScope,
 	}, nil
 }
 

@@ -59,14 +59,21 @@ func retentionScope(ctx context.Context) retention.Scope {
 }
 
 // ownedByCaller reports whether a resource's app and tenant match the caller's
-// scope. An empty TenantID on the resource is treated as belonging to the app,
-// so app-scoped callers can still reach their untenanted records.
+// scope.
+//
+// An app-scoped caller (no TenantID) owns every record in its app, tenanted or
+// not. A tenant-scoped caller owns only records carrying its own TenantID: an
+// untenanted record belongs to the app, not to any one tenant, so the app-level
+// retention policy or the app's own stream is out of reach. This matches the
+// list endpoints, whose store filters compare tenant_id exactly and never
+// return untenanted rows to a tenant, so a record hidden from a list cannot be
+// read or changed by ID instead.
 func ownedByCaller(ctx context.Context, appID, tenantID string) bool {
 	info := scope.FromContext(ctx)
 	if info.AppID != "" && appID != info.AppID {
 		return false
 	}
-	if info.TenantID != "" && tenantID != "" && tenantID != info.TenantID {
+	if info.TenantID != "" && tenantID != info.TenantID {
 		return false
 	}
 	return true

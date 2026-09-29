@@ -32,6 +32,14 @@ type Result struct {
 	SubjectID      string `json:"subject_id"`
 	EventsAffected int64  `json:"events_affected"`
 	KeyDestroyed   bool   `json:"key_destroyed"`
+
+	// LegacyKeyRetained is set when some of the erased events were sealed
+	// before keys were scoped, under a key that live events in another app or
+	// tenant still depend on. The events are marked erased and no read path
+	// will show their payload, but the key was kept, so KeyDestroyed is false.
+	// The key goes the first time an erasure finds no other scope still
+	// holding unerased events under it. See Service.Erase.
+	LegacyKeyRetained bool `json:"legacy_key_retained,omitempty"`
 }
 
 // Scope identifies the app and tenant an erasure operation is confined to.
@@ -65,4 +73,26 @@ type SubjectQuery struct {
 	Scope
 
 	SubjectID string `json:"subject_id"`
+}
+
+// covers reports whether an event in the given app and tenant falls inside the
+// scope, using the same rule every store applies: an empty field means "any".
+func (s Scope) covers(appID, tenantID string) bool {
+	if s.AppID != "" && appID != s.AppID {
+		return false
+	}
+	if s.TenantID != "" && tenantID != s.TenantID {
+		return false
+	}
+	return true
+}
+
+// KeyUsage counts one subject's events that share an app and tenant, the key
+// they were sealed under, and whether they are already marked erased.
+type KeyUsage struct {
+	Scope
+
+	EncryptionKeyID string `json:"encryption_key_id"`
+	Erased          bool   `json:"erased"`
+	Events          int64  `json:"events"`
 }

@@ -105,7 +105,7 @@ func TestDestroyingKeyMakesPayloadIrrecoverable(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	if err := keys.Delete(event.SubjectID); err != nil {
+	if err := keys.Delete(event.EncryptionKeyID); err != nil {
 		t.Fatalf("Delete key: %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestChainStillVerifiesAfterKeyDestruction(t *testing.T) {
 	event.Hash, _, _ = chain.Compute(context.Background(), "prev", event)
 	event.HashScheme = string(chain.Scheme())
 
-	if err := keys.Delete(event.SubjectID); err != nil {
+	if err := keys.Delete(event.EncryptionKeyID); err != nil {
 		t.Fatalf("Delete key: %v", err)
 	}
 
@@ -288,5 +288,27 @@ func TestIsSealedDetectsCiphertext(t *testing.T) {
 	}
 	if !crypto.IsSealed(event) {
 		t.Error("a sealed event should report sealed")
+	}
+}
+
+func TestSealCoversUserAgent(t *testing.T) {
+	sealer := crypto.NewSealer(crypto.NewInMemoryKeyStore())
+	event := sealableEvent()
+	event.UserAgent = "curl/8.0"
+
+	if err := sealer.Seal(event); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if strings.Contains(event.UserAgent, "curl/8.0") {
+		t.Fatalf("UserAgent still holds plaintext: %q", event.UserAgent)
+	}
+	if !crypto.IsSealed(event) {
+		t.Fatal("IsSealed should be true")
+	}
+	if err := sealer.Open(event); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if event.UserAgent != "curl/8.0" {
+		t.Errorf("UserAgent after Open = %q", event.UserAgent)
 	}
 }

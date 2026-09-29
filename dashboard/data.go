@@ -51,14 +51,19 @@ func resolveScope(ctx context.Context) viewScope {
 // inScope reports whether a record fetched by ID belongs to the viewer.
 //
 // Detail pages resolve a record by ID, which bypasses every list filter, so
-// each one must check ownership before rendering. An empty TenantID on the
-// record is treated as belonging to the app.
+// each one must check ownership before rendering. The same check gates the
+// retention delete action.
+//
+// A viewer without a tenant owns every record in its app. A tenant viewer owns
+// only records carrying its own TenantID: an untenanted record belongs to the
+// app, and the list pages (which filter tenant_id exactly) never show it to a
+// tenant, so neither may a detail page or a delete by ID.
 func inScope(ctx context.Context, appID, tenantID string) bool {
 	v := resolveScope(ctx)
 	if v.AppID != "" && appID != v.AppID {
 		return false
 	}
-	if v.TenantID != "" && tenantID != "" && tenantID != v.TenantID {
+	if v.TenantID != "" && tenantID != v.TenantID {
 		return false
 	}
 	return true

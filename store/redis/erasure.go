@@ -182,6 +182,48 @@ func (s *Store) CountBySubject(ctx context.Context, sq erasure.SubjectQuery) (in
 	return count, nil
 }
 
+// SubjectKeyUsage groups a subject's events across every scope by app, tenant,
+// encryption key ID and erased flag.
+//
+// Security-critical in the other direction: it is unscoped on purpose, so the
+// erasure service can see every scope sharing a legacy key. It must never back
+// a response to a caller; see erasure.Store.
+func (s *Store) SubjectKeyUsage(ctx context.Context, subjectID string) ([]erasure.KeyUsage, error) {
+	ids, err := s.rdb.ZRange(ctx, zEventSubject+subjectID, 0, -1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("chronicle/redis: subject key usage: %w", err)
+	}
+
+	type groupKey struct {
+		appID, tenantID, keyID string
+		erased                 bool
+	}
+	index := make(map[groupKey]int)
+	var usage []erasure.KeyUsage
+	for _, eid := range ids {
+		var m eventModel
+		if getErr := s.getEntity(ctx, entityKey(prefixEvent, eid), &m); getErr != nil {
+			if isNotFound(getErr) {
+				continue
+			}
+			return nil, getErr
+		}
+		k := groupKey{m.AppID, m.TenantID, m.EncryptionKeyID, m.Erased}
+		i, ok := index[k]
+		if !ok {
+			i = len(usage)
+			index[k] = i
+			usage = append(usage, erasure.KeyUsage{
+				Scope:           erasure.Scope{AppID: m.AppID, TenantID: m.TenantID},
+				EncryptionKeyID: m.EncryptionKeyID,
+				Erased:          m.Erased,
+			})
+		}
+		usage[i].Events++
+	}
+	return usage, nil
+}
+
 // scopeMatches reports whether an event belongs to the given scope. An empty
 // field in the scope means "any".
 func scopeMatches(s erasure.Scope, appID, tenantID string) bool {

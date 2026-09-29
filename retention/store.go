@@ -27,7 +27,11 @@ type Store interface {
 
 	// EventsOlderThan returns events the given query selects: older than
 	// q.Before, in q.Category, and belonging to q.Scope. Implementations must
-	// honour the scope — an unscoped purge deletes every tenant's history.
+	// match the scope exactly, comparing both AppID and TenantID even when
+	// they are empty. An empty TenantID selects the app's untenanted events,
+	// never every tenant's, and an empty AppID selects events with no app.
+	// Treating an empty value as a wildcard here, the way ListPolicies does,
+	// lets one policy purge history it does not own.
 	EventsOlderThan(ctx context.Context, q PurgeQuery) ([]*audit.Event, error)
 
 	// PurgeEvents permanently deletes events by IDs (only used by retention enforcer).

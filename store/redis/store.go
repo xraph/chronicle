@@ -26,6 +26,17 @@ import (
 	"github.com/xraph/chronicle/verify"
 )
 
+var (
+	// ErrScopeKeysNotMigrated is returned by GetStreamByScope when Migrate has
+	// not yet moved the scope indexes to the v2 key format. See Migrate.
+	ErrScopeKeysNotMigrated = errors.New("chronicle/redis: scope keys are in the pre-v2 format, run Migrate")
+
+	// ErrScopeCollision is returned by the Migrate call that finds streams
+	// holding events from more than one app+tenant scope. The migration itself
+	// has completed when this is returned. See Migrate.
+	ErrScopeCollision = errors.New("chronicle/redis: streams hold events from more than one scope")
+)
+
 // Store implements the Chronicle store interface using Redis via Grove KV.
 type Store struct {
 	kv  *kv.Store
@@ -50,11 +61,6 @@ func New(kvStore *kv.Store) *Store {
 		kv:  kvStore,
 		rdb: redisdriver.UnwrapClient(kvStore),
 	}
-}
-
-// Migrate is a no-op for Redis (no schema migrations needed).
-func (s *Store) Migrate(_ context.Context) error {
-	return nil
 }
 
 // Ping checks Redis connectivity.

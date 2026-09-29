@@ -164,10 +164,10 @@ Supported formats: `json`, `csv`, `markdown`, `html`.
 
 Chronicle supports GDPR Article 17 (right to erasure) through crypto-erasure:
 
-1. Each data subject's events are associated with a per-subject encryption key.
-2. On erasure request, the key is destroyed — making encrypted data irrecoverable.
+1. Each data subject's events are sealed with a key that belongs to that subject in one app and tenant. The same subject ID in two tenants gets two keys.
+2. On erasure request, that scope's key is destroyed, which makes the encrypted data irrecoverable. Other tenants' data is untouched.
 3. Events are marked as erased in the store.
-4. The hash chain remains structurally valid (hashes are computed over event metadata, not encrypted payloads).
+4. The hash chain stays valid, because hashes cover the stored ciphertext and destroying a key doesn't change it.
 
 ```go
 keyStore := crypto.NewInMemoryKeyStore()
@@ -457,6 +457,22 @@ collision open so nobody has to take that on trust.
 Chronicle will not write v1, v2 or v3. Configure one and it fails at startup
 naming the replacement, rather than accepting a setting that promises evidence
 it cannot deliver.
+
+v4 and v5 also cover the user agent, request ID and session ID an event was
+recorded under, whenever any of the three is set. That didn't need a new
+scheme. Every v4 and v5 event written before those fields existed has all three
+empty, its bytes are exactly what they were, and it keeps verifying under the
+scheme it records, so there's no pin to move and nothing to reconfigure. An
+event that has them can't lose them or gain them without breaking its digest:
+every field is length-prefixed, so the 17-field and 20-field forms never
+produce the same bytes. A v1, v2 or v3 row carrying any of them fails
+verification outright, because none of those schemes was ever written with
+them. Someone added it afterwards.
+
+One thing to know while you roll this out. A process from before this change
+doesn't read the new columns, so when it verifies an event that has them it
+recomputes without them and reports that event as tampered. Nothing is wrong
+with the event. Finish the rollout before you trust a verification run.
 
 **What it does not buy you.** Someone who can write to your database can still
 rewrite every event to the unkeyed scheme and rewrite the stream's pin to

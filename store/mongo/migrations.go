@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -118,12 +119,7 @@ func init() {
 					return err
 				}
 
-				return mexec.CreateIndexes(ctx, colPolicies, []mongo.IndexModel{
-					{
-						Keys:    bson.D{{Key: "category", Value: 1}},
-						Options: options.Index().SetUnique(true),
-					},
-				})
+				return mexec.CreateIndexes(ctx, colPolicies, policyIndexes())
 			},
 			Down: func(ctx context.Context, exec migrate.Executor) error {
 				mexec, ok := exec.(*mongomigrate.Executor)
@@ -201,6 +197,39 @@ func init() {
 				return mexec.DropCollection(ctx, (*CheckpointModel)(nil))
 			},
 		},
+		&migrate.Migration{
+			Name:    "scope_chronicle_retention_policy_index",
+			Version: "20240101000008",
+			Comment: "Make a policy's category unique per (app_id, tenant_id), not globally",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+
+				if err := dropLegacyPolicyIndex(ctx, mexec.DB().Collection(colPolicies)); err != nil {
+					return err
+				}
+				return mexec.CreateIndexes(ctx, colPolicies, policyIndexes())
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+
+				// Fails with E11000 once two scopes share a category, which is
+				// the point: going back would have to delete one of them.
+				indexes := mexec.DB().Collection(colPolicies).Indexes()
+				if _, err := indexes.CreateOne(ctx, mongo.IndexModel{
+					Keys:    bson.D{{Key: "category", Value: 1}},
+					Options: options.Index().SetUnique(true).SetName(legacyPolicyIndex),
+				}); err != nil {
+					return fmt.Errorf("restore %s: %w", legacyPolicyIndex, err)
+				}
+				return indexes.DropOne(ctx, scopedPolicyIndex)
+			},
+		},
 	)
 }
 
@@ -222,6 +251,13 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 			{Keys: bson.D{{Key: "category", Value: 1}, {Key: "timestamp", Value: -1}}},
 			{Keys: bson.D{{Key: "action", Value: 1}, {Key: "outcome", Value: 1}, {Key: "timestamp", Value: -1}}},
 			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "timestamp", Value: -1}}},
+			{
+				Keys: bson.D{{Key: "session_id", Value: 1}, {Key: "timestamp", Value: -1}},
+				// Only events that have a session. Partial indexes refuse
+				// $ne (it is a $not underneath), and "$gt empty string"
+				// selects exactly the non-empty strings.
+				Options: options.Index().SetPartialFilterExpression(bson.M{"session_id": bson.M{"$gt": ""}}),
+			},
 			{Keys: bson.D{{Key: "subject_id", Value: 1}}},
 			{Keys: bson.D{{Key: "severity", Value: 1}, {Key: "timestamp", Value: -1}}},
 			{Keys: bson.D{{Key: "resource", Value: 1}, {Key: "resource_id", Value: 1}, {Key: "timestamp", Value: -1}}},
@@ -229,17 +265,62 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 		colErasures: {
 			{Keys: bson.D{{Key: "subject_id", Value: 1}}},
 		},
-		colPolicies: {
-			{
-				Keys:    bson.D{{Key: "category", Value: 1}},
-				Options: options.Index().SetUnique(true),
-			},
-		},
+		colPolicies: policyIndexes(),
 		colReports: {
 			{Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "tenant_id", Value: 1}, {Key: "created_at", Value: -1}}},
 		},
 		colCheckpoints: checkpointIndexes(),
 	}
+}
+
+// Index names on chronicle_retention_policies. legacyPolicyIndex is the name
+// mongo generated for the category-only index earlier releases created.
+const (
+	legacyPolicyIndex = "category_1"
+	scopedPolicyIndex = "app_id_1_tenant_id_1_category_1"
+)
+
+// policyIndexes returns the unique index on a policy's owning scope plus its
+// category, which is the uniqueness retention.Store.SavePolicy promises and
+// the key its upsert filters on.
+//
+// Earlier releases indexed category alone. That made the first scope to save
+// a policy for a category the only one that ever could: every other app or
+// tenant got E11000 for the same category. dropLegacyPolicyIndex removes it.
+func policyIndexes() []mongo.IndexModel {
+	return []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: "app_id", Value: 1},
+				{Key: "tenant_id", Value: 1},
+				{Key: "category", Value: 1},
+			},
+			Options: options.Index().SetUnique(true).SetName(scopedPolicyIndex),
+		},
+	}
+}
+
+// dropLegacyPolicyIndex drops the category-only unique index if it exists.
+// It has to go before anything else can be fixed: while it is there, the
+// scoped index is merely redundant and the collision still happens.
+//
+// Absent is success, so a fresh database and a re-run both pass through.
+func dropLegacyPolicyIndex(ctx context.Context, col *mongo.Collection) error {
+	err := col.Indexes().DropOne(ctx, legacyPolicyIndex)
+	if err == nil || isIndexOrNamespaceNotFound(err) {
+		return nil
+	}
+	return fmt.Errorf("drop %s on %s: %w", legacyPolicyIndex, colPolicies, err)
+}
+
+// isIndexOrNamespaceNotFound reports mongo's IndexNotFound (27) and
+// NamespaceNotFound (26), the two ways a drop says there was nothing there.
+func isIndexOrNamespaceNotFound(err error) bool {
+	var ce mongo.CommandError
+	if errors.As(err, &ce) {
+		return ce.Code == 27 || ce.Code == 26
+	}
+	return false
 }
 
 // checkpointIndexes returns the unique indexes that make an overlapping

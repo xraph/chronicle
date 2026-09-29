@@ -212,6 +212,16 @@ func (c *Chronicle) Record(ctx context.Context, event *audit.Event) error {
 		}
 	}
 
+	return c.appendToChain(ctx, event)
+}
+
+// appendToChain links an already-validated event into its scope's stream and
+// persists it: Record's steps 4 through 7.
+//
+// It takes the scope from the event as given and never from ctx, which is what
+// lets RecordRetention write into a stream other than the one a request's
+// context names.
+func (c *Chronicle) appendToChain(ctx context.Context, event *audit.Event) error {
 	// Steps 4 through 7 are one critical section: reading the stream head,
 	// deriving this event's hash from it, appending, and advancing the head must
 	// not interleave with another append to the same stream, or two events end

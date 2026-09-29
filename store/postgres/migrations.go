@@ -327,5 +327,58 @@ CREATE INDEX IF NOT EXISTS idx_chronicle_checkpoints_scope
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "keep_event_timestamp_nanoseconds",
+			Version: "20240101000008",
+			Comment: "Store the nanoseconds below the microsecond that TIMESTAMPTZ drops",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// The digest covers the timestamp to the nanosecond and the
+				// timestamp column keeps microseconds; see splitTimestamp.
+				//
+				// A constant default, so Postgres 11+ takes the metadata-only
+				// path and does not rewrite the events table.
+				//
+				// Existing rows get zero, which reads them back exactly as
+				// before. It does not repair them. Any row that had digits
+				// below the microsecond lost them on insert, the row no longer
+				// holds them, and VerifyChain keeps reporting it as tampered.
+				// Rows that had none (most of what a Mac recorded) verify.
+				_, err := exec.Exec(ctx, `
+ALTER TABLE chronicle_events
+    ADD COLUMN IF NOT EXISTS timestamp_sub_us INTEGER NOT NULL DEFAULT 0;
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				// Dropping the column throws the digits away again, and every
+				// event written with any reads back as tampered.
+				_, err := exec.Exec(ctx, `ALTER TABLE chronicle_events DROP COLUMN IF EXISTS timestamp_sub_us;`)
+				return err
+			},
+		},
+		&migrate.Migration{
+			Name:    "add_request_correlation_columns",
+			Version: "20260922000001",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE chronicle_events ADD COLUMN IF NOT EXISTS user_agent TEXT NOT NULL DEFAULT '';
+ALTER TABLE chronicle_events ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE chronicle_events ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_chronicle_events_session
+    ON chronicle_events (session_id, timestamp DESC)
+    WHERE session_id != '';
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_chronicle_events_session;
+ALTER TABLE chronicle_events DROP COLUMN IF EXISTS session_id;
+ALTER TABLE chronicle_events DROP COLUMN IF EXISTS request_id;
+ALTER TABLE chronicle_events DROP COLUMN IF EXISTS user_agent;
+`)
+				return err
+			},
+		},
 	)
 }

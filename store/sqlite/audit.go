@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/xraph/grove/drivers/sqlitedriver"
 
@@ -96,7 +95,7 @@ func (s *Store) appendOnce(ctx context.Context, event *audit.Event) error {
 	// it points at. Record also calls UpdateStreamHead; that becomes a no-op.
 	if _, err := tx.NewRaw(
 		"UPDATE chronicle_streams SET head_seq = ?, head_hash = ?, updated_at = ? WHERE id = ?",
-		next, event.Hash, now().Format(time.RFC3339Nano), streamID,
+		next, event.Hash, formatTime(now()), streamID,
 	).Exec(ctx); err != nil {
 		return fmt.Errorf("update stream head %s: %w", streamID, err)
 	}
@@ -243,11 +242,11 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 
 	if !q.After.IsZero() {
 		conditions = append(conditions, "timestamp >= ?")
-		args = append(args, q.After.UTC().Format(time.RFC3339Nano))
+		args = append(args, formatTime(q.After))
 	}
 	if !q.Before.IsZero() {
 		conditions = append(conditions, "timestamp <= ?")
-		args = append(args, q.Before.UTC().Format(time.RFC3339Nano))
+		args = append(args, formatTime(q.Before))
 	}
 
 	whereClause := ""
@@ -318,10 +317,10 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 	// A zero After/Before means "unbounded". Applying them unconditionally
 	// compares every row against year 1 and matches nothing.
 	if !opts.After.IsZero() {
-		q = q.Where("e.timestamp >= ?", opts.After.UTC().Format(time.RFC3339Nano))
+		q = q.Where("e.timestamp >= ?", formatTime(opts.After))
 	}
 	if !opts.Before.IsZero() {
-		q = q.Where("e.timestamp <= ?", opts.Before.UTC().Format(time.RFC3339Nano))
+		q = q.Where("e.timestamp <= ?", formatTime(opts.Before))
 	}
 	if opts.AppID != "" {
 		q = q.Where("e.app_id = ?", opts.AppID)
@@ -367,10 +366,10 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 		countQuery = countQuery.Where("e.category = ?", q.Category)
 	}
 	if !q.After.IsZero() {
-		countQuery = countQuery.Where("e.timestamp >= ?", q.After.UTC().Format(time.RFC3339Nano))
+		countQuery = countQuery.Where("e.timestamp >= ?", formatTime(q.After))
 	}
 	if !q.Before.IsZero() {
-		countQuery = countQuery.Where("e.timestamp <= ?", q.Before.UTC().Format(time.RFC3339Nano))
+		countQuery = countQuery.Where("e.timestamp <= ?", formatTime(q.Before))
 	}
 
 	return countQuery.Count(ctx)
@@ -414,26 +413,40 @@ func applyEventFilters(q *sqlitedriver.SelectQuery, f *audit.Query) *sqlitedrive
 	if f.UserID != "" {
 		q = q.Where("e.user_id = ?", f.UserID)
 	}
+	if f.SessionID != "" {
+		q = q.Where("e.session_id = ?", f.SessionID)
+	}
+	if f.RequestID != "" {
+		q = q.Where("e.request_id = ?", f.RequestID)
+	}
 	if !f.After.IsZero() {
-		q = q.Where("e.timestamp >= ?", f.After.UTC().Format(time.RFC3339Nano))
+		q = q.Where("e.timestamp >= ?", formatTime(f.After))
 	}
 	if !f.Before.IsZero() {
-		q = q.Where("e.timestamp <= ?", f.Before.UTC().Format(time.RFC3339Nano))
+		q = q.Where("e.timestamp <= ?", formatTime(f.Before))
 	}
-	if len(f.Categories) > 0 {
-		q = q.Where("e.category IN (?)", f.Categories)
-	}
-	if len(f.Actions) > 0 {
-		q = q.Where("e.action IN (?)", f.Actions)
-	}
-	if len(f.Resources) > 0 {
-		q = q.Where("e.resource IN (?)", f.Resources)
-	}
-	if len(f.Severity) > 0 {
-		q = q.Where("e.severity IN (?)", f.Severity)
-	}
-	if len(f.Outcome) > 0 {
-		q = q.Where("e.outcome IN (?)", f.Outcome)
-	}
+	q = whereIn(q, "e.category", f.Categories)
+	q = whereIn(q, "e.action", f.Actions)
+	q = whereIn(q, "e.resource", f.Resources)
+	q = whereIn(q, "e.severity", f.Severity)
+	q = whereIn(q, "e.outcome", f.Outcome)
 	return q
+}
+
+// whereIn adds "col IN (?, ?, ...)" with one placeholder per value.
+//
+// sqlitedriver binds a Go slice as a single argument rather than expanding it,
+// so "IN (?)" with a []string failed every filtered query outright ("unsupported
+// type []string"). Expanding the placeholders here is the same thing
+// PurgeEvents already does by hand.
+func whereIn(q *sqlitedriver.SelectQuery, col string, vals []string) *sqlitedriver.SelectQuery {
+	if len(vals) == 0 {
+		return q
+	}
+	args := make([]any, len(vals))
+	for i, v := range vals {
+		args[i] = v
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(vals)), ", ")
+	return q.Where(col+" IN ("+placeholders+")", args...)
 }

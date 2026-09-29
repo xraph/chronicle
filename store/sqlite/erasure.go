@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/erasure"
@@ -106,7 +105,7 @@ func (s *Store) MarkErased(
 ) (int64, error) {
 	q := s.sdb.NewUpdate((*EventModel)(nil)).
 		Set("erased = 1").
-		Set("erased_at = ?", now().Format(time.RFC3339Nano)).
+		Set("erased_at = ?", formatTime(now())).
 		Set("erasure_id = ?", erasureID.String()).
 		Where("subject_id = ?", sq.SubjectID)
 
@@ -128,4 +127,39 @@ func (s *Store) MarkErased(
 	}
 
 	return rows, nil
+}
+
+// SubjectKeyUsage groups a subject's events across every scope by app, tenant,
+// encryption key ID and erased flag.
+//
+// Security-critical in the other direction: it is unscoped on purpose, so the
+// erasure service can see every scope sharing a legacy key. It must never back
+// a response to a caller; see erasure.Store.
+func (s *Store) SubjectKeyUsage(ctx context.Context, subjectID string) ([]erasure.KeyUsage, error) {
+	rows, err := s.sdb.Query(ctx,
+		`SELECT app_id, tenant_id, encryption_key_id, erased, COUNT(*)
+		   FROM chronicle_events
+		  WHERE subject_id = ?
+		  GROUP BY app_id, tenant_id, encryption_key_id, erased`,
+		subjectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var usage []erasure.KeyUsage
+	for rows.Next() {
+		var u erasure.KeyUsage
+		var erased int64
+		if err := rows.Scan(&u.AppID, &u.TenantID, &u.EncryptionKeyID, &erased, &u.Events); err != nil {
+			return nil, err
+		}
+		u.Erased = erased != 0
+		usage = append(usage, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return usage, nil
 }

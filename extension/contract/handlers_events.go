@@ -60,6 +60,9 @@ type EventDetail struct {
 	HashKeyID  string         `json:"hashKeyId,omitempty"`
 	Reason     string         `json:"reason,omitempty"`
 	SubjectID  string         `json:"subjectId,omitempty"`
+	UserAgent  string         `json:"userAgent,omitempty"`
+	RequestID  string         `json:"requestId,omitempty"`
+	SessionID  string         `json:"sessionId,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
 	ErasedAt   string         `json:"erasedAt,omitempty"`
 	ErasureID  string         `json:"erasureId,omitempty"`
@@ -74,6 +77,8 @@ type EventListInput struct {
 	After      string   `json:"after,omitempty"`
 	Before     string   `json:"before,omitempty"`
 	UserID     string   `json:"userId,omitempty"`
+	SessionID  string   `json:"sessionId,omitempty"`
+	RequestID  string   `json:"requestId,omitempty"`
 	Categories []string `json:"categories,omitempty"`
 	Actions    []string `json:"actions,omitempty"`
 	Resources  []string `json:"resources,omitempty"`
@@ -189,6 +194,9 @@ func projectEventDetail(e *audit.Event) EventDetail {
 		HashKeyID:    e.HashKeyID,
 		Reason:       e.Reason,
 		SubjectID:    e.SubjectID,
+		UserAgent:    e.UserAgent,
+		RequestID:    e.RequestID,
+		SessionID:    e.SessionID,
 		Metadata:     e.Metadata,
 		ErasureID:    e.ErasureID,
 	}
@@ -260,6 +268,8 @@ func eventsListHandler(deps Deps) func(context.Context, EventListInput, fcontrac
 			After:      after,
 			Before:     before,
 			UserID:     in.UserID,
+			SessionID:  in.SessionID,
+			RequestID:  in.RequestID,
 			Categories: in.Categories,
 			Actions:    in.Actions,
 			Resources:  in.Resources,

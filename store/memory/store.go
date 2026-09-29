@@ -579,6 +579,38 @@ func (s *Store) MarkErased(
 	return count, nil
 }
 
+// SubjectKeyUsage groups a subject's events across every scope by app, tenant,
+// encryption key ID and erased flag. Unscoped on purpose; see erasure.Store.
+func (s *Store) SubjectKeyUsage(_ context.Context, subjectID string) ([]erasure.KeyUsage, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type groupKey struct {
+		appID, tenantID, keyID string
+		erased                 bool
+	}
+	index := make(map[groupKey]int)
+	var usage []erasure.KeyUsage
+	for _, e := range s.events {
+		if e.SubjectID != subjectID {
+			continue
+		}
+		k := groupKey{e.AppID, e.TenantID, e.EncryptionKeyID, e.Erased}
+		i, ok := index[k]
+		if !ok {
+			i = len(usage)
+			index[k] = i
+			usage = append(usage, erasure.KeyUsage{
+				Scope:           erasure.Scope{AppID: e.AppID, TenantID: e.TenantID},
+				EncryptionKeyID: e.EncryptionKeyID,
+				Erased:          e.Erased,
+			})
+		}
+		usage[i].Events++
+	}
+	return usage, nil
+}
+
 // eventInErasureScope reports whether an event belongs to the given scope. An
 // empty field in the scope means "any".
 func eventInErasureScope(e *audit.Event, sc erasure.Scope) bool {
@@ -688,11 +720,15 @@ func (s *Store) EventsOlderThan(_ context.Context, q retention.PurgeQuery) ([]*a
 		if q.Category != "*" && e.Category != q.Category {
 			continue
 		}
-		// Security-critical: a policy may only purge its own scope's events.
-		if q.AppID != "" && e.AppID != q.AppID {
+		// Retention records are what keep purged sequences verifiable; they
+		// are never themselves up for retention.
+		if e.Category == audit.CategoryRetention {
 			continue
 		}
-		if q.TenantID != "" && e.TenantID != q.TenantID {
+		// Security-critical: a policy may only purge its own scope's events.
+		// The match is exact, so an empty TenantID selects untenanted events
+		// and never stands for "every tenant".
+		if e.AppID != q.AppID || e.TenantID != q.TenantID {
 			continue
 		}
 		result = append(result, e)
@@ -1004,6 +1040,12 @@ func matchesQuery(e *audit.Event, q *audit.Query) bool {
 		return false
 	}
 	if q.UserID != "" && e.UserID != q.UserID {
+		return false
+	}
+	if q.SessionID != "" && e.SessionID != q.SessionID {
+		return false
+	}
+	if q.RequestID != "" && e.RequestID != q.RequestID {
 		return false
 	}
 	if !q.After.IsZero() && e.Timestamp.Before(q.After) {

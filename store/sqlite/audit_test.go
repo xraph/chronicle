@@ -78,6 +78,50 @@ func testEvent(streamID id.ID, appID, tenantID, userID, category string, ts time
 	}
 }
 
+func TestQueryFiltersBySessionAndRequest(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	streamID := seedStream(t, st, "app", "")
+	base := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+
+	var firstID id.ID
+	for i, sid := range []string{"sess_a", "sess_b", "sess_a"} {
+		ev := testEvent(streamID, "app", "", "user", "auth", base.Add(time.Duration(i)*time.Second))
+		ev.SessionID = sid
+		ev.RequestID = fmt.Sprintf("req_%d", i)
+		if i == 0 {
+			ev.UserAgent = "ua"
+			firstID = ev.ID
+		}
+		if err := st.Append(ctx, ev); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	res, err := st.Query(ctx, &audit.Query{AppID: "app", SessionID: "sess_a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 2 {
+		t.Errorf("SessionID filter: Total = %d, want 2", res.Total)
+	}
+	res, err = st.Query(ctx, &audit.Query{AppID: "app", RequestID: "req_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 || res.Events[0].SessionID != "sess_b" {
+		t.Errorf("RequestID filter returned %+v", res.Events)
+	}
+
+	got, err := st.Get(ctx, firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SessionID != "sess_a" || got.RequestID != "req_0" || got.UserAgent != "ua" {
+		t.Errorf("round trip lost fields: %+v", got)
+	}
+}
+
 // TestAggregateRejectsInjectedGroupBy pins the SQL injection fix: an
 // attacker-supplied group_by must be rejected before any SQL is executed.
 func TestAggregateRejectsInjectedGroupBy(t *testing.T) {

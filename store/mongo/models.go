@@ -1,9 +1,10 @@
 package mongo
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/xraph/grove"
 
@@ -22,6 +23,8 @@ import (
 // ──────────────────────────────────────────────────
 
 // EventModel is the grove ORM model for the chronicle_events collection.
+//
+// Timestamp is split across two fields. See splitTimestamp for why.
 type EventModel struct {
 	grove.BaseModel `grove:"table:chronicle_events"`
 
@@ -34,6 +37,9 @@ type EventModel struct {
 	TenantID        string         `grove:"tenant_id"          bson:"tenant_id"`
 	UserID          string         `grove:"user_id"            bson:"user_id"`
 	IP              string         `grove:"ip"                 bson:"ip"`
+	UserAgent       string         `grove:"user_agent"         bson:"user_agent"`
+	RequestID       string         `grove:"request_id"         bson:"request_id"`
+	SessionID       string         `grove:"session_id"         bson:"session_id"`
 	Action          string         `grove:"action"             bson:"action"`
 	Resource        string         `grove:"resource"           bson:"resource"`
 	Category        string         `grove:"category"           bson:"category"`
@@ -48,6 +54,7 @@ type EventModel struct {
 	ErasedAt        *time.Time     `grove:"erased_at"          bson:"erased_at,omitempty"`
 	ErasureID       string         `grove:"erasure_id"         bson:"erasure_id,omitempty"`
 	Timestamp       time.Time      `grove:"timestamp"          bson:"timestamp"`
+	TimestampSubMs  int32          `grove:"timestamp_sub_ms"   bson:"timestamp_sub_ms"`
 	CreatedAt       time.Time      `grove:"created_at"         bson:"created_at"`
 	HashScheme      string         `grove:"hash_scheme"        bson:"hash_scheme,omitempty"`
 	HashKeyID       string         `grove:"hash_key_id"        bson:"hash_key_id,omitempty"`
@@ -74,11 +81,14 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		TenantID:        m.TenantID,
 		UserID:          m.UserID,
 		IP:              m.IP,
+		UserAgent:       m.UserAgent,
+		RequestID:       m.RequestID,
+		SessionID:       m.SessionID,
 		Action:          m.Action,
 		Resource:        m.Resource,
 		Category:        m.Category,
 		ResourceID:      m.ResourceID,
-		Metadata:        m.Metadata,
+		Metadata:        normalizeMetadata(m.Metadata),
 		Outcome:         m.Outcome,
 		Severity:        m.Severity,
 		Reason:          m.Reason,
@@ -87,13 +97,14 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		Erased:          m.Erased,
 		ErasedAt:        m.ErasedAt,
 		ErasureID:       m.ErasureID,
-		Timestamp:       m.Timestamp,
+		Timestamp:       joinTimestamp(m.Timestamp, m.TimestampSubMs),
 		HashScheme:      m.HashScheme,
 		HashKeyID:       m.HashKeyID,
 	}, nil
 }
 
 func fromEvent(e *audit.Event) *EventModel {
+	ts, subMs := splitTimestamp(e.Timestamp)
 	return &EventModel{
 		ID:              e.ID.String(),
 		StreamID:        e.StreamID.String(),
@@ -104,6 +115,9 @@ func fromEvent(e *audit.Event) *EventModel {
 		TenantID:        e.TenantID,
 		UserID:          e.UserID,
 		IP:              e.IP,
+		UserAgent:       e.UserAgent,
+		RequestID:       e.RequestID,
+		SessionID:       e.SessionID,
 		Action:          e.Action,
 		Resource:        e.Resource,
 		Category:        e.Category,
@@ -117,11 +131,51 @@ func fromEvent(e *audit.Event) *EventModel {
 		Erased:          e.Erased,
 		ErasedAt:        e.ErasedAt,
 		ErasureID:       e.ErasureID,
-		Timestamp:       e.Timestamp,
+		Timestamp:       ts,
+		TimestampSubMs:  subMs,
 		CreatedAt:       time.Now().UTC(),
 		HashScheme:      e.HashScheme,
 		HashKeyID:       e.HashKeyID,
 	}
+}
+
+// splitTimestamp divides an event timestamp into the part a BSON date can hold
+// and the nanoseconds below it.
+//
+// The hash chain covers the timestamp to the nanosecond (hash.Chain formats it
+// with time.RFC3339Nano), and a BSON date keeps milliseconds. Storing the
+// timestamp as a date alone handed every reader a different instant from the
+// one that was hashed, so every event with a sub-millisecond component read
+// back as tampered. On a clock with microsecond or nanosecond resolution that
+// is nearly all of them.
+//
+// We keep the full value rather than truncating before hashing. An audit log
+// records when something happened as the caller reported it. Rounding that to
+// suit one backend's storage would change the evidence, and would mean events
+// hashed on a different backend or an earlier release could never verify here.
+// The date stays the millisecond floor, so the timestamp indexes, range
+// filters and sort order behave exactly as they did.
+//
+// The date is truncated here rather than left for the driver to floor, so the
+// two halves are guaranteed to add back up to the original.
+func splitTimestamp(t time.Time) (date time.Time, subMs int32) {
+	date = t.Truncate(time.Millisecond)
+	return date, int32(t.Sub(date)) //nolint:gosec // always in [0, 1e6)
+}
+
+// joinTimestamp reverses splitTimestamp.
+//
+// A row written before timestamp_sub_ms existed decodes it as zero and reads
+// back as the millisecond date it holds, as it always did. Those rows lost
+// their sub-millisecond digits on insert and the row no longer holds them, so a
+// row whose original timestamp had any will still fail verification. It is not
+// reported wrongly: the stored digest covers an instant the row no longer
+// holds.
+//
+// The remainder is not range-checked. A tampered value moves the timestamp,
+// and verification reports that event as tampered, which is the right answer.
+func joinTimestamp(date time.Time, subMs int32) time.Time {
+	return date.Add(time.Duration(subMs))
 }
 
 // toEventSlice converts a slice of EventModel to a slice of audit.Event.
@@ -377,7 +431,7 @@ type ReportModel struct {
 	AppID       string    `grove:"app_id"      bson:"app_id"`
 	TenantID    string    `grove:"tenant_id"   bson:"tenant_id"`
 	Format      string    `grove:"format"      bson:"format"`
-	Data        []byte    `grove:"data"        bson:"data"` // Sections serialized as JSON
+	Data        []byte    `grove:"data"        bson:"data"` // compliance.EncodeReportBody: sections, stats and verification
 	GeneratedBy string    `grove:"generated_by" bson:"generated_by"`
 	CreatedAt   time.Time `grove:"created_at"  bson:"created_at"`
 }
@@ -388,12 +442,7 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		return nil, fmt.Errorf("failed to parse report id %q: %w", m.ID, err)
 	}
 
-	var sections []compliance.Section
-	if err := json.Unmarshal(m.Data, &sections); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal report sections: %w", err)
-	}
-
-	return &compliance.Report{
+	r := &compliance.Report{
 		Entity: chronicle.Entity{
 			CreatedAt: m.CreatedAt,
 		},
@@ -407,15 +456,18 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		AppID:       m.AppID,
 		TenantID:    m.TenantID,
 		Format:      compliance.Format(m.Format),
-		Sections:    sections,
 		GeneratedBy: m.GeneratedBy,
-	}, nil
+	}
+	if decodeErr := compliance.DecodeReportBody(m.Data, r); decodeErr != nil {
+		return nil, decodeErr
+	}
+	return r, nil
 }
 
 func fromReport(r *compliance.Report) (*ReportModel, error) {
-	data, err := json.Marshal(r.Sections)
+	data, err := compliance.EncodeReportBody(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal report sections: %w", err)
+		return nil, err
 	}
 
 	return &ReportModel{
@@ -510,4 +562,55 @@ func fromCheckpoint(cp *checkpoint.Checkpoint) *CheckpointModel {
 		SignedPayload:  cp.SignedPayload,
 		CreatedAt:      cp.CreatedAt,
 	}
+}
+
+// normalizeMetadata turns the driver's decoded metadata back into the plain Go
+// values it was recorded as.
+//
+// The driver decodes an embedded document inside a map[string]any as a bson.D,
+// which keeps the order the keys were stored in, and json.Marshal writes a
+// bson.D in that order. The digest was computed over json.Marshal of the
+// original map[string]any, which sorts its keys. So an event with nested
+// metadata read back its nested keys in a different order and failed
+// verification, while its top-level keys, already in a map, were fine.
+func normalizeMetadata(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = normalizeBSONValue(v)
+	}
+	return out
+}
+
+// normalizeBSONValue converts the driver's document and array types, at any
+// depth, into map[string]any and []any. Every other value is returned as is.
+func normalizeBSONValue(v any) any {
+	switch val := v.(type) {
+	case bson.D:
+		out := make(map[string]any, len(val))
+		for _, e := range val {
+			out[e.Key] = normalizeBSONValue(e.Value)
+		}
+		return out
+	case bson.M:
+		return normalizeMetadata(val)
+	case map[string]any:
+		return normalizeMetadata(val)
+	case bson.A:
+		return normalizeSlice(val)
+	case []any:
+		return normalizeSlice(val)
+	default:
+		return v
+	}
+}
+
+func normalizeSlice(s []any) []any {
+	out := make([]any, len(s))
+	for i, v := range s {
+		out[i] = normalizeBSONValue(v)
+	}
+	return out
 }

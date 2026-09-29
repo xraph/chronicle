@@ -16,6 +16,19 @@ A `retention.Policy` defines how long events of a given category are kept:
 | `Duration` | `time.Duration` | Retain events for this duration. Events older than this are candidates. |
 | `Archive` | `bool` | If `true`, write to the archive sink before purging. |
 | `AppID` | `string` | Application scope. |
+| `TenantID` | `string` | Tenant scope. Empty means the app's untenanted events. |
+
+## Which events a policy purges
+
+A policy only ever purges events recorded under its own `AppID` and `TenantID`, and both have to match exactly.
+
+That matters most when `TenantID` is empty. A policy you save at app level, with no tenant, covers the events your app recorded without a tenant. It does not reach any tenant's events, even for the same category. If tenant `acme` keeps its `auth` events for seven years and you save a 30-day `auth` policy at app level, acme's events stay put.
+
+So if you want every tenant held to the same window, save the policy once per tenant. There's no app-wide default that tenants inherit.
+
+The HTTP API and the dashboard stamp the caller's own scope on every policy they create, so you get this for free there. It only needs thought when you build a `retention.Policy` yourself.
+
+Listing is different. `ListPolicies` and `ListArchives` treat an empty `AppID` or `TenantID` as "any", which is how the background scheduler finds every policy to run. Each policy it finds still purges only its own scope.
 
 ## Create a policy
 
@@ -56,19 +69,25 @@ err := store.SavePolicy(ctx, policy)
 
 ## Enforcer
 
-`retention.NewEnforcer(store, archiveSink, logger)` creates the enforcer. `archiveSink` may be nil if no archival is needed.
+`retention.NewEnforcer(store, archiveSink, logger, opts...)` creates the enforcer. `archiveSink` may be nil if no archival is needed. Pass the `*chronicle.Chronicle` that writes your streams as the chain recorder:
 
 ```go
 import "github.com/xraph/chronicle/retention"
 
-enforcer := retention.NewEnforcer(myStore, s3Sink, logger)
+enforcer := retention.NewEnforcer(myStore, s3Sink, logger,
+    retention.WithChainRecorder(c), // c is your *chronicle.Chronicle
+)
 
 result, err := enforcer.Enforce(ctx)
 fmt.Printf("archived=%d purged=%d retained=%d\n",
     result.Archived, result.Purged, result.Retained)
 ```
 
-`Enforce` iterates all policies, finds events older than `Duration`, optionally writes them to the archive sink, then deletes them from the store.
+If you use the Forge extension you don't need to do anything. It wires the recorder for you.
+
+`Enforce` iterates all policies and finds events older than `Duration`. For each batch it records the purge in the hash chain, optionally writes the events to the archive sink, then deletes them from the store.
+
+An enforcer built without `WithChainRecorder` refuses to purge and returns `retention.ErrNoChainRecorder`. You can opt out with `retention.WithUnrecordedPurge()`, but only do that for events that are not hash-chained, because every purge will then show up in verification as a deletion.
 
 ### EnforceResult
 
@@ -77,6 +96,88 @@ fmt.Printf("archived=%d purged=%d retained=%d\n",
 | `Archived` | `int64` | Events written to the archive sink |
 | `Purged` | `int64` | Events removed from the store |
 | `Retained` | `int64` | Events still within retention window |
+
+## Retention and the hash chain
+
+Retention deletes events. Verification exists to catch deleted events. If you don't reconcile the two, every stream a policy touches reports as broken from then on, and a real deletion hides among the ones your policies made.
+
+Policies are per category, so they don't trim a neat prefix off a stream. Say you keep `auth` events for 30 days in a stream that alternates `auth` and `billing`: the policy takes out every other event. Before retention records existed, verifying that stream afterwards gave `valid=false gaps=[1 3 5] tampered=[4 6]`, which is exactly what you'd see if an attacker had deleted three events.
+
+So before it deletes anything, the enforcer appends a retention record to the same stream. It's an ordinary event in the reserved category `chronicle.retention`, and its metadata lists every removed event as `seq:prev_hash:hash`. That's all verification needs to link the chain across the hole, because the event before the hole must hash to `prev_hash` and the event after it must name `hash` as its predecessor.
+
+Run the same policy now and you get `valid=true`, with 1, 3 and 5 in `Report.Retained`, each pointing at the record that accounts for it. Anything missing that no record lists still goes in `Report.Gaps`.
+
+How far you can trust a record depends on your chain, the same as any other event:
+
+- On an HMAC chain (`chronicle/v5`) you can't write a record that verification accepts without the key. On a plain chain (`chronicle/v4`) anyone who can write to your store can forge one, just as they can rewrite any event there, and coverage already reports that range as `unkeyed`.
+- If someone deletes a record, its own sequence becomes a gap and so does every sequence it explained.
+- With checkpoints on, a checkpoint whose `to_seq` was purged gets checked against the record's hash for that sequence. That ties the record to a signature its own digest didn't produce.
+- Retention never selects a retention record, not even under a `"*"` policy. Records hold sequence numbers and hashes, and no personal data.
+- The record is written before the delete. If your process dies in between, you're left with a record naming events that are still there, and that verifies cleanly.
+- Once an event's content is gone its digest can't be recomputed, so `Retained` tells you the chain links across that sequence. It says nothing about what the event contained.
+
+### Events that don't verify are kept
+
+Before recording anything, the enforcer checks each event it's about to remove. An event whose digest no longer matches its content is withheld. It stays in the store, verification keeps reporting it as tampered, the rest of the batch is purged as usual, and the run returns an error wrapping `chronicle.ErrRetentionWithheld` so you know to go and look.
+
+Purging a tampered event would destroy the evidence, and the record would then vouch for hashes that no longer match anything. The same goes for an event that can't be verified at all (one digested under an HMAC key you've since revoked, for example), so expect those to be held back too.
+
+### Streams purged before retention records
+
+If you ran retention on an earlier version, those purges have no records. Their sequences still report as gaps and the chain stays `valid=false`. Nothing in Chronicle will mark them as retained on your say-so, because a tool that marks existing gaps as authorised can't be told apart from one that covers up a deletion.
+
+One thing does change for those streams. The event after a gap is no longer reported as tampered as well: its content is checked against its own `prev_hash` and only the gap is reported, so `gaps=[1 3 5] tampered=[4 6]` becomes `gaps=[1 3 5] tampered=[]`.
+
+If the policy that purged them had `Archive: true` and your chain is keyed, you can backfill them from the archive, as long as every copy checks out.
+
+### Backfilling from an archive
+
+`Chronicle.BackfillRetention` reads the archive back, proves each archived copy is the event that was removed, and writes a retention record for the ones that pass. You run it by hand, once per stream, after upgrading:
+
+```go
+archive := sink.NewFileArchive("/var/lib/chronicle/archive", "audit")
+// or: sink.NewS3Archive(myS3Reader, "audit-bucket", "chronicle")
+
+report, err := c.BackfillRetention(ctx, &chronicle.BackfillInput{
+    AppID:    "myapp",
+    TenantID: "acme",
+    Archive:  archive,
+    DryRun:   true, // look first, write nothing
+})
+fmt.Println("gaps", report.Gaps)
+for _, r := range report.Recovered {
+    fmt.Println("recovered", r.Seq, "from", r.Location)
+}
+for _, r := range report.Refused {
+    fmt.Println("left as a gap", r.Seq, r.Reason)
+}
+for _, r := range report.Rejected {
+    fmt.Println("bad archived copy", r.Seq, r.Location, r.Reason)
+}
+```
+
+Read the dry run, then run it again with `DryRun: false`. `report.Records` lists the records it wrote and `report.After` is the stream verified afterwards. Running it twice is harmless: the second run finds no gaps left to fill.
+
+`sink.FileArchive` reads every `prefix-*.jsonl` (and `prefix-*.jsonl.gz`) file a `FileSink` wrote. `sink.S3Archive` reads the `events-*.jsonl.gz` objects an `S3Sink` wrote, through an `S3Reader` you implement with two calls (`ListObjects` and `GetObject`), so there's still no AWS SDK dependency. For anything else, implement `sink.ArchiveReader` yourself; `sink.DecodeArchive` decodes a JSONL or gzip JSONL stream for you.
+
+A gap is recovered only when all of these hold:
+
+1. The stream is pinned to `chronicle/v5` and the process running the backfill writes `chronicle/v5`. Otherwise it returns `chronicle.ErrBackfillUnkeyed` before it reads anything.
+2. The archive has a copy of the event at that sequence, for this stream and scope, and the copy isn't itself a retention record. Retention never purges records, so an archived one was removed by something else.
+3. The copy claims `chronicle/v5` and its digest recomputes under the HMAC key it names. Copies under `chronicle/v4` are refused even on a stream that's keyed now, since they're from before the pin moved. So are `chronicle/v3` copies, because that encoding lets someone move content between fields without the key.
+4. Every sequence in the same run of consecutive gaps has a copy like that, and the run links end to end. The first copy's `prev_hash` has to be the hash of the event before the run, each copy has to follow from the one before it, and the last copy's `hash` has to be the `prev_hash` of the event after the run. Those neighbours can be events still in the store (as long as they verify), sequences an existing record already covers, genesis, or the stream head.
+
+A run goes in whole or not at all. Say retention purged 3 and 5 and someone deleted 4 with no archive copy. Then 3, 4 and 5 all stay gaps, because nothing can link across 4 and a record listing 3 and 5 on their own would claim more than anyone can check. Identical copies of one event (a retried archive write leaves those) count as one. Two different copies that both verify mean the sequence stays a gap.
+
+The records it writes are ordinary retention records with the archive's name in them. Verification reports those sequences in `Retained` with `RetainedRange.Backfill` set to that name, so you can always tell a backfilled range from one the enforcer wrote at purge time. Verification never reads the archive again. After the backfill, what vouches for those sequences is the record, which is as hard to forge as any other `chronicle/v5` event.
+
+### What a backfill proves
+
+It proves that each recovered sequence held an event the chain writer produced, that nobody has changed it since, and that its complete content is sitting in your archive. It doesn't prove a retention policy removed it. Someone with access to your database could copy a row into the archive and then delete it, and the backfill would accept that copy. That's acceptable only because nothing was hidden: the content is still there for anyone to read, and hiding content is the thing a gap warns you about. So keep the archive. Once it's gone, the record is the only evidence left, and it can't tell you what the events said.
+
+It can't help an unkeyed chain at all. Under `chronicle/v4`, anyone who can write your store can compute a valid digest for anything, so they could delete an event, write an archive to match, and have a backfill excuse the deletion. On a chain like that the archive is only somebody's word, and the backfill refuses it with `ErrBackfillUnkeyed` so nobody mistakes it for proof. On any chain, there's no switch for accepting gaps without evidence.
+
+Two practical points. Archives from a store that decrypts on read would hold plaintext, which doesn't match a digest taken over the sealed bytes, but `sealedstore` hands retention the sealed form, so its archives verify fine. And an archived copy can only verify if the key it names can still be resolved, so a copy digested under a key you've since deleted is rejected with the reason.
 
 ## Archive sink
 

@@ -78,12 +78,27 @@ type Coverage struct {
 
 // Report is the result of a hash chain verification.
 type Report struct {
-	Valid      bool     `json:"valid"`
-	Verified   int64    `json:"verified"`
-	Gaps       []uint64 `json:"gaps"`
+	Valid    bool  `json:"valid"`
+	Verified int64 `json:"verified"`
+
+	// Gaps are missing sequences that nothing accounts for. An event deleted
+	// by anything other than a retention policy lands here.
+	Gaps []uint64 `json:"gaps"`
+
 	Tampered   []uint64 `json:"tampered"`
 	FirstEvent uint64   `json:"first_event"`
 	LastEvent  uint64   `json:"last_event"`
+
+	// Retained are missing sequences a retention policy removed, as ranges,
+	// each naming the retention record that lists it. They do not make the
+	// chain invalid: the record's own digest vouches for the hashes either
+	// side of each one, and the chain is checked to link across them.
+	//
+	// A removed event's own digest cannot be recomputed once its content is
+	// gone, so what these ranges assert is linkage, backed by the record,
+	// and never content. A sequence lands here only if an authentic record
+	// lists it; anything else missing is in Gaps.
+	Retained []RetainedRange `json:"retained,omitempty"`
 
 	// Downgrades are sequences whose event claims a weaker digest scheme than
 	// its stream pins at that point. These are tampering, not old events.

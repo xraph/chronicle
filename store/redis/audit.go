@@ -13,36 +13,40 @@ import (
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/metajson"
 )
 
 // eventModel is the JSON representation stored in Redis.
 type eventModel struct {
-	ID              string         `json:"id"`
-	StreamID        string         `json:"stream_id"`
-	Sequence        uint64         `json:"sequence"`
-	Hash            string         `json:"hash"`
-	PrevHash        string         `json:"prev_hash"`
-	AppID           string         `json:"app_id"`
-	TenantID        string         `json:"tenant_id"`
-	UserID          string         `json:"user_id"`
-	IP              string         `json:"ip"`
-	Action          string         `json:"action"`
-	Resource        string         `json:"resource"`
-	Category        string         `json:"category"`
-	ResourceID      string         `json:"resource_id"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
-	Outcome         string         `json:"outcome"`
-	Severity        string         `json:"severity"`
-	Reason          string         `json:"reason"`
-	SubjectID       string         `json:"subject_id"`
-	EncryptionKeyID string         `json:"encryption_key_id"`
-	Erased          bool           `json:"erased"`
-	ErasedAt        *time.Time     `json:"erased_at,omitempty"`
-	ErasureID       string         `json:"erasure_id,omitempty"`
-	Timestamp       time.Time      `json:"timestamp"`
-	CreatedAt       time.Time      `json:"created_at"`
-	HashScheme      string         `json:"hash_scheme,omitempty"`
-	HashKeyID       string         `json:"hash_key_id,omitempty"`
+	ID              string       `json:"id"`
+	StreamID        string       `json:"stream_id"`
+	Sequence        uint64       `json:"sequence"`
+	Hash            string       `json:"hash"`
+	PrevHash        string       `json:"prev_hash"`
+	AppID           string       `json:"app_id"`
+	TenantID        string       `json:"tenant_id"`
+	UserID          string       `json:"user_id"`
+	IP              string       `json:"ip"`
+	UserAgent       string       `json:"user_agent"`
+	RequestID       string       `json:"request_id"`
+	SessionID       string       `json:"session_id"`
+	Action          string       `json:"action"`
+	Resource        string       `json:"resource"`
+	Category        string       `json:"category"`
+	ResourceID      string       `json:"resource_id"`
+	Metadata        metajson.Map `json:"metadata,omitempty"` // decodes without rounding integers past 2^53
+	Outcome         string       `json:"outcome"`
+	Severity        string       `json:"severity"`
+	Reason          string       `json:"reason"`
+	SubjectID       string       `json:"subject_id"`
+	EncryptionKeyID string       `json:"encryption_key_id"`
+	Erased          bool         `json:"erased"`
+	ErasedAt        *time.Time   `json:"erased_at,omitempty"`
+	ErasureID       string       `json:"erasure_id,omitempty"`
+	Timestamp       time.Time    `json:"timestamp"`
+	CreatedAt       time.Time    `json:"created_at"`
+	HashScheme      string       `json:"hash_scheme,omitempty"`
+	HashKeyID       string       `json:"hash_key_id,omitempty"`
 }
 
 func toEventModel(e *audit.Event) *eventModel {
@@ -56,6 +60,9 @@ func toEventModel(e *audit.Event) *eventModel {
 		TenantID:        e.TenantID,
 		UserID:          e.UserID,
 		IP:              e.IP,
+		UserAgent:       e.UserAgent,
+		RequestID:       e.RequestID,
+		SessionID:       e.SessionID,
 		Action:          e.Action,
 		Resource:        e.Resource,
 		Category:        e.Category,
@@ -97,6 +104,9 @@ func fromEventModel(m *eventModel) (*audit.Event, error) {
 		TenantID:        m.TenantID,
 		UserID:          m.UserID,
 		IP:              m.IP,
+		UserAgent:       m.UserAgent,
+		RequestID:       m.RequestID,
+		SessionID:       m.SessionID,
 		Action:          m.Action,
 		Resource:        m.Resource,
 		Category:        m.Category,
@@ -150,7 +160,7 @@ func (s *Store) storeEvent(ctx context.Context, event *audit.Event) error {
 	pipe := s.rdb.Pipeline()
 	pipe.ZAdd(ctx, zEventAll, goredis.Z{Score: score, Member: m.ID})
 	pipe.ZAdd(ctx, zEventStream+m.StreamID, goredis.Z{Score: float64(m.Sequence), Member: m.ID})
-	pipe.ZAdd(ctx, zEventScope+m.AppID+":"+m.TenantID, goredis.Z{Score: score, Member: m.ID})
+	pipe.ZAdd(ctx, eventScopeKey(m.AppID, m.TenantID), goredis.Z{Score: score, Member: m.ID})
 	// An app-only index so a single-tenant query (AppID set, TenantID empty)
 	// does not have to scan every event in the deployment.
 	pipe.ZAdd(ctx, zEventApp+m.AppID, goredis.Z{Score: score, Member: m.ID})
@@ -191,7 +201,7 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 	var zKey string
 	switch {
 	case q.AppID != "" && q.TenantID != "":
-		zKey = zEventScope + q.AppID + ":" + q.TenantID
+		zKey = eventScopeKey(q.AppID, q.TenantID)
 	case q.AppID != "":
 		zKey = zEventApp + q.AppID
 	case q.UserID != "":
@@ -286,7 +296,7 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 	zKey := zEventAll
 	switch {
 	case q.AppID != "" && q.TenantID != "":
-		zKey = zEventScope + q.AppID + ":" + q.TenantID
+		zKey = eventScopeKey(q.AppID, q.TenantID)
 	case q.AppID != "":
 		zKey = zEventApp + q.AppID
 	}
@@ -428,15 +438,25 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 
 // Count returns the total number of events matching filters.
 func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
-	// Determine the narrowest index available.
+	// Determine the narrowest index available. exact marks the cases where
+	// that index already narrows by every filter the query sets, so its length
+	// is the answer. The category index spans every app and tenant, so a
+	// TenantID beside a Category has to be post-filtered.
+	//
+	// The other indexes stay post-filtered even when they would match: the
+	// loop below also drops members whose event is gone, and PurgeEvents
+	// deletes the event before it cleans the indexes.
 	zKey := zEventAll
+	exact := false
 	switch {
 	case q.AppID != "" && q.TenantID != "":
-		zKey = zEventScope + q.AppID + ":" + q.TenantID
+		zKey = eventScopeKey(q.AppID, q.TenantID)
+		exact = q.Category == ""
 	case q.AppID != "":
 		zKey = zEventApp + q.AppID
 	case q.Category != "":
 		zKey = zEventCategory + q.Category
+		exact = q.TenantID == ""
 	}
 
 	minScore := math.Inf(-1)
@@ -453,11 +473,7 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 		return 0, err
 	}
 
-	// If we used a narrow index that already filters, just count.
-	if q.AppID != "" && q.TenantID != "" && q.Category == "" {
-		return int64(len(ids)), nil
-	}
-	if q.Category != "" && q.AppID == "" {
+	if exact {
 		return int64(len(ids)), nil
 	}
 
@@ -527,6 +543,12 @@ func matchesEventFilter(m *eventModel, q *audit.Query) bool {
 		return false
 	}
 	if q.UserID != "" && m.UserID != q.UserID {
+		return false
+	}
+	if q.SessionID != "" && m.SessionID != q.SessionID {
+		return false
+	}
+	if q.RequestID != "" && m.RequestID != q.RequestID {
 		return false
 	}
 	if len(q.Categories) > 0 && !containsStr(q.Categories, m.Category) {

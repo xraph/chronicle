@@ -34,7 +34,27 @@ if err := s.Migrate(ctx); err != nil {
 }
 ```
 
-Migrate is a no-op for Redis (schemaless). It is safe to call on every startup for consistency with other backends.
+You need to call Migrate before the store records anything. The Forge extension does it for you on start unless you set `DisableMigrate`. If you build Chronicle yourself with `chronicle.New`, call it yourself, as in the example below.
+
+After the first run it costs one `EXISTS` per call, so it's fine to leave it in your startup path.
+
+### Upgrading from the old scope keys
+
+Older versions built the per-scope keys by joining app, tenant and category with a bare `:`. App `a:b` with tenant `c` and app `a` with tenant `b:c` got the same key. When the second of two such scopes recorded its first event, it found the first scope's stream and appended into that tenant's hash chain. Saving a retention policy for one scope could delete the other's, and `Count` for one tenant included the other's events.
+
+Scope keys now carry each part's length, the same way checkpoint payloads do, so no two scopes share a key. On a store written by an older version, Migrate rebuilds the stream, event and policy scope indexes from the stored entities and deletes the old keys. It runs once and records that it has.
+
+Until it has run, `GetStreamByScope` returns `redis.ErrScopeKeysNotMigrated` whenever it can't find a stream. Without that, every existing tenant would look new and get a second chain on its next event.
+
+Run Migrate once every writer is on the new version. A process still on the old version writes old keys that nothing reads anymore. If that happens, delete `chronicle:meta:scope-key-format` and run Migrate again. Rebuilding is idempotent.
+
+### If two scopes already collided
+
+This part can't be fixed automatically. If two colliding scopes both recorded events before the upgrade, their events share one hash chain, and every hash after the first shared event covers both tenants' events. Moving one tenant's events out would break verification for the rest of the chain.
+
+Migrate still finishes. Each event is indexed under the scope it was recorded with, so each tenant's queries, counts and retention purges see only that tenant's events again. The stream stays with the scope that created it, and the other scope's next event starts a chain of its own. The Migrate call that does the migration then returns an error wrapping `redis.ErrScopeCollision`, naming each shared stream, and the stream IDs are kept in the Redis set `chronicle:meta:scope-collisions`. Treat those streams as an incident: you'll need to decide what the shared history means for both tenants' evidence.
+
+A retention policy that a colliding scope's save deleted is gone. Save it again.
 
 ## Full setup with `chronicle.New`
 
@@ -58,6 +78,9 @@ if err != nil {
 }
 
 s := chronicleredis.New(kvStore)
+if err := s.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
 
 adapter := store.NewAdapter(s)
 
@@ -90,7 +113,7 @@ app.Register(ext)
 | Aspect | Detail |
 |--------|--------|
 | Driver | Grove KV + redisdriver |
-| Migrations | No-op (schemaless) |
+| Migrations | One-off scope key rebuild, then a single `EXISTS` per call |
 | Ping | `kv.Ping(ctx)` |
 | Close | No-op -- caller owns the `*kv.Store` lifecycle |
 

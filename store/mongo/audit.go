@@ -345,6 +345,12 @@ func buildEventFilter(q *audit.Query) bson.M {
 	if q.UserID != "" {
 		filter["user_id"] = q.UserID
 	}
+	if q.SessionID != "" {
+		filter["session_id"] = q.SessionID
+	}
+	if q.RequestID != "" {
+		filter["request_id"] = q.RequestID
+	}
 	if !q.After.IsZero() || !q.Before.IsZero() {
 		ts := bson.M{}
 		if !q.After.IsZero() {

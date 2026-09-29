@@ -145,11 +145,6 @@ func (s *Store) SavePolicy(ctx context.Context, p *retention.Policy) error {
 	return nil
 }
 
-// policyScopeKey builds the per-scope uniqueness key for a policy category.
-func policyScopeKey(appID, tenantID, category string) string {
-	return uniquePolicyScope + appID + ":" + tenantID + ":" + category
-}
-
 // GetPolicy returns a retention policy by ID.
 func (s *Store) GetPolicy(ctx context.Context, policyID id.ID) (*retention.Policy, error) {
 	var m policyModel
@@ -226,23 +221,19 @@ func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
 // EventsOlderThan returns the events the purge query selects.
 //
 // Security-critical: the scope filter is what keeps one tenant's policy from
-// selecting, and therefore purging, every tenant's history. The bound keeps a
-// large backlog from being loaded into memory all at once.
+// selecting, and therefore purging, every tenant's history. The scope matches
+// exactly, so an empty TenantID means untenanted events rather than every
+// tenant. The bound keeps a large backlog from being loaded into memory all at
+// once.
 func (s *Store) EventsOlderThan(
 	ctx context.Context, pq retention.PurgeQuery,
 ) ([]*audit.Event, error) {
 	maxScore := scoreFromTime(pq.Before)
 
-	// Prefer the narrowest index available for the query.
-	zKey := zEventAll
-	switch {
-	case pq.AppID != "" && pq.TenantID != "":
-		zKey = zEventScope + pq.AppID + ":" + pq.TenantID
-	case pq.AppID != "":
-		zKey = zEventApp + pq.AppID
-	case pq.Category != "*":
-		zKey = zEventCategory + pq.Category
-	}
+	// The scope index holds exactly one (app, tenant) pair, empty values
+	// included, so it is always the right index for a purge. The app and
+	// category indexes would read other tenants' events.
+	zKey := eventScopeKey(pq.AppID, pq.TenantID)
 
 	ids, err := s.zRangeByScoreIDs(ctx, zKey, math.Inf(-1), maxScore)
 	if err != nil {
@@ -270,10 +261,14 @@ func (s *Store) EventsOlderThan(
 		if pq.Category != "*" && m.Category != pq.Category {
 			continue
 		}
-		if pq.AppID != "" && m.AppID != pq.AppID {
+		// Retention records are what keep purged sequences verifiable; they
+		// are never themselves up for retention.
+		if m.Category == audit.CategoryRetention {
 			continue
 		}
-		if pq.TenantID != "" && m.TenantID != pq.TenantID {
+		// Checked again per event: the index key joins app and tenant with
+		// ":", so two different pairs can share one key.
+		if m.AppID != pq.AppID || m.TenantID != pq.TenantID {
 			continue
 		}
 		evt, convErr := fromEventModel(&m)
@@ -314,7 +309,7 @@ func (s *Store) PurgeEvents(ctx context.Context, eventIDs []id.ID) (int64, error
 		pipe := s.rdb.Pipeline()
 		pipe.ZRem(ctx, zEventAll, m.ID)
 		pipe.ZRem(ctx, zEventStream+m.StreamID, m.ID)
-		pipe.ZRem(ctx, zEventScope+m.AppID+":"+m.TenantID, m.ID)
+		pipe.ZRem(ctx, eventScopeKey(m.AppID, m.TenantID), m.ID)
 		pipe.ZRem(ctx, zEventApp+m.AppID, m.ID)
 		if m.Category != "" {
 			pipe.ZRem(ctx, zEventCategory+m.Category, m.ID)

@@ -13,6 +13,11 @@ type Query struct {
 	TenantID string `json:"tenant_id,omitempty"`
 	UserID   string `json:"user_id,omitempty"`
 
+	// Correlation filters. SessionID returns everything one authenticated
+	// session did; RequestID returns everything one HTTP request did.
+	SessionID string `json:"session_id,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+
 	// Filters
 	Categories []string `json:"categories,omitempty"`
 	Actions    []string `json:"actions,omitempty"`

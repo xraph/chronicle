@@ -13,9 +13,28 @@ import (
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/metajson"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/stream"
 )
+
+// timeLayout is how every timestamp column is written. SQLite stores them as
+// TEXT and every range filter and ORDER BY compares them as strings, so the
+// layout has to sort lexicographically in chronological order.
+//
+// time.RFC3339Nano does not: it drops the fraction on an exact second and trims
+// trailing zeros otherwise, and '.' sorts before 'Z', so "00:00:00.5Z" compares
+// less than "00:00:00Z". A fraction that is always nine digits wide, in UTC,
+// gives every value the same width and makes byte order equal time order. It
+// also keeps nanoseconds, where SQLite's julianday() would truncate to the
+// millisecond. time.Parse(time.RFC3339Nano, ...) still reads it back, along
+// with any row written in the old variable-width form.
+const timeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// formatTime renders t for storage or for comparison against a stored column.
+// Every bound in a WHERE clause must go through this too: a bound in any other
+// layout reintroduces the string-order bug at the window edge.
+func formatTime(t time.Time) string { return t.UTC().Format(timeLayout) }
 
 // safeUint64 converts an int64 to uint64, clamping negative values to 0.
 func safeUint64(v int64) uint64 {
@@ -42,6 +61,9 @@ type EventModel struct {
 	TenantID        string `grove:"tenant_id"`
 	UserID          string `grove:"user_id"`
 	IP              string `grove:"ip"`
+	UserAgent       string `grove:"user_agent"`
+	RequestID       string `grove:"request_id"`
+	SessionID       string `grove:"session_id"`
 	Action          string `grove:"action"`
 	Resource        string `grove:"resource"`
 	Category        string `grove:"category"`
@@ -55,8 +77,8 @@ type EventModel struct {
 	Erased          int    `grove:"erased"`    // INTEGER boolean in SQLite
 	ErasedAt        string `grove:"erased_at"` // TEXT nullable timestamp
 	ErasureID       string `grove:"erasure_id"`
-	Timestamp       string `grove:"timestamp"`  // TEXT RFC3339Nano
-	CreatedAt       string `grove:"created_at"` // TEXT RFC3339Nano
+	Timestamp       string `grove:"timestamp"`  // TEXT, written with timeLayout
+	CreatedAt       string `grove:"created_at"` // TEXT, written with timeLayout
 	HashScheme      string `grove:"hash_scheme"`
 	HashKeyID       string `grove:"hash_key_id"`
 }
@@ -72,11 +94,11 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		return nil, fmt.Errorf("failed to parse stream id %q: %w", m.StreamID, err)
 	}
 
-	var metadata map[string]any
-	if m.Metadata != "" {
-		if unmarshalErr := json.Unmarshal([]byte(m.Metadata), &metadata); unmarshalErr != nil {
-			return nil, fmt.Errorf("failed to unmarshal metadata: %w", unmarshalErr)
-		}
+	// Not json.Unmarshal: it reads every number as float64, rounding integers
+	// past 2^53, and the digest covers the encoding of what Record was given.
+	metadata, err := metajson.Decode([]byte(m.Metadata))
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
 	}
 
 	ts, err := time.Parse(time.RFC3339Nano, m.Timestamp)
@@ -94,6 +116,9 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		TenantID:        m.TenantID,
 		UserID:          m.UserID,
 		IP:              m.IP,
+		UserAgent:       m.UserAgent,
+		RequestID:       m.RequestID,
+		SessionID:       m.SessionID,
 		Action:          m.Action,
 		Resource:        m.Resource,
 		Category:        m.Category,
@@ -132,7 +157,7 @@ func fromEvent(e *audit.Event) *EventModel {
 
 	erasedAt := ""
 	if e.ErasedAt != nil {
-		erasedAt = e.ErasedAt.UTC().Format(time.RFC3339Nano)
+		erasedAt = formatTime(*e.ErasedAt)
 	}
 
 	erased := 0
@@ -150,6 +175,9 @@ func fromEvent(e *audit.Event) *EventModel {
 		TenantID:        e.TenantID,
 		UserID:          e.UserID,
 		IP:              e.IP,
+		UserAgent:       e.UserAgent,
+		RequestID:       e.RequestID,
+		SessionID:       e.SessionID,
 		Action:          e.Action,
 		Resource:        e.Resource,
 		Category:        e.Category,
@@ -163,8 +191,8 @@ func fromEvent(e *audit.Event) *EventModel {
 		Erased:          erased,
 		ErasedAt:        erasedAt,
 		ErasureID:       e.ErasureID,
-		Timestamp:       e.Timestamp.UTC().Format(time.RFC3339Nano),
-		CreatedAt:       now().Format(time.RFC3339Nano),
+		Timestamp:       formatTime(e.Timestamp),
+		CreatedAt:       formatTime(now()),
 		HashScheme:      e.HashScheme,
 		HashKeyID:       e.HashKeyID,
 	}
@@ -196,8 +224,8 @@ type StreamModel struct {
 	TenantID    string `grove:"tenant_id"`
 	HeadHash    string `grove:"head_hash"`
 	HeadSeq     uint64 `grove:"head_seq"`
-	CreatedAt   string `grove:"created_at"` // TEXT RFC3339Nano
-	UpdatedAt   string `grove:"updated_at"` // TEXT RFC3339Nano
+	CreatedAt   string `grove:"created_at"` // TEXT, written with timeLayout
+	UpdatedAt   string `grove:"updated_at"` // TEXT, written with timeLayout
 	Scheme      string `grove:"scheme"`
 	SchemeSince uint64 `grove:"scheme_since"`
 }
@@ -240,8 +268,8 @@ func fromStream(st *stream.Stream) *StreamModel {
 		TenantID:    st.TenantID,
 		HeadHash:    st.HeadHash,
 		HeadSeq:     st.HeadSeq,
-		CreatedAt:   st.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:   st.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		CreatedAt:   formatTime(st.CreatedAt),
+		UpdatedAt:   formatTime(st.UpdatedAt),
 		Scheme:      st.Scheme,
 		SchemeSince: st.SchemeSince,
 	}
@@ -263,7 +291,7 @@ type ErasureModel struct {
 	KeyDestroyed   int    `grove:"key_destroyed"` // INTEGER boolean
 	AppID          string `grove:"app_id"`
 	TenantID       string `grove:"tenant_id"`
-	CreatedAt      string `grove:"created_at"` // TEXT RFC3339Nano
+	CreatedAt      string `grove:"created_at"` // TEXT, written with timeLayout
 }
 
 func toErasure(m *ErasureModel) (*erasure.Erasure, error) {
@@ -306,7 +334,7 @@ func fromErasure(e *erasure.Erasure) *ErasureModel {
 		KeyDestroyed:   kd,
 		AppID:          e.AppID,
 		TenantID:       e.TenantID,
-		CreatedAt:      e.CreatedAt.UTC().Format(time.RFC3339Nano),
+		CreatedAt:      formatTime(e.CreatedAt),
 	}
 }
 
@@ -324,8 +352,8 @@ type RetentionPolicyModel struct {
 	Archive   int    `grove:"archive"`  // INTEGER boolean
 	AppID     string `grove:"app_id"`
 	TenantID  string `grove:"tenant_id"`
-	CreatedAt string `grove:"created_at"` // TEXT RFC3339Nano
-	UpdatedAt string `grove:"updated_at"` // TEXT RFC3339Nano
+	CreatedAt string `grove:"created_at"` // TEXT, written with timeLayout
+	UpdatedAt string `grove:"updated_at"` // TEXT, written with timeLayout
 }
 
 func toPolicy(m *RetentionPolicyModel) (*retention.Policy, error) {
@@ -370,8 +398,8 @@ func fromPolicy(p *retention.Policy) *RetentionPolicyModel {
 		Archive:   archive,
 		AppID:     p.AppID,
 		TenantID:  p.TenantID,
-		CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt: p.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		CreatedAt: formatTime(p.CreatedAt),
+		UpdatedAt: formatTime(p.UpdatedAt),
 	}
 }
 
@@ -387,13 +415,13 @@ type ArchiveModel struct {
 	PolicyID      string `grove:"policy_id"`
 	Category      string `grove:"category"`
 	EventCount    int64  `grove:"event_count"`
-	FromTimestamp string `grove:"from_timestamp"` // TEXT RFC3339Nano
-	ToTimestamp   string `grove:"to_timestamp"`   // TEXT RFC3339Nano
+	FromTimestamp string `grove:"from_timestamp"` // TEXT, written with timeLayout
+	ToTimestamp   string `grove:"to_timestamp"`   // TEXT, written with timeLayout
 	SinkName      string `grove:"sink_name"`
 	SinkRef       string `grove:"sink_ref"`
 	AppID         string `grove:"app_id"`
 	TenantID      string `grove:"tenant_id"`
-	CreatedAt     string `grove:"created_at"` // TEXT RFC3339Nano
+	CreatedAt     string `grove:"created_at"` // TEXT, written with timeLayout
 }
 
 func toArchive(m *ArchiveModel) (*retention.Archive, error) {
@@ -445,13 +473,13 @@ func fromArchive(a *retention.Archive) *ArchiveModel {
 		PolicyID:      a.PolicyID.String(),
 		Category:      a.Category,
 		EventCount:    a.EventCount,
-		FromTimestamp: a.FromTimestamp.UTC().Format(time.RFC3339Nano),
-		ToTimestamp:   a.ToTimestamp.UTC().Format(time.RFC3339Nano),
+		FromTimestamp: formatTime(a.FromTimestamp),
+		ToTimestamp:   formatTime(a.ToTimestamp),
 		SinkName:      a.SinkName,
 		SinkRef:       a.SinkRef,
 		AppID:         a.AppID,
 		TenantID:      a.TenantID,
-		CreatedAt:     a.CreatedAt.UTC().Format(time.RFC3339Nano),
+		CreatedAt:     formatTime(a.CreatedAt),
 	}
 }
 
@@ -466,25 +494,20 @@ type ReportModel struct {
 	ID          string `grove:"id,pk"`
 	Title       string `grove:"title"`
 	Type        string `grove:"type"`
-	PeriodFrom  string `grove:"period_from"` // TEXT RFC3339Nano
-	PeriodTo    string `grove:"period_to"`   // TEXT RFC3339Nano
+	PeriodFrom  string `grove:"period_from"` // TEXT, written with timeLayout
+	PeriodTo    string `grove:"period_to"`   // TEXT, written with timeLayout
 	AppID       string `grove:"app_id"`
 	TenantID    string `grove:"tenant_id"`
 	Format      string `grove:"format"`
-	Data        string `grove:"data"` // JSON TEXT for sections
+	Data        string `grove:"data"` // JSON TEXT from compliance.EncodeReportBody
 	GeneratedBy string `grove:"generated_by"`
-	CreatedAt   string `grove:"created_at"` // TEXT RFC3339Nano
+	CreatedAt   string `grove:"created_at"` // TEXT, written with timeLayout
 }
 
 func toReport(m *ReportModel) (*compliance.Report, error) {
 	reportID, err := id.ParseReportID(m.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse report id %q: %w", m.ID, err)
-	}
-
-	var sections []compliance.Section
-	if unmarshalErr := json.Unmarshal([]byte(m.Data), &sections); unmarshalErr != nil {
-		return nil, fmt.Errorf("failed to unmarshal report sections: %w", unmarshalErr)
 	}
 
 	periodFrom, err := time.Parse(time.RFC3339Nano, m.PeriodFrom)
@@ -502,7 +525,7 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		return nil, fmt.Errorf("failed to parse created_at: %w", err)
 	}
 
-	return &compliance.Report{
+	r := &compliance.Report{
 		Entity: chronicle.Entity{
 			CreatedAt: createdAt,
 		},
@@ -516,29 +539,32 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		AppID:       m.AppID,
 		TenantID:    m.TenantID,
 		Format:      compliance.Format(m.Format),
-		Sections:    sections,
 		GeneratedBy: m.GeneratedBy,
-	}, nil
+	}
+	if decodeErr := compliance.DecodeReportBody([]byte(m.Data), r); decodeErr != nil {
+		return nil, decodeErr
+	}
+	return r, nil
 }
 
 func fromReport(r *compliance.Report) (*ReportModel, error) {
-	data, err := json.Marshal(r.Sections)
+	data, err := compliance.EncodeReportBody(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal report sections: %w", err)
+		return nil, err
 	}
 
 	return &ReportModel{
 		ID:          r.ID.String(),
 		Title:       r.Title,
 		Type:        r.Type,
-		PeriodFrom:  r.Period.From.UTC().Format(time.RFC3339Nano),
-		PeriodTo:    r.Period.To.UTC().Format(time.RFC3339Nano),
+		PeriodFrom:  formatTime(r.Period.From),
+		PeriodTo:    formatTime(r.Period.To),
 		AppID:       r.AppID,
 		TenantID:    r.TenantID,
 		Format:      string(r.Format),
 		Data:        string(data),
 		GeneratedBy: r.GeneratedBy,
-		CreatedAt:   r.CreatedAt.UTC().Format(time.RFC3339Nano),
+		CreatedAt:   formatTime(r.CreatedAt),
 	}, nil
 }
 
@@ -564,7 +590,7 @@ type CheckpointModel struct {
 	SignKeyID      string `grove:"sign_key_id"`
 	Signature      []byte `grove:"signature"` // BLOB
 	SignedPayload  string `grove:"signed_payload"`
-	CreatedAt      string `grove:"created_at"` // TEXT RFC3339Nano
+	CreatedAt      string `grove:"created_at"` // TEXT, written with timeLayout
 }
 
 func toCheckpoint(m *CheckpointModel) (*checkpoint.Checkpoint, error) {
@@ -622,6 +648,6 @@ func fromCheckpoint(cp *checkpoint.Checkpoint) *CheckpointModel {
 		SignKeyID:      cp.SignKeyID,
 		Signature:      cp.Signature,
 		SignedPayload:  cp.SignedPayload,
-		CreatedAt:      cp.CreatedAt.UTC().Format(time.RFC3339Nano),
+		CreatedAt:      formatTime(cp.CreatedAt),
 	}
 }

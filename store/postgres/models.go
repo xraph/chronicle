@@ -2,7 +2,6 @@
 package postgres
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/metajson"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/stream"
 )
@@ -40,35 +40,41 @@ func safeUint64(v int64) uint64 {
 // ──────────────────────────────────────────────────
 
 // EventModel is the grove ORM model for the chronicle_events table.
+//
+// Timestamp is split across two columns. See splitTimestamp for why.
 type EventModel struct {
 	grove.BaseModel `grove:"table:chronicle_events,alias:e"`
 
-	ID              string         `grove:"id,pk"`
-	StreamID        string         `grove:"stream_id"`
-	Sequence        int64          `grove:"sequence"`
-	Hash            string         `grove:"hash"`
-	PrevHash        string         `grove:"prev_hash"`
-	AppID           string         `grove:"app_id"`
-	TenantID        string         `grove:"tenant_id"`
-	UserID          string         `grove:"user_id"`
-	IP              string         `grove:"ip"`
-	Action          string         `grove:"action"`
-	Resource        string         `grove:"resource"`
-	Category        string         `grove:"category"`
-	ResourceID      string         `grove:"resource_id"`
-	Metadata        map[string]any `grove:"metadata,type:jsonb"`
-	Outcome         string         `grove:"outcome"`
-	Severity        string         `grove:"severity"`
-	Reason          string         `grove:"reason"`
-	SubjectID       string         `grove:"subject_id"`
-	EncryptionKeyID string         `grove:"encryption_key_id"`
-	Erased          bool           `grove:"erased"`
-	ErasedAt        *time.Time     `grove:"erased_at"`
-	ErasureID       string         `grove:"erasure_id"`
-	Timestamp       time.Time      `grove:"timestamp"`
-	CreatedAt       time.Time      `grove:"created_at"`
-	HashScheme      string         `grove:"hash_scheme"`
-	HashKeyID       string         `grove:"hash_key_id"`
+	ID              string       `grove:"id,pk"`
+	StreamID        string       `grove:"stream_id"`
+	Sequence        int64        `grove:"sequence"`
+	Hash            string       `grove:"hash"`
+	PrevHash        string       `grove:"prev_hash"`
+	AppID           string       `grove:"app_id"`
+	TenantID        string       `grove:"tenant_id"`
+	UserID          string       `grove:"user_id"`
+	IP              string       `grove:"ip"`
+	UserAgent       string       `grove:"user_agent"`
+	RequestID       string       `grove:"request_id"`
+	SessionID       string       `grove:"session_id"`
+	Action          string       `grove:"action"`
+	Resource        string       `grove:"resource"`
+	Category        string       `grove:"category"`
+	ResourceID      string       `grove:"resource_id"`
+	Metadata        metajson.Map `grove:"metadata,type:jsonb"` // decodes without rounding integers past 2^53
+	Outcome         string       `grove:"outcome"`
+	Severity        string       `grove:"severity"`
+	Reason          string       `grove:"reason"`
+	SubjectID       string       `grove:"subject_id"`
+	EncryptionKeyID string       `grove:"encryption_key_id"`
+	Erased          bool         `grove:"erased"`
+	ErasedAt        *time.Time   `grove:"erased_at"`
+	ErasureID       string       `grove:"erasure_id"`
+	Timestamp       time.Time    `grove:"timestamp"`
+	TimestampSubUs  int32        `grove:"timestamp_sub_us"`
+	CreatedAt       time.Time    `grove:"created_at"`
+	HashScheme      string       `grove:"hash_scheme"`
+	HashKeyID       string       `grove:"hash_key_id"`
 }
 
 func toEvent(m *EventModel) (*audit.Event, error) {
@@ -92,6 +98,9 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		TenantID:        m.TenantID,
 		UserID:          m.UserID,
 		IP:              m.IP,
+		UserAgent:       m.UserAgent,
+		RequestID:       m.RequestID,
+		SessionID:       m.SessionID,
 		Action:          m.Action,
 		Resource:        m.Resource,
 		Category:        m.Category,
@@ -105,13 +114,14 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		Erased:          m.Erased,
 		ErasedAt:        m.ErasedAt,
 		ErasureID:       m.ErasureID,
-		Timestamp:       m.Timestamp,
+		Timestamp:       joinTimestamp(m.Timestamp, m.TimestampSubUs),
 		HashScheme:      m.HashScheme,
 		HashKeyID:       m.HashKeyID,
 	}, nil
 }
 
 func fromEvent(e *audit.Event) *EventModel {
+	ts, subUs := splitTimestamp(e.Timestamp)
 	return &EventModel{
 		ID:              e.ID.String(),
 		StreamID:        e.StreamID.String(),
@@ -122,6 +132,9 @@ func fromEvent(e *audit.Event) *EventModel {
 		TenantID:        e.TenantID,
 		UserID:          e.UserID,
 		IP:              e.IP,
+		UserAgent:       e.UserAgent,
+		RequestID:       e.RequestID,
+		SessionID:       e.SessionID,
 		Action:          e.Action,
 		Resource:        e.Resource,
 		Category:        e.Category,
@@ -135,11 +148,55 @@ func fromEvent(e *audit.Event) *EventModel {
 		Erased:          e.Erased,
 		ErasedAt:        e.ErasedAt,
 		ErasureID:       e.ErasureID,
-		Timestamp:       e.Timestamp,
+		Timestamp:       ts,
+		TimestampSubUs:  subUs,
 		CreatedAt:       time.Now().UTC(),
 		HashScheme:      e.HashScheme,
 		HashKeyID:       e.HashKeyID,
 	}
+}
+
+// splitTimestamp divides an event timestamp into the part a TIMESTAMPTZ
+// column can hold and the nanoseconds below it.
+//
+// The hash chain covers the timestamp to the nanosecond (hash.Chain formats it
+// with time.RFC3339Nano), and TIMESTAMPTZ keeps microseconds. Storing the
+// timestamp in that column alone handed every reader a different instant from
+// the one Append hashed, so any event with a sub-microsecond component read
+// back as tampered. On Linux, where time.Now() has nanosecond resolution, that
+// is nearly all of them. A Mac's clock usually ticks in whole microseconds,
+// which is why the tests there never saw it.
+//
+// We keep the full value rather than truncating before hashing. An audit log
+// records when something happened as the caller reported it. Rounding that to
+// suit one backend's storage would change the evidence, and would mean events
+// hashed on a different backend could never verify here. The column stays the
+// microsecond floor, so the timestamp indexes, range filters and sort order
+// behave exactly as they did.
+//
+// The column value is truncated here rather than handed to the driver whole.
+// What the server does with extra digits depends on how they arrive: pgx's
+// binary encoding drops them, but PostgreSQL's text input rounds to the nearest
+// microsecond, and a rounded-up floor plus the remainder would add up to the
+// wrong instant.
+func splitTimestamp(t time.Time) (floor time.Time, subUs int32) {
+	floor = t.Truncate(time.Microsecond)
+	return floor, int32(t.Sub(floor)) //nolint:gosec // always in [0, 1000)
+}
+
+// joinTimestamp reverses splitTimestamp.
+//
+// A row written before timestamp_sub_us existed has it defaulted to zero and
+// reads back as the microsecond value it holds, as it always did. Those rows
+// lost their sub-microsecond digits on insert and the row no longer holds
+// them, so a row whose original timestamp had any still fails verification.
+// That is not reported wrongly: the stored digest covers an instant the row no
+// longer holds.
+//
+// The remainder is not range-checked. A tampered value moves the timestamp,
+// and verification reports that event as tampered, which is the right answer.
+func joinTimestamp(floor time.Time, subUs int32) time.Time {
+	return floor.Add(time.Duration(subUs))
 }
 
 // ──────────────────────────────────────────────────
@@ -382,7 +439,7 @@ type ReportModel struct {
 	AppID       string    `grove:"app_id"`
 	TenantID    string    `grove:"tenant_id"`
 	Format      string    `grove:"format"`
-	Data        []byte    `grove:"data,type:jsonb"` // Sections serialized as JSON
+	Data        []byte    `grove:"data,type:jsonb"` // compliance.EncodeReportBody: sections, stats and verification
 	GeneratedBy string    `grove:"generated_by"`
 	CreatedAt   time.Time `grove:"created_at"`
 }
@@ -393,12 +450,7 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		return nil, fmt.Errorf("failed to parse report id %q: %w", m.ID, err)
 	}
 
-	var sections []compliance.Section
-	if err := json.Unmarshal(m.Data, &sections); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal report sections: %w", err)
-	}
-
-	return &compliance.Report{
+	r := &compliance.Report{
 		Entity: chronicle.Entity{
 			CreatedAt: m.CreatedAt,
 		},
@@ -412,15 +464,18 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		AppID:       m.AppID,
 		TenantID:    m.TenantID,
 		Format:      compliance.Format(m.Format),
-		Sections:    sections,
 		GeneratedBy: m.GeneratedBy,
-	}, nil
+	}
+	if decodeErr := compliance.DecodeReportBody(m.Data, r); decodeErr != nil {
+		return nil, decodeErr
+	}
+	return r, nil
 }
 
 func fromReport(r *compliance.Report) (*ReportModel, error) {
-	data, err := json.Marshal(r.Sections)
+	data, err := compliance.EncodeReportBody(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal report sections: %w", err)
+		return nil, err
 	}
 
 	return &ReportModel{

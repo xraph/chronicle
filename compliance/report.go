@@ -32,18 +32,28 @@ type DateRange struct {
 // Report is a generated compliance report.
 type Report struct {
 	chronicle.Entity
-	ID           id.ID          `json:"id"`
-	Title        string         `json:"title"`
-	Type         string         `json:"type"`
-	Period       DateRange      `json:"period"`
-	AppID        string         `json:"app_id"`
-	TenantID     string         `json:"tenant_id"`
-	Sections     []Section      `json:"sections"`
-	Stats        *Stats         `json:"stats,omitempty"`
+	ID       id.ID     `json:"id"`
+	Title    string    `json:"title"`
+	Type     string    `json:"type"`
+	Period   DateRange `json:"period"`
+	AppID    string    `json:"app_id"`
+	TenantID string    `json:"tenant_id"`
+	Sections []Section `json:"sections"`
+	Stats    *Stats    `json:"stats,omitempty"`
+
+	// Verification is the chain verification run when the report was
+	// generated. It is nil when none ran; VerificationScope says why, and
+	// nil never means verification passed.
 	Verification *verify.Report `json:"verification,omitempty"`
-	GeneratedBy  string         `json:"generated_by"`
-	Format       Format         `json:"format"`
-	Data         []byte         `json:"data,omitempty"`
+
+	// VerificationScope is what Verification covered: the stream, the exact
+	// sequences, whether the window cut the chain short, and the caveats
+	// needed to read the result.
+	VerificationScope *VerificationScope `json:"verification_scope,omitempty"`
+
+	GeneratedBy string `json:"generated_by"`
+	Format      Format `json:"format"`
+	Data        []byte `json:"data,omitempty"`
 }
 
 // Section is a part of a compliance report.

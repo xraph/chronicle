@@ -9,6 +9,8 @@ import (
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
+	"github.com/xraph/chronicle/checkpoint"
+	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/verify"
 )
@@ -19,19 +21,42 @@ type Engine struct {
 	verifyStore verify.Store
 	reportStore ReportStore
 	logger      log.Logger
+
+	// streams and chain are what report verification needs; see WithChain.
+	// Without them reports say verification was not configured.
+	streams StreamSource
+	chain   *hash.Chain
+
+	// checkpoints and signer are optional and only ever set together; see
+	// WithCheckpoints.
+	checkpoints checkpoint.Store
+	signer      checkpoint.Signer
+
+	verifyWindow uint64
 }
 
 // NewEngine creates a compliance engine.
-func NewEngine(auditStore audit.Store, verifyStore verify.Store, reportStore ReportStore, logger log.Logger) *Engine {
+//
+// Reports verify their scope's hash chain only when opts include WithChain.
+// Pass the deployment's own chain there, and WithCheckpoints when it signs
+// checkpoints.
+func NewEngine(
+	auditStore audit.Store, verifyStore verify.Store, reportStore ReportStore, logger log.Logger, opts ...EngineOption,
+) *Engine {
 	if logger == nil {
 		logger = log.NewNoopLogger()
 	}
-	return &Engine{
-		auditStore:  auditStore,
-		verifyStore: verifyStore,
-		reportStore: reportStore,
-		logger:      logger,
+	e := &Engine{
+		auditStore:   auditStore,
+		verifyStore:  verifyStore,
+		reportStore:  reportStore,
+		logger:       logger,
+		verifyWindow: DefaultVerifyWindow,
 	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // SOC2 generates a SOC2 Type II compliance report.
@@ -64,6 +89,10 @@ func (e *Engine) SOC2(ctx context.Context, input *SOC2Input) (*Report, error) {
 		Stats:       stats,
 		GeneratedBy: input.GeneratedBy,
 		Format:      FormatJSON,
+	}
+
+	if err := e.attachVerification(ctx, report); err != nil {
+		return nil, err
 	}
 
 	if err := e.reportStore.SaveReport(ctx, report); err != nil {
@@ -110,6 +139,10 @@ func (e *Engine) HIPAA(ctx context.Context, input *HIPAAInput) (*Report, error) 
 		Format:      FormatJSON,
 	}
 
+	if err := e.attachVerification(ctx, report); err != nil {
+		return nil, err
+	}
+
 	if err := e.reportStore.SaveReport(ctx, report); err != nil {
 		return nil, fmt.Errorf("saving report: %w", err)
 	}
@@ -152,6 +185,10 @@ func (e *Engine) EUAIAct(ctx context.Context, input *EUAIActInput) (*Report, err
 		Stats:       stats,
 		GeneratedBy: input.GeneratedBy,
 		Format:      FormatJSON,
+	}
+
+	if err := e.attachVerification(ctx, report); err != nil {
+		return nil, err
 	}
 
 	if err := e.reportStore.SaveReport(ctx, report); err != nil {
@@ -199,6 +236,10 @@ func (e *Engine) Custom(ctx context.Context, input *CustomInput) (*Report, error
 		Format:      FormatJSON,
 	}
 
+	if err := e.attachVerification(ctx, report); err != nil {
+		return nil, err
+	}
+
 	if err := e.reportStore.SaveReport(ctx, report); err != nil {
 		return nil, fmt.Errorf("saving report: %w", err)
 	}
@@ -209,6 +250,17 @@ func (e *Engine) Custom(ctx context.Context, input *CustomInput) (*Report, error
 	)
 
 	return report, nil
+}
+
+// attachVerification verifies the chain behind a report's scope and records
+// the result, and what it covered, on the report.
+func (e *Engine) attachVerification(ctx context.Context, r *Report) error {
+	result, scope, err := e.verifyScope(ctx, r.AppID, r.TenantID)
+	if err != nil {
+		return err
+	}
+	r.Verification, r.VerificationScope = result, scope
+	return nil
 }
 
 // Export exports a report to the given format and writer.

@@ -40,6 +40,13 @@ type Event struct {
 	UserID   string `json:"user_id,omitempty"`
 	IP       string `json:"ip,omitempty"`
 
+	// Request correlation. UserAgent is personal data and is sealed with IP;
+	// RequestID and SessionID are opaque identifiers used to tie an event to
+	// the HTTP request and the authenticated session that produced it.
+	UserAgent string `json:"user_agent,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+
 	// What happened
 	Action   string `json:"action"`
 	Resource string `json:"resource"`

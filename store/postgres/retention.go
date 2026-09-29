@@ -105,23 +105,25 @@ func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
 // EventsOlderThan returns the events the purge query selects.
 //
 // Security-critical: the scope filter is what keeps one tenant's policy from
-// selecting, and therefore purging, every tenant's history. The bound keeps a
-// large backlog from being loaded into memory all at once.
+// selecting, and therefore purging, every tenant's history. Both columns are
+// always compared, so an empty TenantID selects untenanted events rather than
+// every tenant. The bound keeps a large backlog from being loaded into memory
+// all at once.
 func (s *Store) EventsOlderThan(
 	ctx context.Context, pq retention.PurgeQuery,
 ) ([]*audit.Event, error) {
 	var models []EventModel
-	q := s.pg.NewSelect(&models).Where("e.timestamp < ?", pq.Before)
+	q := s.pg.NewSelect(&models).
+		Where("e.timestamp < ?", pq.Before).
+		Where("e.app_id = ?", pq.AppID).
+		Where("e.tenant_id = ?", pq.TenantID)
 
 	if pq.Category != "*" {
 		q.Where("e.category = ?", pq.Category)
 	}
-	if pq.AppID != "" {
-		q.Where("e.app_id = ?", pq.AppID)
-	}
-	if pq.TenantID != "" {
-		q.Where("e.tenant_id = ?", pq.TenantID)
-	}
+	// Retention records are what keep purged sequences verifiable; they are
+	// never themselves up for retention.
+	q.Where("e.category <> ?", audit.CategoryRetention)
 
 	q = q.OrderExpr("e.timestamp ASC")
 	if limit := pq.EffectiveLimit(); limit > 0 {
