@@ -93,7 +93,7 @@ func TestEnforceDoesNotPurgeOtherApps(t *testing.T) {
 		t.Fatalf("save policy: %v", err)
 	}
 
-	enforcer := retention.NewEnforcer(s, sink, nil)
+	enforcer := retention.NewEnforcer(s, sink, nil, retention.WithUnrecordedPurge())
 	result, err := enforcer.Enforce(ctx)
 	if err != nil {
 		t.Fatalf("enforce: %v", err)
@@ -132,7 +132,7 @@ func TestEnforceIsolatesTenantsWithinAnApp(t *testing.T) {
 		t.Fatalf("save policy: %v", err)
 	}
 
-	enforcer := retention.NewEnforcer(s, sink, nil)
+	enforcer := retention.NewEnforcer(s, sink, nil, retention.WithUnrecordedPurge())
 	result, err := enforcer.Enforce(ctx)
 	if err != nil {
 		t.Fatalf("enforce: %v", err)
@@ -174,7 +174,7 @@ func TestEnforceUntenantedPolicySparesTenants(t *testing.T) {
 				t.Fatalf("save policy: %v", err)
 			}
 
-			result, err := retention.NewEnforcer(s, sink, nil).Enforce(ctx)
+			result, err := retention.NewEnforcer(s, sink, nil, retention.WithUnrecordedPurge()).Enforce(ctx)
 			if err != nil {
 				t.Fatalf("enforce: %v", err)
 			}
@@ -219,7 +219,7 @@ func TestEnforceTenantPolicySparesUntenanted(t *testing.T) {
 		t.Fatalf("save policy: %v", err)
 	}
 
-	result, err := retention.NewEnforcer(s, sink, nil).Enforce(ctx)
+	result, err := retention.NewEnforcer(s, sink, nil, retention.WithUnrecordedPurge()).Enforce(ctx)
 	if err != nil {
 		t.Fatalf("enforce: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestEnforceForAppOnlyRunsThatApp(t *testing.T) {
 		}
 	}
 
-	enforcer := retention.NewEnforcer(s, sink, nil)
+	enforcer := retention.NewEnforcer(s, sink, nil, retention.WithUnrecordedPurge())
 	result, err := enforcer.EnforceScope(ctx, retention.Scope{AppID: "app2"})
 	if err != nil {
 		t.Fatalf("EnforceScope: %v", err)
@@ -294,7 +294,7 @@ func TestEnforceDoesNotPurgeWhenArchiveFails(t *testing.T) {
 		t.Fatalf("save policy: %v", err)
 	}
 
-	enforcer := retention.NewEnforcer(s, &failingSink{}, nil)
+	enforcer := retention.NewEnforcer(s, &failingSink{}, nil, retention.WithUnrecordedPurge())
 	if _, err := enforcer.Enforce(ctx); err == nil {
 		t.Fatal("Enforce should surface the archive failure")
 	}
@@ -302,6 +302,38 @@ func TestEnforceDoesNotPurgeWhenArchiveFails(t *testing.T) {
 	for _, e := range events {
 		if _, getErr := s.Get(ctx, e.ID); getErr != nil {
 			t.Errorf("event %s purged despite the archive write failing: %v", e.ID, getErr)
+		}
+	}
+}
+
+// TestEnforceRefusesWithoutAChainRecorder pins the default. The seeded events
+// here are raw rows, which is why every other test in this file opts into
+// WithUnrecordedPurge; an Enforcer that has not made that choice must purge
+// nothing rather than leave gaps verification reads as deletions.
+func TestEnforceRefusesWithoutAChainRecorder(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	events := seedEventsForApp(t, s, "app1", "", "auth", 3, 48*time.Hour)
+
+	policy := &retention.Policy{
+		ID:       id.NewPolicyID(),
+		Category: "auth",
+		Duration: 1 * time.Hour,
+		AppID:    "app1",
+	}
+	policy.CreatedAt = time.Now()
+	policy.UpdatedAt = time.Now()
+	if err := s.SavePolicy(ctx, policy); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+
+	_, err := retention.NewEnforcer(s, nil, nil).Enforce(ctx)
+	if !errors.Is(err, retention.ErrNoChainRecorder) {
+		t.Fatalf("Enforce err = %v, want ErrNoChainRecorder", err)
+	}
+	for _, e := range events {
+		if _, getErr := s.Get(ctx, e.ID); getErr != nil {
+			t.Errorf("event %s purged with no chain recorder: %v", e.ID, getErr)
 		}
 	}
 }
@@ -343,7 +375,7 @@ func TestEnforceWithArchive(t *testing.T) {
 		t.Fatalf("save policy: %v", err)
 	}
 
-	enforcer := retention.NewEnforcer(s, sink, nil)
+	enforcer := retention.NewEnforcer(s, sink, nil, retention.WithUnrecordedPurge())
 	result, err := enforcer.Enforce(ctx)
 	if err != nil {
 		t.Fatalf("enforce: %v", err)
@@ -420,7 +452,7 @@ func TestEnforceWithoutArchive(t *testing.T) {
 		t.Fatalf("save policy: %v", err)
 	}
 
-	enforcer := retention.NewEnforcer(s, sink, nil)
+	enforcer := retention.NewEnforcer(s, sink, nil, retention.WithUnrecordedPurge())
 	result, err := enforcer.Enforce(ctx)
 	if err != nil {
 		t.Fatalf("enforce: %v", err)
@@ -446,7 +478,7 @@ func TestEnforceNoPolicies(t *testing.T) {
 	s, sink := setupEnforcerTest(t)
 	ctx := context.Background()
 
-	enforcer := retention.NewEnforcer(s, sink, nil)
+	enforcer := retention.NewEnforcer(s, sink, nil, retention.WithUnrecordedPurge())
 	result, err := enforcer.Enforce(ctx)
 	if err != nil {
 		t.Fatalf("enforce: %v", err)
@@ -479,7 +511,7 @@ func TestEnforceNoMatchingEvents(t *testing.T) {
 		t.Fatalf("save policy: %v", err)
 	}
 
-	enforcer := retention.NewEnforcer(s, sink, nil)
+	enforcer := retention.NewEnforcer(s, sink, nil, retention.WithUnrecordedPurge())
 	result, err := enforcer.Enforce(ctx)
 	if err != nil {
 		t.Fatalf("enforce: %v", err)

@@ -107,3 +107,5 @@ Chronicle discovers the `SinkProvider` interface at registration time and adds t
 ## Sinks in retention
 
 The retention system also uses a `sink.Sink` as its **archive sink**. Events matching a policy with `Archive = true` are written to the archive sink before being purged from the primary store. Configure it with `extension.WithArchiveSink(s)`.
+
+Sinks only write. To read an archive back, which the retention backfill needs, use `sink.NewFileArchive` for a `FileSink` directory or `sink.NewS3Archive` for an `S3Sink` bucket. Both implement `sink.ArchiveReader`.

@@ -390,20 +390,28 @@ func applyEventFilters(q *sqlitedriver.SelectQuery, f *audit.Query) *sqlitedrive
 	if !f.Before.IsZero() {
 		q = q.Where("e.timestamp <= ?", formatTime(f.Before))
 	}
-	if len(f.Categories) > 0 {
-		q = q.Where("e.category IN (?)", f.Categories)
-	}
-	if len(f.Actions) > 0 {
-		q = q.Where("e.action IN (?)", f.Actions)
-	}
-	if len(f.Resources) > 0 {
-		q = q.Where("e.resource IN (?)", f.Resources)
-	}
-	if len(f.Severity) > 0 {
-		q = q.Where("e.severity IN (?)", f.Severity)
-	}
-	if len(f.Outcome) > 0 {
-		q = q.Where("e.outcome IN (?)", f.Outcome)
-	}
+	q = whereIn(q, "e.category", f.Categories)
+	q = whereIn(q, "e.action", f.Actions)
+	q = whereIn(q, "e.resource", f.Resources)
+	q = whereIn(q, "e.severity", f.Severity)
+	q = whereIn(q, "e.outcome", f.Outcome)
 	return q
+}
+
+// whereIn adds "col IN (?, ?, ...)" with one placeholder per value.
+//
+// sqlitedriver binds a Go slice as a single argument rather than expanding it,
+// so "IN (?)" with a []string failed every filtered query outright ("unsupported
+// type []string"). Expanding the placeholders here is the same thing
+// PurgeEvents already does by hand.
+func whereIn(q *sqlitedriver.SelectQuery, col string, vals []string) *sqlitedriver.SelectQuery {
+	if len(vals) == 0 {
+		return q
+	}
+	args := make([]any, len(vals))
+	for i, v := range vals {
+		args[i] = v
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(vals)), ", ")
+	return q.Where(col+" IN ("+placeholders+")", args...)
 }

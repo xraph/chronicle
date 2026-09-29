@@ -144,6 +144,22 @@ templ VerifyPage(data VerifyPageData) {
 						</div>
 					}
 
+					if len(data.Report.Retained) > 0 {
+						<div class="mt-4">
+							<dt class="text-sm font-medium text-muted-foreground mb-1">Removed by Retention</dt>
+							<p class="text-xs text-muted-foreground mb-3">
+								A retention policy removed these sequences and a retention record in the chain lists
+								them, so they are not gaps. The chain was checked to link across them. Their content
+								is gone, so it cannot be re-verified.
+							</p>
+							<dd class="flex flex-wrap gap-2">
+								for _, r := range data.Report.Retained {
+									<code class="text-xs bg-muted/50 px-2 py-1 rounded-sm">{ retainedLabel(r) }</code>
+								}
+							</dd>
+						</div>
+					}
+
 					if len(data.Report.Downgrades) > 0 {
 						<div class="mt-4 rounded-sm border border-destructive bg-destructive/5 p-4">
 							<dt class="text-sm font-semibold text-destructive mb-1">Scheme Downgrades</dt>
@@ -279,6 +295,21 @@ func boolToStatus(valid bool) string {
 // dashboard that no action could ever clear.
 func issueCount(r *verify.Report) int {
 	return len(r.Gaps) + len(r.Tampered) + len(r.Downgrades)
+}
+
+// retainedLabel renders one retained range and the record that explains it.
+// Retained sequences are not issues: a policy removed them and said so. A
+// backfilled range names the archive its record was recovered from.
+func retainedLabel(r verify.RetainedRange) string {
+	span := strconv.FormatUint(r.FromSeq, 10)
+	if r.ToSeq != r.FromSeq {
+		span += "-" + strconv.FormatUint(r.ToSeq, 10)
+	}
+	label := span + " (record " + strconv.FormatUint(r.RecordSeq, 10)
+	if r.Backfill != "" {
+		label += ", backfilled from " + r.Backfill
+	}
+	return label + ")"
 }
 
 // checkpointStatus classifies one checkpoint result for display.

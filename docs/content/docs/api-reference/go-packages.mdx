@@ -77,7 +77,8 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 | Export | Type | Purpose |
 |--------|------|---------|
 | `Input` | struct | StreamID, FromSeq, ToSeq, AppID, TenantID |
-| `Report` | struct | Valid, Verified, Gaps []uint64, Tampered []uint64, FirstEvent, LastEvent |
+| `Report` | struct | Valid, Verified, Gaps []uint64, Retained []RetainedRange, Tampered []uint64, FirstEvent, LastEvent |
+| `RetainedRange` | struct | FromSeq, ToSeq, RecordSeq, PolicyID: sequences a retention policy removed |
 | `Store` | interface | EventRange, Gaps |
 
 ## store
@@ -143,7 +144,11 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 | `Policy` | struct | Retention policy: Category, Duration, Archive, AppID |
 | `Archive` | struct | Archive record: PolicyID, EventsArchived, EventsPurged |
 | `Enforcer` | struct | Policy runner |
-| `NewEnforcer(store, archiveSink, logger)` | func | Constructor |
+| `NewEnforcer(store, archiveSink, logger, opts...)` | func | Constructor |
+| `WithChainRecorder(r)` | func | Record each purge in the hash chain first. Pass your `*chronicle.Chronicle`. |
+| `WithUnrecordedPurge()` | func | Purge without a recorder, leaving gaps verification reports as deletions |
+| `ChainRecorder` | interface | RecordRetention, implemented by `*chronicle.Chronicle` |
+| `ErrNoChainRecorder` | error | Returned when an enforcer with neither option would purge |
 | `EnforceResult` | struct | Archived, Purged, Retained int64 |
 | `Store` | interface | SavePolicy, GetPolicy, ListPolicies, DeletePolicy, EventsOlderThan, SaveArchive, ListArchives |
 

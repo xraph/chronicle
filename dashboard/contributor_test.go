@@ -40,7 +40,7 @@ func newDashSetup(t *testing.T, mutations bool) *dashSetup {
 	mem := memory.New()
 	logger := log.NewNoopLogger()
 	engine := compliance.NewEngine(mem, mem, mem, logger)
-	enforcer := retention.NewEnforcer(mem, nil, logger)
+	enforcer := retention.NewEnforcer(mem, nil, logger, retention.WithUnrecordedPurge())
 
 	c := chronicledash.New(
 		chronicledash.NewManifest(),
@@ -416,7 +416,7 @@ func renderVerifyWithChain(t *testing.T, mem *memory.Store, chain *hash.Chain, s
 
 	logger := log.NewNoopLogger()
 	engine := compliance.NewEngine(mem, mem, mem, logger)
-	enforcer := retention.NewEnforcer(mem, nil, logger)
+	enforcer := retention.NewEnforcer(mem, nil, logger, retention.WithUnrecordedPurge())
 
 	c := chronicledash.New(
 		chronicledash.NewManifest(),

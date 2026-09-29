@@ -266,6 +266,11 @@ func (s *Store) EventsOlderThan(
 		if pq.Category != "*" && m.Category != pq.Category {
 			continue
 		}
+		// Retention records are what keep purged sequences verifiable; they
+		// are never themselves up for retention.
+		if m.Category == audit.CategoryRetention {
+			continue
+		}
 		// Checked again per event: the index key joins app and tenant with
 		// ":", so two different pairs can share one key.
 		if m.AppID != pq.AppID || m.TenantID != pq.TenantID {

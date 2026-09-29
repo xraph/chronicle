@@ -122,6 +122,9 @@ func (s *Store) EventsOlderThan(
 	if pq.Category != "*" {
 		q = q.Where("e.category = ?", pq.Category)
 	}
+	// Retention records are what keep purged sequences verifiable; they are
+	// never themselves up for retention.
+	q = q.Where("e.category <> ?", audit.CategoryRetention)
 
 	q = q.OrderExpr("e.timestamp ASC")
 	if limit := pq.EffectiveLimit(); limit > 0 {
