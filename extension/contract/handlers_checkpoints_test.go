@@ -348,7 +348,7 @@ func TestCheckpointsDetailWithNoStoreConfigured(t *testing.T) {
 
 func TestCheckpointsTakeWithoutACheckpointerIsUnavailable(t *testing.T) {
 	h := checkpointsTakeHandler(Deps{Store: newStubStore()})
-	_, err := h(context.Background(), struct{}{}, principalWith(map[string]any{"app_id": "app-1"}))
+	_, err := h(context.Background(), TakeCheckpointInput{}, principalWith(map[string]any{"app_id": "app-1"}))
 	if err == nil {
 		t.Fatal("take succeeded on a deployment that configured no checkpointer")
 	}
@@ -367,7 +367,7 @@ func TestCheckpointsTakeOnAScopeWithNoChainIsNotFound(t *testing.T) {
 	checkpointer := checkpoint.NewCheckpointer(stubCheckpointStore{}, signer, nil)
 
 	h := checkpointsTakeHandler(Deps{Store: storeReturning(chronicle.ErrStreamNotFound), Checkpointer: checkpointer})
-	_, err = h(context.Background(), struct{}{}, principalWith(map[string]any{"app_id": "app-1"}))
+	_, err = h(context.Background(), TakeCheckpointInput{}, principalWith(map[string]any{"app_id": "app-1"}))
 	var ce *fcontract.Error
 	if !errors.As(err, &ce) || ce.Code != fcontract.CodeNotFound {
 		t.Fatalf("err = %v, want NOT_FOUND", err)
@@ -407,7 +407,7 @@ func TestCheckpointsTakeTreatsALostRaceAsUpToDate(t *testing.T) {
 	checkpointer := checkpoint.NewCheckpointer(checkpointsExistsStore{}, signer, nil)
 
 	deps := Deps{Store: s, Checkpointer: checkpointer}
-	out, err := checkpointsTakeHandler(deps)(ctx, struct{}{}, principalWith(map[string]any{"app_id": "app-1"}))
+	out, err := checkpointsTakeHandler(deps)(ctx, TakeCheckpointInput{}, principalWith(map[string]any{"app_id": "app-1"}))
 	if err != nil {
 		t.Fatalf("checkpoints.take lost a race and still returned an error: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestCheckpointsTakeListAndDetailEndToEndOnSQLite(t *testing.T) {
 	deps := Deps{Store: s, Checkpointer: checkpointer, CheckpointStore: s, CheckpointSigner: signer}
 	viewer := principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"})
 
-	takeOut, err := checkpointsTakeHandler(deps)(ctx, struct{}{}, viewer)
+	takeOut, err := checkpointsTakeHandler(deps)(ctx, TakeCheckpointInput{}, viewer)
 	if err != nil {
 		t.Fatalf("checkpoints.take: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestCheckpointsTakeListAndDetailEndToEndOnSQLite(t *testing.T) {
 
 	// RULING 2: taking again with nothing new recorded is a no-op, not an
 	// error.
-	again, err := checkpointsTakeHandler(deps)(ctx, struct{}{}, viewer)
+	again, err := checkpointsTakeHandler(deps)(ctx, TakeCheckpointInput{}, viewer)
 	if err != nil {
 		t.Fatalf("checkpoints.take with nothing new to checkpoint returned an error instead of UpToDate: %v", err)
 	}

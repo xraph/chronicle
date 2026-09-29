@@ -120,14 +120,25 @@ type VerifyReport struct {
 // once; the server enforces that bound too, through Deps.MaxVerifySpan,
 // because a client that forgot to bound its request must not be able to
 // crash the server.
+//
+// StreamID optionally names the chain to verify. Empty means the viewer's own
+// chain (its exact app and tenant). An app-wide viewer passes a tenant's
+// chain ID, taken from streams.list, to verify that tenant's history. A chain
+// the viewer does not own answers NOT_FOUND.
 type VerifyInput struct {
-	FromSeq uint64 `json:"fromSeq,omitempty"`
-	ToSeq   uint64 `json:"toSeq,omitempty"`
+	StreamID string `json:"streamId,omitempty"`
+	FromSeq  uint64 `json:"fromSeq,omitempty"`
+	ToSeq    uint64 `json:"toSeq,omitempty"`
 }
 
 // VerifyResponse carries NoChain rather than only a nil Report, because
-// "this scope has never recorded an event" and "verification produced
-// nothing" are different answers and the page says which.
+// "the selected scope has never recorded an event" and "verification
+// produced nothing" are different answers and the page says which.
+//
+// NoChain is about one scope. Chronicle keeps a chain per app and tenant, so
+// an app-wide viewer whose events all sit under tenants gets NoChain for its
+// own app-level scope while each tenant's chain, listed by streams.list, has
+// events and can be verified by naming it.
 type VerifyResponse struct {
 	Report  *VerifyReport `json:"report,omitempty"`
 	NoChain bool          `json:"noChain"`
@@ -280,7 +291,7 @@ func verifyRunHandler(deps Deps) func(context.Context, VerifyInput, fcontract.Pr
 			return VerifyResponse{}, err
 		}
 
-		st, err := scopedStream(ctx, deps, "verify.run", v)
+		st, err := selectStream(ctx, deps, "verify.run", v, in.StreamID)
 		if err != nil {
 			return VerifyResponse{}, err
 		}
@@ -326,13 +337,15 @@ func verifyRunHandler(deps Deps) func(context.Context, VerifyInput, fcontract.Pr
 
 		// The pin and the head come off the stream row, never from the
 		// request. A caller that could name its own pin could declare a
-		// keyed chain plain and walk past every downgrade check.
+		// keyed chain plain and walk past every downgrade check. The scope
+		// is the chain's own, not the viewer's: an app-wide viewer verifying
+		// a tenant's chain reads that tenant's events.
 		report, err := newVerifier(deps).VerifyChain(ctx, &verify.Input{
 			StreamID: st.ID,
 			FromSeq:  in.FromSeq,
 			ToSeq:    in.ToSeq,
-			AppID:    v.AppID,
-			TenantID: v.TenantID,
+			AppID:    st.AppID,
+			TenantID: st.TenantID,
 			Pin:      hash.Pin{Scheme: hash.Scheme(st.Scheme), Since: st.SchemeSince},
 			HeadSeq:  st.HeadSeq,
 			HeadHash: st.HeadHash,

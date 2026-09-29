@@ -26,10 +26,22 @@ type GetCheckpointResponse struct {
 	Checkpoint CheckpointSummary `json:"checkpoint"`
 }
 
-// CheckpointListInput pages through the viewer's own chain's checkpoints.
+// CheckpointListInput pages through one chain's checkpoints.
+//
+// StreamID empty means the viewer's own chain (its exact app and tenant). An
+// app-wide viewer passes a tenant's chain ID, taken from streams.list, to
+// list that tenant's checkpoints. A chain the viewer does not own answers
+// NOT_FOUND.
 type CheckpointListInput struct {
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
+	StreamID string `json:"streamId,omitempty"`
+	Limit    int    `json:"limit"`
+	Offset   int    `json:"offset"`
+}
+
+// TakeCheckpointInput optionally names the chain to checkpoint. Empty means
+// the viewer's own chain; see CheckpointListInput for what a StreamID is.
+type TakeCheckpointInput struct {
+	StreamID string `json:"streamId,omitempty"`
 }
 
 // CheckpointListResponse is one page of the viewer's chain's checkpoints.
@@ -134,7 +146,7 @@ func checkpointsListHandler(deps Deps) func(context.Context, CheckpointListInput
 		// which ID it was asked about. Either way the single call below
 		// gives the right answer without a special case for "no chain".
 		streamID := id.Nil
-		st, err := scopedStream(ctx, deps, "checkpoints.list", v)
+		st, err := selectStream(ctx, deps, "checkpoints.list", v, in.StreamID)
 		if err != nil {
 			return CheckpointListResponse{}, err
 		}
@@ -209,13 +221,15 @@ func checkpointsDetailHandler(deps Deps) func(context.Context, GetCheckpointInpu
 			return GetCheckpointResponse{}, &fcontract.Error{Code: fcontract.CodeNotFound, Message: "not found"}
 		}
 
-		// Also confirm the checkpoint belongs to the viewer's own stream,
-		// the same collision guard scopedStream carries for a chain fetched
-		// by scope (store/redis builds its scope key as
-		// appID + ":" + tenantID, so distinct scopes can collide on it).
-		// Cheap here: every app/tenant pair owns exactly one stream, so this
-		// is one more scope-keyed lookup, not a scan.
-		st, err := scopedStream(ctx, deps, "checkpoints.detail", v)
+		// Also confirm the checkpoint belongs to the chain its own scope
+		// resolves to, the same collision guard scopedStream carries for a
+		// chain fetched by scope (store/redis builds its scope key as
+		// appID + ":" + tenantID, so distinct scopes can collide on it). The
+		// scope is the record's, not the viewer's, so an app-wide viewer can
+		// read a tenant's checkpoint, as verify.event does for an event.
+		// Cheap: every app/tenant pair owns exactly one stream, so this is
+		// one more scope-keyed lookup, not a scan.
+		st, err := scopedStream(ctx, deps, "checkpoints.detail", viewScope{AppID: cp.AppID, TenantID: cp.TenantID})
 		if err != nil {
 			return GetCheckpointResponse{}, err
 		}
@@ -227,8 +241,8 @@ func checkpointsDetailHandler(deps Deps) func(context.Context, GetCheckpointInpu
 	}
 }
 
-func checkpointsTakeHandler(deps Deps) func(context.Context, struct{}, fcontract.Principal) (TakeCheckpointResponse, error) {
-	return func(ctx context.Context, _ struct{}, p fcontract.Principal) (TakeCheckpointResponse, error) {
+func checkpointsTakeHandler(deps Deps) func(context.Context, TakeCheckpointInput, fcontract.Principal) (TakeCheckpointResponse, error) {
+	return func(ctx context.Context, in TakeCheckpointInput, p fcontract.Principal) (TakeCheckpointResponse, error) {
 		v, err := scopeFromPrincipal(p)
 		if err != nil {
 			return TakeCheckpointResponse{}, err
@@ -241,7 +255,7 @@ func checkpointsTakeHandler(deps Deps) func(context.Context, struct{}, fcontract
 			}
 		}
 
-		st, err := scopedStream(ctx, deps, "checkpoints.take", v)
+		st, err := selectStream(ctx, deps, "checkpoints.take", v, in.StreamID)
 		if err != nil {
 			return TakeCheckpointResponse{}, err
 		}

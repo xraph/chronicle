@@ -9,17 +9,29 @@ import (
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/hash"
+	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/stream"
 	"github.com/xraph/chronicle/verify"
 )
 
-// MineInput is empty: there is exactly one stream per app and tenant, so the
-// chain resolves from scope and cannot be named by the caller.
-type MineInput struct{}
+// MineInput optionally names one of the viewer's chains.
+//
+// StreamID empty means the viewer's own chain: the one for exactly the
+// viewer's app and tenant. An app-wide viewer's own chain is the app-level
+// one (tenant ""), which is empty when every event was recorded under a
+// tenant. Such a viewer finds each tenant's chain through streams.list and
+// passes its ID here. A StreamID the viewer does not own answers NOT_FOUND,
+// the same as one that does not exist.
+type MineInput struct {
+	StreamID string `json:"streamId,omitempty"`
+}
 
-// MineResponse carries a nil Stream when this scope has never recorded an
-// event, which is a real and common state rather than an error. Chronicle
-// creates a stream lazily on the first Record.
+// MineResponse carries a nil Stream when the selected scope has no chain, which
+// is a real and common state rather than an error. Chronicle creates a stream
+// lazily on the first Record, and it keeps one per app and tenant, so an
+// app-wide viewer whose events all sit under tenants has no app-level chain
+// even though its tenants have chains of their own. A nil Stream says nothing
+// about those; streams.list does.
 type MineResponse struct {
 	Stream *StreamSummary `json:"stream,omitempty"`
 }
@@ -58,13 +70,13 @@ func streamsRegistrations() []registration {
 }
 
 func streamsMineHandler(deps Deps) func(context.Context, MineInput, fcontract.Principal) (MineResponse, error) {
-	return func(ctx context.Context, _ MineInput, p fcontract.Principal) (MineResponse, error) {
+	return func(ctx context.Context, in MineInput, p fcontract.Principal) (MineResponse, error) {
 		v, err := scopeFromPrincipal(p)
 		if err != nil {
 			return MineResponse{}, err
 		}
 
-		st, err := scopedStream(ctx, deps, "streams.mine", v)
+		st, err := selectStream(ctx, deps, "streams.mine", v, in.StreamID)
 		if err != nil || st == nil {
 			return MineResponse{}, err
 		}
@@ -104,6 +116,63 @@ func scopedStream(ctx context.Context, deps Deps, op string, v viewScope) (*stre
 		deps.logger().Error("chronicle/contract: store returned a chain outside the requested scope",
 			log.String("op", op),
 			log.String("stream_id", st.ID.String()),
+		)
+		return nil, &fcontract.Error{Code: fcontract.CodeInternal, Message: "the audit store returned a chain outside this scope"}
+	}
+	return st, nil
+}
+
+// selectStream resolves the chain an intent should act on.
+//
+// An empty streamID means the viewer's own scope, exactly as scopedStream
+// answers it, including nil for a scope that has never recorded an event.
+// A non-empty streamID names one chain by ID, which is how an app-wide viewer
+// reaches a tenant's chain: streams.list shows it, and the other stream
+// intents take its ID. The ID is a lookup key and never a grant. A chain the
+// viewer does not own (a sibling tenant's, another app's) answers NOT_FOUND,
+// the same as an ID that does not parse or does not exist, so a caller cannot
+// probe which chains exist. Ownership is the strict owns, so a tenant viewer
+// can select only its own tenant's chain.
+//
+// The chosen chain is then resolved a second time through scopedStream, from
+// its own app and tenant, and refused if that lands on a different row. That
+// keeps the redis scope-key collision guard in force for selected chains too:
+// GetStream fetches by ID and would otherwise never notice two scopes sharing
+// a key.
+//
+// Everything downstream of a selected chain must use the chain's own scope,
+// never the viewer's: an app-wide viewer's scope is not the tenant's.
+func selectStream(ctx context.Context, deps Deps, op string, v viewScope, streamID string) (*stream.Stream, error) {
+	if streamID == "" {
+		return scopedStream(ctx, deps, op, v)
+	}
+
+	sid, err := id.ParseStreamID(streamID)
+	if err != nil {
+		return nil, errNotFound()
+	}
+
+	st, err := deps.Store.GetStream(ctx, sid)
+	if err != nil {
+		return nil, deps.mapStoreError(op, err)
+	}
+	if st == nil || !v.owns(st.AppID, st.TenantID) {
+		return nil, errNotFound()
+	}
+
+	resolved, err := scopedStream(ctx, deps, op, viewScope{AppID: st.AppID, TenantID: st.TenantID})
+	if err != nil {
+		return nil, err
+	}
+	if resolved == nil || resolved.ID != st.ID {
+		resolvedID := "none"
+		if resolved != nil {
+			resolvedID = resolved.ID.String()
+		}
+		deps.logger().Error("chronicle/contract: a selected chain does not match the chain its own scope resolves to",
+			log.String("op", op),
+			log.String("stream_id", st.ID.String()),
+			log.String("resolved_stream_id", resolvedID),
 		)
 		return nil, &fcontract.Error{Code: fcontract.CodeInternal, Message: "the audit store returned a chain outside this scope"}
 	}

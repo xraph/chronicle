@@ -114,6 +114,13 @@ func formatTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
+// errNotFound is the one answer for an ID that does not parse, does not
+// exist, or belongs to someone else. All three look the same, so a caller
+// cannot probe which IDs exist in other apps or tenants.
+func errNotFound() error {
+	return &fcontract.Error{Code: fcontract.CodeNotFound, Message: "not found"}
+}
+
 // notFoundSentinels are the store errors that mean "no such record" rather
 // than "the store failed". They are the only store errors a caller learns
 // anything specific from.
