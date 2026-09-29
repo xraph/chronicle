@@ -13,6 +13,8 @@ import (
 
 	"github.com/xraph/grove/kv"
 	"github.com/xraph/grove/kv/drivers/redisdriver"
+
+	"github.com/xraph/chronicle/internal/redistest"
 )
 
 // chronicleKeyPrefix is the prefix every key in keys.go starts with. The
@@ -40,6 +42,8 @@ func openTestStore(t *testing.T, migrate bool) (*Store, goredis.UniversalClient)
 	if dsn == "" {
 		t.Skip("CHRONICLE_TEST_REDIS_DSN not set, skipping redis")
 	}
+	// A database of this package's own: see redistest.
+	dsn = redistest.PackageDSN(t, dsn, redistest.OffsetStoreRedis)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

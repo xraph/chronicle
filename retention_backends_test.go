@@ -16,6 +16,7 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/redistest"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store"
@@ -162,6 +163,8 @@ func openMongo(t *testing.T, uri string) store.Store {
 
 func openRedis(t *testing.T, dsn string) store.Store {
 	t.Helper()
+	// A database of this package's own: see redistest.
+	dsn = redistest.PackageDSN(t, dsn, redistest.OffsetChronicle)
 	drv := redisdriver.New()
 	if err := drv.Open(context.Background(), dsn); err != nil {
 		t.Fatalf("open redis: %v", err)
