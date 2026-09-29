@@ -16,6 +16,8 @@ import (
 
 	"github.com/xraph/forge"
 	dashboard "github.com/xraph/forge/extensions/dashboard"
+	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
+	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
 	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/kv"
@@ -27,6 +29,7 @@ import (
 	"github.com/xraph/chronicle/crypto"
 	chronicledash "github.com/xraph/chronicle/dashboard"
 	"github.com/xraph/chronicle/erasure"
+	"github.com/xraph/chronicle/extension/contract"
 	"github.com/xraph/chronicle/handler"
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
@@ -50,10 +53,14 @@ const (
 	ExtensionVersion     = "0.1.0"
 )
 
-// Ensure Extension implements forge.Extension and dashboard.DashboardAware at compile time.
+// Ensure Extension implements forge.Extension, dashboard.DashboardAware and
+// dashboard.ContractContributorAware at compile time. The dashboard finds the
+// contract contributor by type assertion, so a signature drift in forge would
+// otherwise drop it with nothing logged and nothing rendered.
 var (
-	_ forge.Extension          = (*Extension)(nil)
-	_ dashboard.DashboardAware = (*Extension)(nil)
+	_ forge.Extension                    = (*Extension)(nil)
+	_ dashboard.DashboardAware           = (*Extension)(nil)
+	_ dashboard.ContractContributorAware = (*Extension)(nil)
 )
 
 // internalOpts holds non-config options that are set programmatically only.
@@ -104,6 +111,11 @@ type Extension struct {
 	// verify page. Nil whenever checkpointer is nil, and the three consumers
 	// all fall back to plain chain verification on nil.
 	checkpointSigner checkpoint.Signer
+
+	// backendName is a short name for the store backend in use, taken from
+	// the store as resolved and before any crypto-erasure wrapping hides its
+	// type. Set in init; see backendNameOf.
+	backendName string
 
 	cancel context.CancelFunc
 }
@@ -253,6 +265,7 @@ func (e *Extension) init(fapp forge.App) error {
 		return errors.New("chronicle: no store configured (use WithStore option)")
 	}
 	e.store = s
+	e.backendName = backendNameOf(s)
 
 	// Checkpoints: validate against whatever signing key material is
 	// available, probe s (the store as resolved, before any crypto-erasure
@@ -501,6 +514,97 @@ func (e *Extension) DashboardContributor() contributor.LocalContributor {
 			CheckpointSigner:    e.checkpointSigner,
 		},
 	)
+}
+
+// RegisterContractContributor implements dashboard.ContractContributorAware.
+// It registers the chronicle contract contributor against the dashboard's own
+// dispatcher and registries, alongside the templ contributor from
+// DashboardContributor. Both stay registered until the templ one is retired.
+//
+// An extension that has not been through Register has no store to serve from.
+// That is logged and skipped rather than returned, so one unstarted extension
+// cannot fail the whole dashboard.
+func (e *Extension) RegisterContractContributor(
+	disp *dispatcher.Dispatcher,
+	reg dashcontract.Registry,
+	wreg dashcontract.WardenRegistry,
+) error {
+	if e.store == nil || e.chronicle == nil {
+		// The base extension has no logger until Register has run, and this
+		// is the case where it has not, so fall back to a no-op one rather
+		// than panic on the very path that exists to be safe.
+		logger := e.Logger()
+		if logger == nil {
+			logger = forge.NewNoopLogger()
+		}
+		logger.Warn("chronicle: extension not initialised; skipping contract contributor registration")
+		return nil
+	}
+
+	deps := contract.Deps{
+		Store:     e.store,
+		Chronicle: e.chronicle,
+		Engine:    e.engine,
+		Enforcer:  e.enforcer,
+
+		// Deliberately nil. The erasures.request intent is held out of the
+		// dashboard until crypto.KeyStore scopes its keys by app and tenant:
+		// today an erasure destroys every scope's data for the same subject
+		// ID, so a per-scope operator must not be able to trigger one. No
+		// handler uses the erasure service.
+		Erasure: nil,
+
+		// The checkpoint trio travels as a set, and is all nil when
+		// checkpointing is off.
+		Checkpointer:     e.checkpointer,
+		CheckpointStore:  e.checkpointStore(),
+		CheckpointSigner: e.checkpointSigner,
+
+		// Verification recomputes digests under this chain. Leaving it out
+		// gives an unkeyed verifier, which reports every event of an HMAC
+		// deployment as tampered or downgraded; the templ dashboard once
+		// dropped the same field with every other test staying green.
+		HashChain: e.hashChain,
+
+		Config: contract.SurfaceConfig{
+			BatchSize:           e.config.BatchSize,
+			FlushInterval:       e.config.FlushInterval.String(),
+			RetentionInterval:   e.config.RetentionInterval.String(),
+			EnableCryptoErasure: e.config.EnableCryptoErasure,
+			BackendName:         e.backendName,
+		},
+		Logger: e.Logger(),
+	}
+	if err := contract.Register(disp, reg, wreg, deps); err != nil {
+		return fmt.Errorf("chronicle: register contract contributor: %w", err)
+	}
+
+	e.Logger().Info("chronicle: registered as contract contributor")
+	return nil
+}
+
+// backendNameOf names the backend behind s for the settings page.
+//
+// It goes by concrete type because the store interface has no name to ask
+// for. It must be given the store as resolved, before init wraps it for
+// crypto-erasure, or every encrypted deployment would report the wrapper. A
+// store this package does not know, such as one supplied through WithStore,
+// is reported as "custom" rather than guessed at.
+func backendNameOf(s store.Store) string {
+	switch s.(type) {
+	case *sqlitestore.Store:
+		return "sqlite"
+	case *pgstore.Store:
+		return "postgres"
+	case *mongostore.Store:
+		return "mongo"
+	case *redisstore.Store:
+		return "redis"
+	case *memorystore.Store:
+		return "memory"
+	default:
+		return "custom"
+	}
 }
 
 func (e *Extension) runRetentionScheduler(ctx context.Context) {
