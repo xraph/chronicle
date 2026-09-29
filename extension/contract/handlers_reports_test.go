@@ -964,3 +964,70 @@ func TestReportsRegistrationsDeclareTheFiveIntentsWithTheRightKinds(t *testing.T
 		}
 	}
 }
+
+// ──────────────────────────────────────────────────
+// reports.export ordering around ownership
+// ──────────────────────────────────────────────────
+
+// reportsUnexportable is a report the JSON export cannot encode: a channel in
+// an event's metadata makes json.Encoder fail. Export therefore fails for it
+// exactly when it is reached.
+func reportsUnexportable(app, tenant string) *compliance.Report {
+	r := reportsFixture(app, tenant)
+	r.Sections[0].Events[0].Metadata = map[string]any{"unencodable": make(chan int)}
+	return r
+}
+
+// Ownership is decided before Export runs. A report the viewer does not own
+// must never be rendered, and if rendering it fails the caller must still see
+// NOT_FOUND: INTERNAL there would tell a prober the ID names a real report in
+// another tenant. Export reaches this report only if the check runs late, and
+// then it fails, so the two answers tell the orderings apart.
+func TestReportExportNeverReachesExportForAReportTheViewerDoesNotOwn(t *testing.T) {
+	viewer := reportsViewer("app-1", "tenant-a")
+
+	// Control: the same unencodable report, owned, does reach Export and
+	// fails there. Without this the foreign case below could pass because
+	// Export was never going to fail.
+	own := reportsUnexportable("app-1", "tenant-a")
+	ownSpy := &reportsSpyStore{report: own}
+	_, err := reportsExportHandler(Deps{Store: ownSpy, Engine: reportsEngineOver(ownSpy)})(
+		context.Background(), ExportReportInput{ID: own.ID.String(), Format: "json"}, viewer)
+	reportsWantCode(t, err, fcontract.CodeInternal, "owned unencodable report")
+
+	for name, foreign := range map[string]*compliance.Report{
+		"other tenant": reportsUnexportable("app-1", "tenant-b"),
+		"other app":    reportsUnexportable("app-2", "tenant-a"),
+	} {
+		spy := &reportsSpyStore{report: foreign}
+		out, err := reportsExportHandler(Deps{Store: spy, Engine: reportsEngineOver(spy)})(
+			context.Background(), ExportReportInput{ID: foreign.ID.String(), Format: "json"}, viewer)
+		reportsWantCode(t, err, fcontract.CodeNotFound, name+": foreign report whose export would fail")
+		if out.Content != "" {
+			t.Errorf("%s: rendered content for a foreign report", name)
+		}
+	}
+}
+
+// With no engine configured, a foreign report ID must answer exactly as a
+// missing one does. UNAVAILABLE for a foreign ID and NOT_FOUND for a missing
+// one would let a caller tell them apart.
+func TestReportExportAnswersNotFoundBeforeUnavailableForAForeignReport(t *testing.T) {
+	viewer := reportsViewer("app-1", "tenant-a")
+
+	// Control: the viewer's own report with no engine is UNAVAILABLE.
+	own := reportsFixture("app-1", "tenant-a")
+	_, err := reportsExportHandler(Deps{Store: &reportsSpyStore{report: own}})(
+		context.Background(), ExportReportInput{ID: own.ID.String(), Format: "json"}, viewer)
+	reportsWantCode(t, err, fcontract.CodeUnavailable, "owned report, no engine")
+
+	foreign := reportsFixture("app-2", "tenant-a")
+	_, err = reportsExportHandler(Deps{Store: &reportsSpyStore{report: foreign}})(
+		context.Background(), ExportReportInput{ID: foreign.ID.String(), Format: "json"}, viewer)
+	reportsWantCode(t, err, fcontract.CodeNotFound, "foreign report, no engine")
+
+	// And a report that does not exist at all answers the same.
+	_, err = reportsExportHandler(Deps{Store: &reportsSpyStore{}})(
+		context.Background(), ExportReportInput{ID: id.NewReportID().String(), Format: "json"}, viewer)
+	reportsWantCode(t, err, fcontract.CodeNotFound, "missing report, no engine")
+}
