@@ -61,7 +61,15 @@ func New(db *grove.DB) *Store {
 }
 
 // Migrate creates indexes for all chronicle collections.
+//
+// It drops the category-only policy index earlier releases created before
+// building anything, because creating the scoped index next to it would leave
+// the old uniqueness in force.
 func (s *Store) Migrate(ctx context.Context) error {
+	if err := dropLegacyPolicyIndex(ctx, s.mdb.Collection(colPolicies)); err != nil {
+		return fmt.Errorf("%w: %w", chronicle.ErrMigrationFailed, err)
+	}
+
 	indexes := migrationIndexes()
 
 	for col, models := range indexes {
