@@ -96,10 +96,21 @@ Response: `verify.Report` JSON.
 |-------|------|-------------|
 | `Valid` | `bool` | `true` if no gaps and no tampered hashes |
 | `Verified` | `int64` | Number of events checked |
-| `Gaps` | `[]uint64` | Sequence numbers absent from the store |
+| `Gaps` | `[]uint64` | Sequence numbers absent from the store that nothing accounts for |
+| `Retained` | `[]RetainedRange` | Sequence ranges a retention policy removed, each naming the retention record that lists them. These don't make the chain invalid. |
 | `Tampered` | `[]uint64` | Sequence numbers with hash mismatches |
 | `FirstEvent` | `uint64` | First sequence number checked |
 | `LastEvent` | `uint64` | Last sequence number checked |
+
+## Retention and chain validity
+
+Retention removes events, and each purge is written into the chain first as a retention record. Verification uses those records to tell a sequence retention removed from one that simply went missing:
+
+- A missing sequence that an authentic retention record lists goes in `Retained`, and the chain is checked to link across it using the hashes the record carries.
+- Any other missing sequence goes in `Gaps` and makes the report invalid.
+- The event after an unexplained gap is checked against its own `prev_hash`. It's only reported as `Tampered` if its content was actually changed.
+
+A record counts only if its own digest verifies under the stream's pin, so on an HMAC chain nobody without the key can write one that's accepted. See [Retention](/docs/subsystems/retention#retention-and-the-hash-chain) for the details.
 
 ## GDPR erasure and chain validity
 
