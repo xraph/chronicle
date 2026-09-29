@@ -237,6 +237,8 @@ func TestEventListForwardsEveryFilterToTheStore(t *testing.T) {
 		After:      "2026-01-01T00:00:00Z",
 		Before:     "2026-02-01T00:00:00Z",
 		UserID:     "alice",
+		SessionID:  "sess-1",
+		RequestID:  "req-1",
 		Categories: []string{"auth", "data"},
 		Actions:    []string{"login", "logout"},
 		Resources:  []string{"doc", "user"},
@@ -262,6 +264,9 @@ func TestEventListForwardsEveryFilterToTheStore(t *testing.T) {
 	}
 	if got.UserID != in.UserID {
 		t.Errorf("UserID = %q, want %q", got.UserID, in.UserID)
+	}
+	if got.SessionID != in.SessionID || got.RequestID != in.RequestID {
+		t.Errorf("SessionID, RequestID = %q, %q, want %q, %q", got.SessionID, got.RequestID, in.SessionID, in.RequestID)
 	}
 	if !reflect.DeepEqual(got.Categories, in.Categories) {
 		t.Errorf("Categories = %v, want %v", got.Categories, in.Categories)
@@ -778,4 +783,17 @@ func TestEventsStayInsideTheViewersAppOnSQLite(t *testing.T) {
 			t.Fatalf("groups = %+v, want a single auth group with count %d", out.Groups, appOneCount)
 		}
 	})
+}
+
+// TestEventDetailCarriesRequestCorrelation: the detail view shows the user
+// agent, request and session an event was recorded under, so an operator can
+// go from one event to everything else that request or session did.
+func TestEventDetailCarriesRequestCorrelation(t *testing.T) {
+	got := projectEventDetail(&audit.Event{
+		ID: id.NewAuditID(), StreamID: id.NewStreamID(),
+		UserAgent: "curl/8.0", RequestID: "req-1", SessionID: "sess-1",
+	})
+	if got.UserAgent != "curl/8.0" || got.RequestID != "req-1" || got.SessionID != "sess-1" {
+		t.Errorf("detail = %+v, want the request correlation fields", got)
+	}
 }
