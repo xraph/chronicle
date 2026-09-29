@@ -252,8 +252,11 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 			{Keys: bson.D{{Key: "action", Value: 1}, {Key: "outcome", Value: 1}, {Key: "timestamp", Value: -1}}},
 			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "timestamp", Value: -1}}},
 			{
-				Keys:    bson.D{{Key: "session_id", Value: 1}, {Key: "timestamp", Value: -1}},
-				Options: options.Index().SetPartialFilterExpression(bson.M{"session_id": bson.M{"$ne": ""}}),
+				Keys: bson.D{{Key: "session_id", Value: 1}, {Key: "timestamp", Value: -1}},
+				// Only events that have a session. Partial indexes refuse
+				// $ne (it is a $not underneath), and "$gt empty string"
+				// selects exactly the non-empty strings.
+				Options: options.Index().SetPartialFilterExpression(bson.M{"session_id": bson.M{"$gt": ""}}),
 			},
 			{Keys: bson.D{{Key: "subject_id", Value: 1}}},
 			{Keys: bson.D{{Key: "severity", Value: 1}, {Key: "timestamp", Value: -1}}},
