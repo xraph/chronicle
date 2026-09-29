@@ -16,8 +16,8 @@ import (
 	"github.com/xraph/chronicle/id"
 )
 
-// defaultReportListLimit and maxReportListLimit mirror events.list's clamp,
-// so every list in this contract pages the same way.
+// defaultReportListLimit and maxReportListLimit are the report list's page
+// size and cap. See pageBounds for how a limit and offset are treated.
 const (
 	defaultReportListLimit = 50
 	maxReportListLimit     = 1000
@@ -358,16 +358,9 @@ func reportsListHandler(deps Deps) func(context.Context, ReportListInput, fcontr
 		if err != nil {
 			return ReportListResponse{}, err
 		}
-		if in.Offset < 0 {
-			return ReportListResponse{}, reportBadRequest("offset cannot be negative")
-		}
-
-		limit := in.Limit
-		if limit <= 0 {
-			limit = defaultReportListLimit
-		}
-		if limit > maxReportListLimit {
-			limit = maxReportListLimit
+		limit, offset, err := pageBounds(in.Limit, in.Offset, defaultReportListLimit, maxReportListLimit)
+		if err != nil {
+			return ReportListResponse{}, err
 		}
 
 		// compliance.ListOpts carries AppID and TenantID directly and the
@@ -378,7 +371,7 @@ func reportsListHandler(deps Deps) func(context.Context, ReportListInput, fcontr
 			AppID:    v.AppID,
 			TenantID: v.TenantID,
 			Limit:    limit + 1,
-			Offset:   in.Offset,
+			Offset:   offset,
 		})
 		if err != nil {
 			return ReportListResponse{}, deps.mapStoreError("reports.list", err)

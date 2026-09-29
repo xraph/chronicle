@@ -9,9 +9,8 @@ import (
 	"github.com/xraph/chronicle/id"
 )
 
-// defaultErasureListLimit and maxErasureListLimit mirror events.list's own
-// clamp exactly (see defaultEventListLimit, maxEventListLimit), so the two
-// lists page the same way.
+// defaultErasureListLimit and maxErasureListLimit are the erasure list's page
+// size and cap. See pageBounds for how a limit and offset are treated.
 const (
 	defaultErasureListLimit = 50
 	maxErasureListLimit     = 1000
@@ -95,18 +94,6 @@ func projectErasureSummary(e *erasure.Erasure) ErasureSummary {
 	}
 }
 
-// clampErasureListLimit mirrors clampEventListLimit: zero or less becomes
-// the default page size, and anything above the cap is capped.
-func clampErasureListLimit(limit int) int {
-	if limit <= 0 {
-		return defaultErasureListLimit
-	}
-	if limit > maxErasureListLimit {
-		return maxErasureListLimit
-	}
-	return limit
-}
-
 func erasuresListHandler(deps Deps) func(context.Context, ErasureListInput, fcontract.Principal) (ErasureListResponse, error) {
 	return func(ctx context.Context, in ErasureListInput, p fcontract.Principal) (ErasureListResponse, error) {
 		v, err := scopeFromPrincipal(p)
@@ -114,12 +101,12 @@ func erasuresListHandler(deps Deps) func(context.Context, ErasureListInput, fcon
 			return ErasureListResponse{}, err
 		}
 
-		if in.Offset < 0 {
-			return ErasureListResponse{}, &fcontract.Error{Code: fcontract.CodeBadRequest, Message: "offset cannot be negative"}
+		limit, offset, err := pageBounds(in.Limit, in.Offset, defaultErasureListLimit, maxErasureListLimit)
+		if err != nil {
+			return ErasureListResponse{}, err
 		}
 
 		scope := erasure.Scope{AppID: v.AppID, TenantID: v.TenantID}
-		limit := clampErasureListLimit(in.Limit)
 
 		// erasure.Scope's own doc says a zero Scope matches every app and
 		// tenant, and Chronicle's stores treat an empty AppID as matching
@@ -135,7 +122,7 @@ func erasuresListHandler(deps Deps) func(context.Context, ErasureListInput, fcon
 		list, err := deps.Store.ListErasures(ctx, erasure.ListOpts{
 			Scope:  scope,
 			Limit:  limit,
-			Offset: in.Offset,
+			Offset: offset,
 		})
 		if err != nil {
 			return ErasureListResponse{}, deps.mapStoreError("erasures.list", err)
@@ -144,7 +131,7 @@ func erasuresListHandler(deps Deps) func(context.Context, ErasureListInput, fcon
 		out := ErasureListResponse{
 			Erasures: make([]ErasureSummary, 0, len(list)),
 			Total:    total,
-			HasMore:  int64(in.Offset+len(list)) < total,
+			HasMore:  int64(offset+len(list)) < total,
 		}
 		for _, e := range list {
 			if e == nil {
@@ -175,6 +162,9 @@ func erasuresDetailHandler(deps Deps) func(context.Context, GetErasureInput, fco
 		e, err := deps.Store.GetErasure(ctx, erasureID)
 		if err != nil {
 			return ErasureSummary{}, deps.mapStoreError("erasures.detail", err)
+		}
+		if e == nil {
+			return ErasureSummary{}, errNotFound()
 		}
 
 		// Security-critical: a detail intent resolves by ID and bypasses

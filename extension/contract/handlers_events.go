@@ -11,9 +11,9 @@ import (
 	"github.com/xraph/chronicle/id"
 )
 
-// defaultEventListLimit and maxEventListLimit mirror handler/requests.go's
-// defaultLimit exactly, so the contract path and the REST path clamp a
-// caller's limit to the same page size.
+// defaultEventListLimit and maxEventListLimit are the event lists' page size
+// and cap, the same page size the REST handlers use. See pageBounds for how
+// a limit and offset are treated.
 const (
 	defaultEventListLimit = 50
 	maxEventListLimit     = 1000
@@ -214,18 +214,6 @@ func parseEventTimeBound(field, value string) (time.Time, error) {
 	return t, nil
 }
 
-// clampEventListLimit mirrors handler/requests.go's defaultLimit: zero or
-// less becomes the default page size, and anything above the cap is capped.
-func clampEventListLimit(limit int) int {
-	if limit <= 0 {
-		return defaultEventListLimit
-	}
-	if limit > maxEventListLimit {
-		return maxEventListLimit
-	}
-	return limit
-}
-
 // badGroupByError maps a audit.ResolveGroupBy failure to CodeBadRequest,
 // carrying the error's own text: ResolveGroupBy's errors name only the
 // field that was wrong ("unsupported group_by field: \"week\""), never
@@ -241,8 +229,9 @@ func eventsListHandler(deps Deps) func(context.Context, EventListInput, fcontrac
 			return EventListResponse{}, err
 		}
 
-		if in.Offset < 0 {
-			return EventListResponse{}, &fcontract.Error{Code: fcontract.CodeBadRequest, Message: "offset cannot be negative"}
+		limit, offset, err := pageBounds(in.Limit, in.Offset, defaultEventListLimit, maxEventListLimit)
+		if err != nil {
+			return EventListResponse{}, err
 		}
 
 		order := in.Order
@@ -273,8 +262,8 @@ func eventsListHandler(deps Deps) func(context.Context, EventListInput, fcontrac
 			Resources:  in.Resources,
 			Severity:   in.Severity,
 			Outcome:    in.Outcome,
-			Limit:      clampEventListLimit(in.Limit),
-			Offset:     in.Offset,
+			Limit:      limit,
+			Offset:     offset,
 			Order:      order,
 		})
 
@@ -316,6 +305,11 @@ func eventsDetailHandler(deps Deps) func(context.Context, GetEventInput, fcontra
 		event, err := deps.Store.Get(ctx, eventID)
 		if err != nil {
 			return EventDetail{}, deps.mapStoreError("events.detail", err)
+		}
+		if event == nil {
+			// A store that answers a miss with (nil, nil) means the same as
+			// ErrEventNotFound.
+			return EventDetail{}, errNotFound()
 		}
 
 		// Security-critical: a detail intent resolves by ID and bypasses
@@ -411,8 +405,9 @@ func eventsByUserHandler(deps Deps) func(context.Context, EventsByUserInput, fco
 		if in.UserID == "" {
 			return EventListResponse{}, &fcontract.Error{Code: fcontract.CodeBadRequest, Message: "userId is required"}
 		}
-		if in.Offset < 0 {
-			return EventListResponse{}, &fcontract.Error{Code: fcontract.CodeBadRequest, Message: "offset cannot be negative"}
+		limit, offset, err := pageBounds(in.Limit, in.Offset, defaultEventListLimit, maxEventListLimit)
+		if err != nil {
+			return EventListResponse{}, err
 		}
 
 		after, err := parseEventTimeBound("after", in.After)
@@ -428,8 +423,8 @@ func eventsByUserHandler(deps Deps) func(context.Context, EventsByUserInput, fco
 			After:  after,
 			Before: before,
 			UserID: in.UserID,
-			Limit:  clampEventListLimit(in.Limit),
-			Offset: in.Offset,
+			Limit:  limit,
+			Offset: offset,
 			Order:  "desc",
 		})
 

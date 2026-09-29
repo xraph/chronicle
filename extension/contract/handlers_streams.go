@@ -191,15 +191,9 @@ func streamsListHandler(deps Deps) func(context.Context, StreamListInput, fcontr
 			return StreamListResponse{}, err
 		}
 
-		if in.Limit < 0 || in.Offset < 0 {
-			return StreamListResponse{}, &fcontract.Error{Code: fcontract.CodeBadRequest, Message: "limit and offset cannot be negative"}
-		}
-		limit := in.Limit
-		if limit == 0 {
-			limit = defaultStreamListLimit
-		}
-		if limit > maxStreamListLimit {
-			limit = maxStreamListLimit
+		limit, offset, err := pageBounds(in.Limit, in.Offset, defaultStreamListLimit, maxStreamListLimit)
+		if err != nil {
+			return StreamListResponse{}, err
 		}
 
 		var (
@@ -213,12 +207,12 @@ func streamsListHandler(deps Deps) func(context.Context, StreamListInput, fcontr
 			}
 			if st != nil {
 				total = 1
-				if in.Offset == 0 {
+				if offset == 0 {
 					page = []*stream.Stream{st}
 				}
 			}
 		} else {
-			page, total, err = scanOwnedStreams(ctx, deps, v, in.Offset, limit)
+			page, total, err = scanOwnedStreams(ctx, deps, v, offset, limit)
 			if err != nil {
 				return StreamListResponse{}, err
 			}
@@ -227,7 +221,7 @@ func streamsListHandler(deps Deps) func(context.Context, StreamListInput, fcontr
 		out := StreamListResponse{
 			Streams: make([]StreamSummary, 0, len(page)),
 			Total:   total,
-			HasMore: int64(in.Offset+len(page)) < total,
+			HasMore: int64(offset+len(page)) < total,
 		}
 		for _, st := range page {
 			summary, err := projectStream(ctx, deps, st)

@@ -115,10 +115,9 @@ func checkpointsListHandler(deps Deps) func(context.Context, CheckpointListInput
 			return CheckpointListResponse{}, err
 		}
 
-		if in.Limit < 0 || in.Offset < 0 {
-			return CheckpointListResponse{}, &fcontract.Error{
-				Code: fcontract.CodeBadRequest, Message: "limit and offset cannot be negative",
-			}
+		limit, offset, err := pageBounds(in.Limit, in.Offset, defaultCheckpointListLimit, maxCheckpointListLimit)
+		if err != nil {
+			return CheckpointListResponse{}, err
 		}
 
 		// Deliberately checked before touching either store: an unconfigured
@@ -127,14 +126,6 @@ func checkpointsListHandler(deps Deps) func(context.Context, CheckpointListInput
 		// TestCheckpointsListWithNoStoreConfigured requires.
 		if !checkpointsAvailable(deps) {
 			return CheckpointListResponse{}, nil
-		}
-
-		limit := in.Limit
-		if limit == 0 {
-			limit = defaultCheckpointListLimit
-		}
-		if limit > maxCheckpointListLimit {
-			limit = maxCheckpointListLimit
 		}
 
 		// A scope with no chain yet has no stream ID to list checkpoints
@@ -157,7 +148,7 @@ func checkpointsListHandler(deps Deps) func(context.Context, CheckpointListInput
 		// Ask for one row past the requested page; RULING 1's HasMore, not a
 		// Total, is what that extra row is for.
 		cps, err := deps.CheckpointStore.ListCheckpoints(ctx, streamID, checkpoint.ListOpts{
-			Limit: limit + 1, Offset: in.Offset,
+			Limit: limit + 1, Offset: offset,
 		})
 		if err != nil {
 			if errors.Is(err, checkpoint.ErrUnsupported) {
@@ -210,6 +201,9 @@ func checkpointsDetailHandler(deps Deps) func(context.Context, GetCheckpointInpu
 			return GetCheckpointResponse{}, &fcontract.Error{Code: fcontract.CodeNotFound, Message: "not found"}
 		default:
 			return GetCheckpointResponse{}, deps.mapStoreError("checkpoints.detail", err)
+		}
+		if cp == nil {
+			return GetCheckpointResponse{}, errNotFound()
 		}
 
 		// Security-critical: a checkpoint fetched by ID bypasses every list

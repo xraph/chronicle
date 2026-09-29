@@ -22,8 +22,8 @@ import (
 // the cap the answer is "at least this many", and the response says so.
 const previewCap = 10000
 
-// defaultArchiveListLimit and maxArchiveListLimit mirror events.list's own
-// clamp, so every list in this contract pages the same way.
+// defaultArchiveListLimit and maxArchiveListLimit are the archive list's page
+// size and cap. See pageBounds for how a limit and offset are treated.
 const (
 	defaultArchiveListLimit = 50
 	maxArchiveListLimit     = 1000
@@ -767,18 +767,6 @@ func retentionMoreRemain(ctx context.Context, deps Deps, v viewScope) bool {
 	return false
 }
 
-// clampArchiveListLimit mirrors clampEventListLimit: zero or less becomes
-// the default page size, and anything above the cap is capped.
-func clampArchiveListLimit(limit int) int {
-	if limit <= 0 {
-		return defaultArchiveListLimit
-	}
-	if limit > maxArchiveListLimit {
-		return maxArchiveListLimit
-	}
-	return limit
-}
-
 func retentionArchivesHandler(deps Deps) func(context.Context, ArchiveListInput, fcontract.Principal) (ArchiveListResponse, error) {
 	return func(ctx context.Context, in ArchiveListInput, p fcontract.Principal) (ArchiveListResponse, error) {
 		v, err := scopeFromPrincipal(p)
@@ -786,15 +774,15 @@ func retentionArchivesHandler(deps Deps) func(context.Context, ArchiveListInput,
 			return ArchiveListResponse{}, err
 		}
 
-		if in.Offset < 0 {
-			return ArchiveListResponse{}, &fcontract.Error{Code: fcontract.CodeBadRequest, Message: "offset cannot be negative"}
+		limit, offset, err := pageBounds(in.Limit, in.Offset, defaultArchiveListLimit, maxArchiveListLimit)
+		if err != nil {
+			return ArchiveListResponse{}, err
 		}
 
-		limit := clampArchiveListLimit(in.Limit)
 		list, err := deps.Store.ListArchives(ctx, retention.ListOpts{
 			Scope:  v.retentionScope(),
 			Limit:  limit + 1,
-			Offset: in.Offset,
+			Offset: offset,
 		})
 		if err != nil {
 			return ArchiveListResponse{}, deps.mapStoreError("retention.archives", err)

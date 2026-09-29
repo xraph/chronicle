@@ -166,14 +166,13 @@ func TestErasureListReportsCountErasuresNotThePageLength(t *testing.T) {
 	}
 }
 
-func TestErasureListClampsLimitTheSameWayEventsListDoes(t *testing.T) {
+func TestErasureListDefaultsAndCapsTheLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		limit int
 		want  int
 	}{
 		{"zero becomes default", 0, defaultErasureListLimit},
-		{"negative becomes default", -5, defaultErasureListLimit},
 		{"over the cap is capped", 5000, maxErasureListLimit},
 		{"within range is untouched", 200, 200},
 	} {

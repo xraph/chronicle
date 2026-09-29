@@ -198,14 +198,13 @@ func TestEventListDefaultsOrderToDesc(t *testing.T) {
 	}
 }
 
-func TestEventListClampsLimitTheSameWayHandlerRequestsDoes(t *testing.T) {
+func TestEventListDefaultsAndCapsTheLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		limit int
 		want  int
 	}{
 		{"zero becomes default", 0, 50},
-		{"negative becomes default", -5, 50},
 		{"over the cap is capped", 5000, 1000},
 		{"within range is untouched", 200, 200},
 	} {
@@ -299,6 +298,7 @@ func TestEventListRefusesBadInputBeforeTouchingTheStore(t *testing.T) {
 		"malformed before":   {Before: "yesterday"},
 		"unrecognised order": {Order: "sideways"},
 		"negative offset":    {Offset: -1},
+		"negative limit":     {Limit: -1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			spy := &eventsTouchedStore{}
@@ -588,16 +588,15 @@ func TestEventByUserRefusesANegativeOffsetBeforeTouchingTheStore(t *testing.T) {
 // A limit of zero reaching the store as-is would be unlimited on every
 // backend (sqlite/postgres skip their LIMIT clause entirely when Limit <= 0,
 // and store/redis's applyPagination treats a non-positive limit as "no
-// cap") -- an unbounded read of one user's entire audit history. Clamp it
-// exactly like events.list does.
-func TestEventByUserClampsLimitTheSameWayEventsListDoes(t *testing.T) {
+// cap") -- an unbounded read of one user's entire audit history. So it gets
+// the same default and cap as events.list.
+func TestEventByUserDefaultsAndCapsTheLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		limit int
 		want  int
 	}{
 		{"zero becomes default", 0, 50},
-		{"negative becomes default", -5, 50},
 		{"over the cap is capped", 5000, 1000},
 		{"within range is untouched", 200, 200},
 	} {

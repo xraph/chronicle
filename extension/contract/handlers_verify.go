@@ -415,6 +415,9 @@ func verifyEventHandler(deps Deps) func(context.Context, VerifyEventInput, fcont
 		if err != nil {
 			return VerifyEventResponse{}, deps.mapStoreError("verify.event", err)
 		}
+		if event == nil {
+			return VerifyEventResponse{}, errNotFound()
+		}
 
 		// Security-critical: an event must not be verifiable by ID alone any
 		// more than it is readable by ID alone. This has to run, and refuse,

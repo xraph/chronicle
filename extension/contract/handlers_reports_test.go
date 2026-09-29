@@ -699,8 +699,8 @@ func TestReportListReportsHasMoreFromOneRowPastThePage(t *testing.T) {
 	}
 }
 
-func TestReportListClampsLimitAndRefusesANegativeOffset(t *testing.T) {
-	for _, tt := range []struct{ in, want int }{{0, 50}, {-5, 50}, {10, 10}, {1000, 1000}, {5000, 1000}} {
+func TestReportListDefaultsAndCapsTheLimitAndRefusesNegativePaging(t *testing.T) {
+	for _, tt := range []struct{ in, want int }{{0, 50}, {10, 10}, {1000, 1000}, {5000, 1000}} {
 		spy := &reportsSpyStore{}
 		_, err := reportsListHandler(Deps{Store: spy})(context.Background(), ReportListInput{Limit: tt.in}, reportsViewer("app-1", ""))
 		if err != nil {
@@ -716,6 +716,12 @@ func TestReportListClampsLimitAndRefusesANegativeOffset(t *testing.T) {
 	reportsWantCode(t, err, fcontract.CodeBadRequest, "negative offset")
 	if len(spy.listOpts) != 0 {
 		t.Error("the store was touched for a negative offset")
+	}
+
+	_, err = reportsListHandler(Deps{Store: spy})(context.Background(), ReportListInput{Limit: -5}, reportsViewer("app-1", ""))
+	reportsWantCode(t, err, fcontract.CodeBadRequest, "negative limit")
+	if len(spy.listOpts) != 0 {
+		t.Error("the store was touched for a negative limit")
 	}
 }
 
