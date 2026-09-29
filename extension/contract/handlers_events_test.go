@@ -180,8 +180,10 @@ func TestEventListReportsTheStoreTotalNotThePageLength(t *testing.T) {
 func TestEventListStampsTheViewersScope(t *testing.T) {
 	spy := &querySpy{}
 	h := eventsListHandler(Deps{Store: spy})
-	_, _ = h(context.Background(), EventListInput{},
-		principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"}))
+	if _, err := h(context.Background(), EventListInput{},
+		principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"})); err != nil {
+		t.Fatalf("events.list: %v", err)
+	}
 	if spy.last.AppID != "app-1" || spy.last.TenantID != "tenant-a" {
 		t.Fatalf("outgoing query scope = %q/%q, want app-1/tenant-a", spy.last.AppID, spy.last.TenantID)
 	}

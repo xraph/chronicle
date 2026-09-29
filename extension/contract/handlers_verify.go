@@ -158,10 +158,13 @@ type VerifyEventInput struct {
 // the hasher that could recompute it is unexported.
 //
 // HashScheme is the event's own recorded scheme, verbatim, which can be
-// empty. That means the row predates schemes being recorded at all; its
-// digest was resolved by the tolerant, pre-migration fallback (trying the
-// historical schemes in turn) rather than checked against a claimed one, and
-// Keyed is false for it the same as for any other unkeyed reading.
+// empty, and what an empty one means depends on where the event sits.
+// Below the stream's pin (or on a chain with no pin) it means the row
+// predates schemes being recorded: its digest was resolved by the tolerant,
+// pre-migration fallback (trying the historical unkeyed schemes in turn)
+// rather than checked against a claimed one, and Keyed is false for it. At or
+// above the pin an empty scheme is not history, since clearing the column is
+// how a downgrade would buy the tolerant path, so it comes back Valid false.
 //
 // Two further limits bound what a caller may conclude from Valid, and
 // neither can be recovered from the response:

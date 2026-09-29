@@ -59,8 +59,8 @@ type CheckpointSummary struct {
 // refuses checkpoints, which is "no opinion" rather than a failure. Any other
 // error reading the checkpoint store fails the call: answering nil there
 // would tell the operator "no checkpoint yet" when the truth is "we could
-// not look".
-func projectStream(ctx context.Context, deps Deps, st *stream.Stream) (*StreamSummary, error) {
+// not look". op is the intent being answered, for the log line only.
+func projectStream(ctx context.Context, deps Deps, op string, st *stream.Stream) (*StreamSummary, error) {
 	out := &StreamSummary{
 		ID:                      st.ID.String(),
 		AppID:                   st.AppID,
@@ -84,7 +84,7 @@ func projectStream(ctx context.Context, deps Deps, st *stream.Stream) (*StreamSu
 	case errors.Is(err, checkpoint.ErrNotFound), errors.Is(err, checkpoint.ErrUnsupported):
 		// No checkpoint yet, or a backend with no opinion. Both leave it nil.
 	default:
-		return nil, deps.mapStoreError("latest checkpoint", err)
+		return nil, deps.mapStoreError(op, err)
 	}
 	return out, nil
 }

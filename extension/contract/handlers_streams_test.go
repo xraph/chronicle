@@ -547,7 +547,7 @@ func TestProjectStreamAttachesTheLatestCheckpoint(t *testing.T) {
 	}
 	st := &stream.Stream{ID: id.NewStreamID(), AppID: "app-1", Scheme: string(hash.SchemeHMACV5)}
 
-	got, err := projectStream(context.Background(), deps, st)
+	got, err := projectStream(context.Background(), deps, "streams.mine", st)
 	if err != nil {
 		t.Fatalf("projectStream: %v", err)
 	}
@@ -572,7 +572,7 @@ func TestProjectStreamToleratesNoCheckpointYet(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			deps := Deps{CheckpointStore: streamsFixedCheckpointStore{err: cpErr}, CheckpointSigner: stubSigner{}}
-			got, err := projectStream(context.Background(), deps, &stream.Stream{ID: id.NewStreamID(), AppID: "app-1"})
+			got, err := projectStream(context.Background(), deps, "streams.mine", &stream.Stream{ID: id.NewStreamID(), AppID: "app-1"})
 			if err != nil {
 				t.Fatalf("projectStream: %v", err)
 			}
@@ -590,7 +590,7 @@ func TestProjectStreamFailsOnACheckpointReadError(t *testing.T) {
 		CheckpointStore:  streamsFixedCheckpointStore{err: errors.New("mongo: server selection timeout")},
 		CheckpointSigner: stubSigner{},
 	}
-	_, err := projectStream(context.Background(), deps, &stream.Stream{ID: id.NewStreamID(), AppID: "app-1"})
+	_, err := projectStream(context.Background(), deps, "streams.mine", &stream.Stream{ID: id.NewStreamID(), AppID: "app-1"})
 	var ce *fcontract.Error
 	if !errors.As(err, &ce) || ce.Code != fcontract.CodeInternal || strings.Contains(ce.Error(), "mongo") {
 		t.Fatalf("err = %v, want a generic CodeInternal", err)
@@ -665,6 +665,44 @@ func TestMapStoreErrorLogsTheCauseOfAnInternalError(t *testing.T) {
 	_ = d.mapStoreError("streams.mine", context.Canceled)
 	if n := len(tl.GetLogs()); n != 0 {
 		t.Fatalf("logged %d entries for expected outcomes, want 0", n)
+	}
+}
+
+// The op on a log line is the intent that failed, so an operator reading the
+// log can find the request. A checkpoint read failing while streams.mine or
+// streams.list projects a chain must say which of the two it was.
+func TestStreamProjectionLogsTheIntentThatFailed(t *testing.T) {
+	for _, intent := range []string{"streams.mine", "streams.list"} {
+		t.Run(intent, func(t *testing.T) {
+			s := newSQLiteStore(t)
+			seedStream(t, s, "app-1", "")
+			logger := log.NewTestLogger()
+			deps := Deps{
+				Store:            s,
+				CheckpointStore:  streamsFixedCheckpointStore{err: errors.New("mongo: server selection timeout")},
+				CheckpointSigner: stubSigner{},
+				Logger:           logger,
+			}
+			viewer := principalWith(map[string]any{"app_id": "app-1"})
+
+			var err error
+			if intent == "streams.mine" {
+				_, err = streamsMineHandler(deps)(context.Background(), MineInput{}, viewer)
+			} else {
+				_, err = streamsListHandler(deps)(context.Background(), StreamListInput{}, viewer)
+			}
+			if !errors.Is(err, fcontract.ErrInternal) {
+				t.Fatalf("err = %v, want INTERNAL", err)
+			}
+
+			entries := logger.(*log.TestLogger).GetLogsByLevel("ERROR")
+			if len(entries) != 1 {
+				t.Fatalf("logged %d error(s), want 1", len(entries))
+			}
+			if op, _ := entries[0].Field("op"); op != intent {
+				t.Fatalf("logged op = %v, want %q", op, intent)
+			}
+		})
 	}
 }
 

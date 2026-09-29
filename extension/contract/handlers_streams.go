@@ -81,7 +81,7 @@ func streamsMineHandler(deps Deps) func(context.Context, MineInput, fcontract.Pr
 			return MineResponse{}, err
 		}
 
-		summary, err := projectStream(ctx, deps, st)
+		summary, err := projectStream(ctx, deps, "streams.mine", st)
 		if err != nil {
 			return MineResponse{}, err
 		}
@@ -224,7 +224,7 @@ func streamsListHandler(deps Deps) func(context.Context, StreamListInput, fcontr
 			HasMore: int64(offset+len(page)) < total,
 		}
 		for _, st := range page {
-			summary, err := projectStream(ctx, deps, st)
+			summary, err := projectStream(ctx, deps, "streams.list", st)
 			if err != nil {
 				return StreamListResponse{}, err
 			}

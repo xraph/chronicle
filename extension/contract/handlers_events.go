@@ -42,12 +42,15 @@ type EventSummary struct {
 // THIS event was written under, which is not necessarily the level the chain
 // is pinned to now.
 //
-// A field on this type equal to crypto.ErasedMarker ("[ERASED]") means the
-// value was destroyed by an erasure, not that it was ever recorded that way.
-// The event is readable either way: erasure replaces the sealed fields with
-// the marker rather than making the row unreadable, and that substitution
-// already happened upstream, on the store this Deps was configured with,
-// before the event ever reached this handler.
+// A field on this type equal to crypto.ErasedMarker ("[ERASED]") is
+// evidence of an erasure only when Erased is true and ErasureID names the
+// erasure. The literal text is not reserved: an application can record it as
+// an ordinary value, and an erased value can also arrive with Erased false and
+// no ErasureID. So the marker alone proves nothing, and only Erased true with
+// an ErasureID does. The event is readable either way: erasure replaces the
+// sealed fields with the marker rather than making the row unreadable, and
+// that substitution already happened upstream, on the store this Deps was
+// configured with, before the event ever reached this handler.
 type EventDetail struct {
 	EventSummary
 	StreamID   string         `json:"streamId"`
