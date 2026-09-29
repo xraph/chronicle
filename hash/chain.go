@@ -244,8 +244,20 @@ func contentV2(prevHash string, event *audit.Event) string {
 // every field ends without trusting what is inside it, so no arrangement of
 // field contents can imitate another. The scheme's own name leads the content
 // rather than a shared tag, so v4 bytes can never be read as v5 bytes.
+//
+// The request correlation fields (UserAgent, RequestID, SessionID) are covered
+// only when at least one is set, and then all three go in after IP. Every v4
+// and v5 event written before those fields existed has all three empty, so its
+// bytes are exactly what they were and it keeps verifying under the scheme it
+// records. An event that has them is covered for them, and because every field
+// is length-prefixed, the 17-field and 20-field forms can never produce the
+// same bytes: stripping the fields from an event, or adding them to one, both
+// change the digest. That is why this is not a new scheme. Nothing written
+// before changes meaning, no stream pin has to move, and no configuration has
+// to change.
 func contentV4(scheme Scheme, prevHash string, event *audit.Event) string {
-	fields := [...]string{
+	fields := make([]string, 0, 20)
+	fields = append(fields,
 		string(scheme),
 		prevHash,
 		strconv.FormatUint(event.Sequence, 10),
@@ -254,6 +266,11 @@ func contentV4(scheme Scheme, prevHash string, event *audit.Event) string {
 		event.TenantID,
 		event.UserID,
 		event.IP,
+	)
+	if hasRequestContext(event) {
+		fields = append(fields, event.UserAgent, event.RequestID, event.SessionID)
+	}
+	fields = append(fields,
 		event.Action,
 		event.Resource,
 		event.Category,
@@ -263,7 +280,7 @@ func contentV4(scheme Scheme, prevHash string, event *audit.Event) string {
 		event.Reason,
 		event.SubjectID,
 		marshalMetadata(event.Metadata),
-	}
+	)
 
 	var b strings.Builder
 	for i, f := range fields {
@@ -277,13 +294,28 @@ func contentV4(scheme Scheme, prevHash string, event *audit.Event) string {
 	return b.String()
 }
 
+// hasRequestContext reports whether an event carries any request correlation
+// field, and so whether contentV4 covers them.
+func hasRequestContext(event *audit.Event) bool {
+	return event.UserAgent != "" || event.RequestID != "" || event.SessionID != ""
+}
+
+// coversRequestContext reports whether a scheme's digest can cover the request
+// correlation fields. Only the length-prefixed schemes can; the older ones
+// were retired for writing before the fields existed.
+func coversRequestContext(s Scheme) bool {
+	return s == SchemePlainV4 || s == SchemeHMACV5
+}
+
 // Compute generates the digest for an event, linking it to the previous hash,
 // and returns the ID of the key used. The key ID is empty for unkeyed schemes.
 //
 // The digest covers every field that carries accountability: who acted
-// (UserID), from where (IP), under which tenant (AppID, TenantID), why
-// (Reason), about whom (SubjectID), and the event's position in the stream
-// (Sequence), as well as what happened.
+// (UserID), from where (IP, UserAgent), under which request and session
+// (RequestID, SessionID), under which tenant (AppID, TenantID), why (Reason),
+// about whom (SubjectID), and the event's position in the stream (Sequence),
+// as well as what happened. The request fields are covered whenever any of
+// them is set; see contentV4.
 func (c *Chain) Compute(ctx context.Context, prevHash string, event *audit.Event) (digest, keyID string, err error) {
 	scheme := c.Scheme()
 	body := []byte(contentV4(scheme, prevHash, event))
@@ -398,6 +430,11 @@ func (c *Chain) VerifyWithPin(ctx context.Context, prevHash string, event *audit
 		if atOrAbovePin {
 			return Result{Downgrade: true}, nil
 		}
+		// No scheme the tolerant path tries covers the request fields, and
+		// no row old enough to carry no scheme was ever written with them.
+		if hasRequestContext(event) {
+			return Result{Tolerant: true}, nil
+		}
 		for _, scheme := range []Scheme{SchemePlain, SchemeLegacy} {
 			digest, err := c.computeUnder(ctx, scheme, "", prevHash, event)
 			if err != nil {
@@ -412,6 +449,14 @@ func (c *Chain) VerifyWithPin(ctx context.Context, prevHash string, event *audit
 
 	if atOrAbovePin && Rank(claimed) < Rank(pin.Scheme) {
 		return Result{Scheme: claimed, Downgrade: true}, nil
+	}
+
+	// A scheme that predates the request fields cannot vouch for them, and
+	// none of those schemes was ever written by a version that had them. So
+	// a v1, v2 or v3 row carrying one had it added afterwards, and nothing in
+	// its digest says what it should be.
+	if hasRequestContext(event) && !coversRequestContext(claimed) {
+		return Result{Scheme: claimed}, nil
 	}
 
 	digest, err := c.computeUnder(ctx, claimed, event.HashKeyID, prevHash, event)

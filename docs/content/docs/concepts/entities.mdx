@@ -39,6 +39,8 @@ Chronicle defines a small set of entity types that flow through the system. All 
 
 Scope fields are automatically applied from the context by `chronicle.Record` via `scope.ApplyToEvent`.
 
+The hash chain covers `UserAgent`, `RequestID` and `SessionID` whenever any of them is set, so you can't change which request or session an event belongs to after the fact without breaking its digest. Events recorded with none of them hash exactly as they did before these fields existed.
+
 ### Action fields
 
 | Field | Type | Description |
