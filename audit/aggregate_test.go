@@ -165,9 +165,9 @@ func TestResolveGroupByRejectsDuplicateBucket(t *testing.T) {
 }
 
 func TestResolveGroupByPreservesRequestOrder(t *testing.T) {
-	// Tasks 3 to 6 zip the returned columns against the requested fields to
-	// recover which bucket unit was asked for, because "day" and "hour" share
-	// the "timestamp" column. That zip is only valid if order is preserved
+	// The store backends zip the returned columns against the requested fields
+	// to recover which bucket unit was asked for, because "day" and "hour"
+	// share the "timestamp" column. That zip is only valid if order is preserved
 	// one-for-one, so this test is what makes it safe to rely on.
 	//
 	// The field order below is deliberately NOT alphabetical ("outcome",

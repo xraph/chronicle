@@ -237,7 +237,7 @@ func (s *verifySpanStore) Gaps(context.Context, id.ID, uint64, uint64) ([]uint64
 
 func (s *verifySpanStore) touched() int { return s.eventRange + s.gaps }
 
-// RULING 1: a bounded request whose resolved span is under the cap must
+// A bounded request whose resolved span is under the cap must
 // reach VerifyChain, and therefore the store.
 func TestVerifyRunVerifiesASpanUnderTheCap(t *testing.T) {
 	s := &verifySpanStore{st: &stream.Stream{
@@ -259,7 +259,7 @@ func TestVerifyRunVerifiesASpanUnderTheCap(t *testing.T) {
 	}
 }
 
-// RULING 1: a span over the cap must be refused before VerifyChain runs at
+// A span over the cap must be refused before VerifyChain runs at
 // all -- proved here by the store never seeing EventRange or Gaps -- and the
 // refusal must name both the cap and the chain's head so the UI can offer a
 // bounded window.
@@ -290,7 +290,7 @@ func TestVerifyRunRefusesASpanOverTheCap(t *testing.T) {
 	}
 }
 
-// RULING 1: fromSeq 0, toSeq 0 -- "verify everything" -- against a chain
+// FromSeq 0, toSeq 0 -- "verify everything" -- against a chain
 // longer than the cap must refuse the same as an explicit over-cap range,
 // since it resolves to exactly that.
 func TestVerifyRunRefusesZeroZeroOnAChainLongerThanTheCap(t *testing.T) {
@@ -312,7 +312,7 @@ func TestVerifyRunRefusesZeroZeroOnAChainLongerThanTheCap(t *testing.T) {
 	}
 }
 
-// RULING 1: a reversed range is refused after resolution, before it can
+// A reversed range is refused after resolution, before it can
 // underflow the span computation or reach VerifyChain.
 func TestVerifyRunRefusesAReversedRange(t *testing.T) {
 	s := &verifySpanStore{st: &stream.Stream{
@@ -333,7 +333,7 @@ func TestVerifyRunRefusesAReversedRange(t *testing.T) {
 	}
 }
 
-// RULING 1: Deps.MaxVerifySpan overrides the package default; zero means
+// Deps.MaxVerifySpan overrides the package default; zero means
 // use it.
 func TestVerifyRunCapIsOverridableThroughDeps(t *testing.T) {
 	s := &verifySpanStore{st: &stream.Stream{
@@ -357,7 +357,7 @@ func TestVerifyRunCapIsOverridableThroughDeps(t *testing.T) {
 	}
 }
 
-// RULING 1 (corrected): a ToSeq resolved from the stream's own head -- as
+// A ToSeq resolved from the stream's own head -- as
 // opposed to one the caller supplied -- must never be refused as "reversed",
 // even when the head is 0. A wiped chain (every event deleted, the head row
 // zeroed) resolves fromSeq 1, toSeq 0 on a bare VerifyInput{}, and that is
@@ -429,7 +429,7 @@ func (s wipeCheckpointStore) LatestCheckpoint(context.Context, id.ID) (*checkpoi
 	return s.cp, nil
 }
 
-// RULING 1's mutation-2 counterpart: a downgraded event -- one claiming a
+// A downgraded event -- one claiming a
 // weaker scheme than its stream pins at that sequence -- must be reported in
 // Downgrades with the report invalid. This also kills a "pin taken from the
 // request" mutation: VerifyInput carries no pin, and a zero hash.Pin
@@ -470,7 +470,7 @@ func TestVerifyRunFlagsADowngradedEvent(t *testing.T) {
 	}
 }
 
-// RULING 2's cap-boundary pair, part 1: a span exactly at the cap must run.
+// A span exactly at the cap must run.
 // (The "one over" half already exists as
 // TestVerifyRunRefusesZeroZeroOnAChainLongerThanTheCap, whose head is
 // maxVerifySpan+1 -- exactly one sequence past this boundary.)
@@ -512,7 +512,7 @@ func (s *verifyEventCallStore) GetStreamByScope(ctx context.Context, appID, tena
 	return s.Store.GetStreamByScope(ctx, appID, tenantID)
 }
 
-// RULING 2: an event must not be verifiable by ID alone any more than it is
+// An event must not be verifiable by ID alone any more than it is
 // readable by ID alone. Fetching another tenant's event by ID must answer
 // CodeNotFound and must never reach Chronicle.VerifyEvent -- proved here by
 // scopeCalls staying at zero, since VerifyEvent always resolves the event's
@@ -563,7 +563,7 @@ func (s *fixedEventStore) Get(context.Context, id.ID) (*audit.Event, error) {
 	return s.event, nil
 }
 
-// RULING 2: a nil deps.Chronicle answers CodeUnavailable, even for an event
+// A nil deps.Chronicle answers CodeUnavailable, even for an event
 // the viewer legitimately owns.
 func TestVerifyEventAnswersUnavailableWithNoChronicle(t *testing.T) {
 	event := &audit.Event{ID: id.NewAuditID(), AppID: "app-1", TenantID: "tenant-a", HashScheme: string(hash.SchemePlainV4)}
@@ -625,7 +625,7 @@ func (s *verifyEventNeverCalledStore) GetStreamByScope(context.Context, string, 
 	return nil, chronicle.ErrStreamNotFound
 }
 
-// RULING 3: Chronicle.VerifyEvent resolves the event's stream with a raw
+// Chronicle.VerifyEvent resolves the event's stream with a raw
 // GetStreamByScope(event.AppID, event.TenantID) that carries none of
 // scopedStream's collision guard. Handed the wrong stream by a backend whose
 // scope key collides, VerifyEvent checks the event against the wrong pin,
@@ -682,7 +682,7 @@ func (p hmacKeyProvider) ByID(_ context.Context, keyID string) ([]byte, error) {
 	return p.key, nil
 }
 
-// RULING 2: Keyed follows the event's own recorded HashScheme, not the
+// Keyed follows the event's own recorded HashScheme, not the
 // stream's current pin or this deployment's current configuration.
 func TestVerifyEventKeyedFollowsTheEventsScheme(t *testing.T) {
 	ctx := context.Background()

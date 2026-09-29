@@ -1,7 +1,7 @@
 package contract
 
-// Shared test helpers for this package. Every later task's tests use these,
-// so this is the one place they are defined. Add task-specific spies under
+// Shared test helpers for this package. Every test file uses these, so this
+// is the one place they are defined. Add spies specific to one group under
 // their own names; redefining any of these is a compile error.
 
 import (

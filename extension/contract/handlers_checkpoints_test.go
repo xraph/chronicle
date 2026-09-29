@@ -152,7 +152,7 @@ func TestCheckpointsListRejectsNegativePaging(t *testing.T) {
 	}
 }
 
-// RULING 1: limit 0 defaults to 50, and the store sees limit+1 so HasMore
+// Limit 0 defaults to 50, and the store sees limit+1 so HasMore
 // can be computed without a total.
 func TestCheckpointsListDefaultsTheLimitAndAsksForOneExtraRow(t *testing.T) {
 	spy := &checkpointsCapturingListStore{}
@@ -165,7 +165,7 @@ func TestCheckpointsListDefaultsTheLimitAndAsksForOneExtraRow(t *testing.T) {
 	}
 }
 
-// RULING 1: a limit above the maximum is capped, not refused.
+// A limit above the maximum is capped, not refused.
 func TestCheckpointsListCapsAnOversizedLimit(t *testing.T) {
 	spy := &checkpointsCapturingListStore{}
 	h := checkpointsListHandler(Deps{Store: newSQLiteStore(t), CheckpointStore: spy, CheckpointSigner: stubSigner{}})
@@ -177,7 +177,7 @@ func TestCheckpointsListCapsAnOversizedLimit(t *testing.T) {
 	}
 }
 
-// RULING 1: HasMore is exactly "the store handed back more than the
+// HasMore is exactly "the store handed back more than the
 // requested page", never a stored or computed total.
 func TestCheckpointsListComputesHasMoreFromTheExtraRow(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -288,7 +288,7 @@ func TestCheckpointsDetailRefusesAnotherTenantsCheckpointByOwnership(t *testing.
 
 // A checkpoint whose AppID/TenantID match the viewer, but whose StreamID
 // does not match the viewer's own resolved stream, must still be refused.
-// This is the "cheap" extra check the brief asked for on top of v.owns.
+// This is the cheap extra check on top of v.owns.
 func TestCheckpointsDetailRefusesACheckpointFromAnotherStreamInTheSameScope(t *testing.T) {
 	s := newSQLiteStore(t)
 	seedStream(t, s, "app-1", "tenant-a")
@@ -384,7 +384,7 @@ func (checkpointsExistsStore) AppendCheckpoint(context.Context, *checkpoint.Chec
 	return checkpoint.ErrExists
 }
 
-// RULING 2, the ErrExists half: a concurrent checkpointer winning the race
+// A concurrent checkpointer winning the race
 // must come back as UpToDate true, not CodeInternal. Routing this through
 // deps.mapStoreError instead must fail this test.
 func TestCheckpointsTakeTreatsALostRaceAsUpToDate(t *testing.T) {
@@ -482,7 +482,7 @@ func TestCheckpointsTakeListAndDetailEndToEndOnSQLite(t *testing.T) {
 		t.Fatalf("another tenant fetched this checkpoint by ID: err = %v, want NOT_FOUND", err)
 	}
 
-	// RULING 2: taking again with nothing new recorded is a no-op, not an
+	// Taking again with nothing new recorded is a no-op, not an
 	// error.
 	again, err := checkpointsTakeHandler(deps)(ctx, TakeCheckpointInput{}, viewer)
 	if err != nil {

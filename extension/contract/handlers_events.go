@@ -102,7 +102,7 @@ type GetEventInput struct {
 // EventsByUserInput requests one user's events within a time bound, scoped to
 // the viewer's own app and tenant.
 //
-// RULING 1: events.byUser is served by Store.Query with UserID set, NOT by
+// events.byUser is served by Store.Query with UserID set, not by
 // Store.ByUser. ByUser's Total is only the length of the page it returns --
 // see store/sqlite/audit.go's ByUser and store/redis/audit.go's ByUser,
 // both of which set Total: int64(len(events)) -- so it is not a count, and a
@@ -110,9 +110,9 @@ type GetEventInput struct {
 // more rows exist than fit on the page. Query's Total is a real count on
 // sqlite, postgres and mongo, each of which runs a separate count query
 // alongside the page (store/sqlite/audit.go's Query builds countQuery and
-// calls countQuery.Count(ctx) before the page select). See RULING 2 in
-// task-10-report.md for confirmation that redis's Query also counts the full
-// matching set, not just the page.
+// calls countQuery.Count(ctx) before the page select). On redis, Query
+// counts every event that matches before it slices the page, so its Total is
+// the full matching set too.
 type EventsByUserInput struct {
 	UserID string `json:"userId"`
 	After  string `json:"after,omitempty"`
@@ -122,17 +122,17 @@ type EventsByUserInput struct {
 }
 
 // AggregateInput bounds an events.aggregate call. GroupBy is validated
-// against audit.ResolveGroupBy before the store is ever touched -- see
-// RULING 3 on eventsAggregateHandler.
+// against audit.ResolveGroupBy before the store is ever touched, so a bad
+// field is answered as the caller's mistake and not as a store failure.
 type AggregateInput struct {
 	After   string   `json:"after,omitempty"`
 	Before  string   `json:"before,omitempty"`
 	GroupBy []string `json:"groupBy"`
 }
 
-// AggregateGroupDTO is one group of an aggregation result on the wire. Tasks
-// 11 and 13 consume this type too, so it is declared here once and must not
-// be declared a second time.
+// AggregateGroupDTO is one group of an aggregation result on the wire. The
+// overview stats and the report sections reuse this type, so it is declared
+// here once and must not be declared a second time.
 type AggregateGroupDTO struct {
 	Bucket   string `json:"bucket,omitempty"`
 	Category string `json:"category,omitempty"`
@@ -330,9 +330,9 @@ func eventsDetailHandler(deps Deps) func(context.Context, GetEventInput, fcontra
 
 // eventsAggregateHandler answers events.aggregate.
 //
-// RULING 3: a bad group_by is the caller's mistake, not the store's, so
-// GroupBy is validated against audit.ResolveGroupBy before deps.Store.
-// Aggregate is ever called. Every backend also validates GroupBy on its own
+// A bad group_by is the caller's mistake, not the store's, so GroupBy is
+// validated against audit.ResolveGroupBy before deps.Store.Aggregate is ever
+// called. Every backend also validates GroupBy on its own
 // (see store/redis/audit.go's Aggregate, which calls ResolveGroupBy itself
 // before touching redis), so skipping this check here would not let bad
 // input reach a backend unchecked -- but routing that failure through
@@ -395,9 +395,8 @@ func eventsAggregateHandler(deps Deps) func(context.Context, AggregateInput, fco
 	}
 }
 
-// eventsByUserHandler answers events.byUser. See RULING 1 on
-// EventsByUserInput for why this goes through Store.Query rather than
-// Store.ByUser.
+// eventsByUserHandler answers events.byUser. See EventsByUserInput for why
+// this goes through Store.Query rather than Store.ByUser.
 func eventsByUserHandler(deps Deps) func(context.Context, EventsByUserInput, fcontract.Principal) (EventListResponse, error) {
 	return func(ctx context.Context, in EventsByUserInput, p fcontract.Principal) (EventListResponse, error) {
 		v, err := scopeFromPrincipal(p)

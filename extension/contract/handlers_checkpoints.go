@@ -44,9 +44,9 @@ type TakeCheckpointInput struct {
 	StreamID string `json:"streamId,omitempty"`
 }
 
-// CheckpointListResponse is one page of the viewer's chain's checkpoints.
+// CheckpointListResponse is one page of one chain's checkpoints.
 //
-// RULING 1: there is deliberately no Total field. checkpoint.ListOpts is
+// There is deliberately no Total field. checkpoint.ListOpts is
 // {Limit, Offset} and checkpoint.Store has no count method, so a real total
 // could only be produced by scanning every checkpoint the chain holds on
 // every call to this intent. HasMore is computed instead, by asking the
@@ -70,13 +70,13 @@ type CheckpointListResponse struct {
 
 // TakeCheckpointResponse is the result of checkpoints.take.
 //
-// RULING 2: taking a checkpoint over a stream that gained nothing since its
-// last one, or losing a race to a concurrent checkpointer that already
-// landed at the same sequence, are both ordinary outcomes on a healthy
-// deployment, not failures -- see checkpoint.ErrNothingToCheckpoint and
-// checkpoint.ErrExists. Both come back here as UpToDate true with a nil
-// Checkpoint and no error, rather than as CodeInternal, which would alarm an
-// operator over a normal no-op.
+// Taking a checkpoint over a stream that gained nothing since its last one,
+// or losing a race to a concurrent checkpointer that already landed at the
+// same sequence, are both ordinary outcomes on a healthy deployment, not
+// failures -- see checkpoint.ErrNothingToCheckpoint and checkpoint.ErrExists.
+// Both come back here as UpToDate true with a nil Checkpoint and no error,
+// rather than as CodeInternal, which would alarm an operator over a normal
+// no-op.
 type TakeCheckpointResponse struct {
 	Checkpoint *CheckpointSummary `json:"checkpoint,omitempty"`
 	UpToDate   bool               `json:"upToDate"`
@@ -86,10 +86,10 @@ func checkpointsRegistrations() []registration {
 	return []registration{
 		query("checkpoints.list", checkpointsListHandler),
 		query("checkpoints.detail", checkpointsDetailHandler),
-		// RULING 3: write, not admin, and no `requires` predicate. Taking a
-		// checkpoint creates a record and destroys nothing; it is the one
-		// write in this contributor that makes a future verification
-		// stronger rather than weaker.
+		// Write, not admin: taking a checkpoint creates a record and
+		// destroys nothing; it is the one write in this contributor that
+		// makes a future verification stronger rather than weaker. The
+		// manifest still requires a write grant for it.
 		command("checkpoints.take", checkpointsTakeHandler),
 	}
 }
@@ -145,8 +145,8 @@ func checkpointsListHandler(deps Deps) func(context.Context, CheckpointListInput
 			streamID = st.ID
 		}
 
-		// Ask for one row past the requested page; RULING 1's HasMore, not a
-		// Total, is what that extra row is for.
+		// Ask for one row past the requested page: HasMore, not a Total, is
+		// what that extra row is for.
 		cps, err := deps.CheckpointStore.ListCheckpoints(ctx, streamID, checkpoint.ListOpts{
 			Limit: limit + 1, Offset: offset,
 		})
@@ -271,9 +271,10 @@ func checkpointsTakeHandler(deps Deps) func(context.Context, TakeCheckpointInput
 			HeadHash: st.HeadHash,
 		})
 		if err != nil {
-			// RULING 2: both are ordinary "nothing to do" outcomes, checked
-			// with errors.Is because CheckpointStream's own callers (and any
-			// store implementation) may wrap them.
+			// Both are ordinary "nothing to do" outcomes. CheckpointStream
+			// returns ErrNothingToCheckpoint from its own check and passes
+			// ErrExists through from the store, and errors.Is matches either
+			// whether or not a store wrapped it.
 			if errors.Is(err, checkpoint.ErrNothingToCheckpoint) || errors.Is(err, checkpoint.ErrExists) {
 				return TakeCheckpointResponse{UpToDate: true}, nil
 			}

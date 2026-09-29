@@ -123,9 +123,9 @@ func TestVerifyPageStaysQuietOnACleanReport(t *testing.T) {
 	}
 }
 
-// TestVerifyPageRendersCoverageSpans covers Task 7's addition of the coverage
-// ladder to the page: each span has to show its range, its level, and its
-// note when one is present.
+// TestVerifyPageRendersCoverageSpans covers the coverage ladder on the page:
+// each span has to show its range, its level, and its note when one is
+// present.
 func TestVerifyPageRendersCoverageSpans(t *testing.T) {
 	out := renderVerify(t, VerifyPageData{
 		Report: &verify.Report{

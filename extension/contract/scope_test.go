@@ -151,11 +151,11 @@ func TestScopeFromPrincipalAllowsAbsentTenant(t *testing.T) {
 	}
 }
 
-// A tenant viewer owns only its own tenant's records. This reverses the
-// original brief, which let a tenant viewer own app-level records (TenantID
-// ""). applyQuery pins list queries to the viewer's tenant exactly, so every
-// list already hides app-level records from a tenant viewer, and a detail
-// handler that let owns accept them would show by ID what the lists hide.
+// A tenant viewer owns only its own tenant's records, and not app-level
+// records (TenantID ""). applyQuery pins list queries to the viewer's tenant
+// exactly, so every list already hides app-level records from a tenant
+// viewer, and a detail handler that let owns accept them would show by ID
+// what the lists hide.
 func TestOwnsIsStrictForATenantViewer(t *testing.T) {
 	v := viewScope{AppID: "app-1", TenantID: "tenant-a"}
 	if v.owns("app-2", "tenant-a") {

@@ -18,8 +18,8 @@ import (
 )
 
 // ──────────────────────────────────────────────────
-// Test doubles. Named after this task so they cannot collide with another
-// task's spies -- see conventions-after-task-7.md.
+// Test doubles. Each is named for the group it serves, so it cannot collide
+// with another group's in this package.
 // ──────────────────────────────────────────────────
 
 // querySpy is a store.Store that records the last audit.Query it was asked,
@@ -435,7 +435,7 @@ func TestEventAggregateRejectsAnUnsupportedGroupBy(t *testing.T) {
 	}
 }
 
-// RULING 3: a bad group_by must be refused before the store is ever asked,
+// A bad group_by must be refused before the store is ever asked,
 // so it answers BAD_REQUEST with the caller's mistake rather than
 // mapStoreError's generic INTERNAL, which would misrepresent bad input as a
 // store failure.
@@ -461,7 +461,7 @@ func TestEventAggregateRefusesBadGroupByBeforeTouchingTheStoreAndAnswersBadReque
 	}
 }
 
-// Task 2's bucketing, reaching the wire.
+// A bucketed group (grouping by day) carries its bucket onto the wire.
 func TestEventAggregateCarriesTheBucket(t *testing.T) {
 	h := eventsAggregateHandler(Deps{Store: storeAggregating(&audit.AggregateResult{
 		Groups: []audit.AggregateGroup{{Bucket: "2026-09-20", Count: 2}},
@@ -527,7 +527,7 @@ func TestEventAggregateForwardsAfterBeforeAndGroupByToTheStore(t *testing.T) {
 // events.byUser
 // ──────────────────────────────────────────────────
 
-// RULING 1: an empty userId is refused before the store is touched.
+// An empty userId is refused before the store is touched.
 func TestEventByUserRefusesAnEmptyUserIDBeforeTouchingTheStore(t *testing.T) {
 	spy := &eventsTouchedStore{}
 	h := eventsByUserHandler(Deps{Store: spy})
@@ -541,7 +541,7 @@ func TestEventByUserRefusesAnEmptyUserIDBeforeTouchingTheStore(t *testing.T) {
 	}
 }
 
-// RULING 1: events.byUser goes through Store.Query, not Store.ByUser, and
+// events.byUser goes through Store.Query, not Store.ByUser, and
 // the viewer's scope must land on that outgoing Query.
 func TestEventByUserGoesThroughQueryWithTheViewersScope(t *testing.T) {
 	spy := &querySpy{}

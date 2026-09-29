@@ -21,8 +21,8 @@ import (
 )
 
 // ──────────────────────────────────────────────────
-// Test doubles and seeding. Named after this task so they cannot collide
-// with another task's.
+// Test doubles and seeding. Each is named for the group it serves, so it
+// cannot collide with another group's in this package.
 // ──────────────────────────────────────────────────
 
 // retentionListSpy records every ListPolicies call and answers with a fixed

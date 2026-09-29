@@ -16,8 +16,8 @@ import (
 )
 
 // ──────────────────────────────────────────────────
-// Test doubles. Named after this task so they cannot collide with another
-// task's spies -- see conventions-after-task-7.md.
+// Test doubles. Each is named for the group it serves, so it cannot collide
+// with another group's in this package.
 // ──────────────────────────────────────────────────
 
 // overviewScopeSpy is a store.Store that records every audit.AggregateQuery

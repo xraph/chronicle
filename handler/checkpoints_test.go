@@ -74,14 +74,14 @@ func (s *cpSetup) do(t *testing.T, method, path string, body any) *httptest.Resp
 // checkpointsForScope (checkpoints.go) has exactly one way to answer a
 // scope-wide listing: resolve the caller's stream through StreamStore, then
 // list that stream's checkpoints. A checkpoint recorded against a stream ID
-// nothing ever registered -- the brief's original fixture -- could only be
+// nothing ever registered -- how this fixture used to seed one -- could only be
 // found by a since-removed memory-only shortcut that no other backend
 // shared, so the fallback every real backend actually takes went untested.
 // Creating the stream here, rather than restoring that shortcut, means
 // TestListCheckpointsIsTenantScoped exercises the code every deployment
 // runs.
 //
-//nolint:unparam // appID is always testAppID at every call site in this file; kept for symmetry with tenantID, same shape as newSigner/newCP elsewhere in this plan.
+//nolint:unparam // appID is always testAppID at every call site in this file; kept for symmetry with tenantID, same shape as newSigner/newCP elsewhere in this package.
 func seedCheckpoint(t *testing.T, s *cpSetup, appID, tenantID string) *checkpoint.Checkpoint {
 	t.Helper()
 	ctx := context.Background()

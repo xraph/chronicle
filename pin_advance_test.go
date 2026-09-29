@@ -204,7 +204,7 @@ func TestPinDoesNotMoveWhenTheSchemeIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestWeakeningTheSchemeIsRefused covers the other direction of the ruling.
+// TestWeakeningTheSchemeIsRefused covers the other direction of pin movement.
 //
 // Advancing a pin on its own is safe because it only ever tightens what
 // verification will accept. Lowering one is not: the moment the pin drops, every

@@ -210,8 +210,8 @@ func TestConcurrentCheckpointersProduceExactlyOne(t *testing.T) {
 	}
 }
 
-// TestCreatedAtRoundTripsBackendPrecision is the direct proof for the review
-// defect against Task 6: CanonicalPayload renders CreatedAt via
+// TestCreatedAtRoundTripsBackendPrecision is the direct proof for a defect
+// in how a checkpoint is signed: CanonicalPayload renders CreatedAt via
 // time.RFC3339Nano, but no real backend stores nanoseconds back losslessly --
 // Postgres's TIMESTAMPTZ keeps microseconds and Mongo's BSON keeps
 // milliseconds. A CreatedAt signed at full, unrounded resolution comes back
