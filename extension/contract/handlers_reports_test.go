@@ -568,6 +568,60 @@ func TestGenerateCustomBoundsTheTitleAndEachFilterList(t *testing.T) {
 	}
 }
 
+// The rest of what a custom report stores from the request is bounded the same
+// way as its title: each section's title and notes, and every individual
+// filter value. Limits are in characters, so a multibyte value at the limit
+// passes, and one character over is refused before the engine runs.
+func TestGenerateCustomBoundsSectionTextAndFilterValues(t *testing.T) {
+	multibyte := func(n int) string { return strings.Repeat("é", n) }
+	one := func(s CustomReportSection) GenerateCustomReportInput {
+		return GenerateCustomReportInput{Title: "t", Sections: []CustomReportSection{s}}
+	}
+
+	cases := []struct {
+		name string
+		at   GenerateCustomReportInput
+		over GenerateCustomReportInput
+	}{
+		{"section title",
+			one(CustomReportSection{Title: multibyte(maxCustomSectionTitleLen)}),
+			one(CustomReportSection{Title: multibyte(maxCustomSectionTitleLen + 1)})},
+		{"section notes",
+			one(CustomReportSection{Title: "s", Notes: multibyte(maxCustomSectionNotesLen)}),
+			one(CustomReportSection{Title: "s", Notes: multibyte(maxCustomSectionNotesLen + 1)})},
+		{"category value",
+			one(CustomReportSection{Title: "s", Categories: []string{"ok", multibyte(maxCustomFilterValueLen)}}),
+			one(CustomReportSection{Title: "s", Categories: []string{"ok", multibyte(maxCustomFilterValueLen + 1)}})},
+		{"action value",
+			one(CustomReportSection{Title: "s", Actions: []string{"ok", multibyte(maxCustomFilterValueLen)}}),
+			one(CustomReportSection{Title: "s", Actions: []string{"ok", multibyte(maxCustomFilterValueLen + 1)}})},
+		{"severity value",
+			one(CustomReportSection{Title: "s", Severity: []string{"ok", multibyte(maxCustomFilterValueLen)}}),
+			one(CustomReportSection{Title: "s", Severity: []string{"ok", multibyte(maxCustomFilterValueLen + 1)}})},
+		{"second section's title",
+			GenerateCustomReportInput{Title: "t", Sections: []CustomReportSection{{Title: "a"}, {Title: multibyte(maxCustomSectionTitleLen)}}},
+			GenerateCustomReportInput{Title: "t", Sections: []CustomReportSection{{Title: "a"}, {Title: multibyte(maxCustomSectionTitleLen + 1)}}}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name+" at the limit", func(t *testing.T) {
+			spy := &reportsSpyStore{}
+			deps := Deps{Store: spy, Engine: reportsEngineOver(spy)}
+			if _, err := reportsGenerateCustomHandler(deps)(context.Background(), tt.at, reportsViewer("app-1", "")); err != nil {
+				t.Fatalf("at the limit: %v", err)
+			}
+		})
+		t.Run(tt.name+" one over", func(t *testing.T) {
+			spy := &reportsSpyStore{}
+			deps := Deps{Store: spy, Engine: reportsEngineOver(spy)}
+			_, err := reportsGenerateCustomHandler(deps)(context.Background(), tt.over, reportsViewer("app-1", ""))
+			reportsWantCode(t, err, fcontract.CodeBadRequest, tt.name)
+			if len(spy.queries)+len(spy.aggregates)+spy.saveCalls != 0 {
+				t.Fatal("the engine ran for a refused request")
+			}
+		})
+	}
+}
+
 // A compliance report has to name who generated it. No user, or a user with
 // no subject, is refused before anything runs, for both commands.
 func TestGenerateRefusesAPrincipalWithNoUser(t *testing.T) {

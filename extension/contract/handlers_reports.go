@@ -45,6 +45,18 @@ const maxCustomReportTitleLen = 200
 // not a filter anybody wrote by hand.
 const maxCustomSectionFilters = 50
 
+// maxCustomSectionTitleLen, maxCustomSectionNotesLen and
+// maxCustomFilterValueLen bound the rest of what a custom report stores from
+// the request, in characters. A section's title and notes are written into
+// the report and its exports, and each filter value is stored beside them, so
+// leaving them open would make the report title's bound worth nothing: the
+// same caller-chosen storage, one field over.
+const (
+	maxCustomSectionTitleLen = 200
+	maxCustomSectionNotesLen = 4000
+	maxCustomFilterValueLen  = 128
+)
+
 // Report types accepted by reports.generate, matched exactly. A whitelist
 // that quietly normalised case is one somebody later widens.
 const (
@@ -157,7 +169,10 @@ type GenerateReportInput struct {
 }
 
 // CustomReportSection defines one section of a custom report. Empty
-// categories, actions and severity match everything.
+// categories, actions and severity match everything. The title is bounded by
+// maxCustomSectionTitleLen, the notes by maxCustomSectionNotesLen, each filter
+// list by maxCustomSectionFilters and each filter value by
+// maxCustomFilterValueLen.
 type CustomReportSection struct {
 	Title      string   `json:"title"`
 	Categories []string `json:"categories,omitempty"`
@@ -523,6 +538,14 @@ func reportsGenerateCustomHandler(deps Deps) func(context.Context, GenerateCusto
 			if strings.TrimSpace(s.Title) == "" {
 				return GenerateReportResponse{}, reportBadRequest(fmt.Sprintf("section %d needs a title", i+1))
 			}
+			if utf8.RuneCountInString(s.Title) > maxCustomSectionTitleLen {
+				return GenerateReportResponse{}, reportBadRequest(fmt.Sprintf(
+					"the title of section %d can be at most %d characters", i+1, maxCustomSectionTitleLen))
+			}
+			if utf8.RuneCountInString(s.Notes) > maxCustomSectionNotesLen {
+				return GenerateReportResponse{}, reportBadRequest(fmt.Sprintf(
+					"the notes of section %d can be at most %d characters", i+1, maxCustomSectionNotesLen))
+			}
 			for _, f := range []struct {
 				name   string
 				values []string
@@ -530,6 +553,13 @@ func reportsGenerateCustomHandler(deps Deps) func(context.Context, GenerateCusto
 				if len(f.values) > maxCustomSectionFilters {
 					return GenerateReportResponse{}, reportBadRequest(fmt.Sprintf(
 						"section %d can filter on at most %d %s", i+1, maxCustomSectionFilters, f.name))
+				}
+				for _, value := range f.values {
+					if utf8.RuneCountInString(value) > maxCustomFilterValueLen {
+						return GenerateReportResponse{}, reportBadRequest(fmt.Sprintf(
+							"a %s filter value in section %d can be at most %d characters",
+							f.name, i+1, maxCustomFilterValueLen))
+					}
 				}
 			}
 			sections = append(sections, compliance.CustomSection{
