@@ -901,9 +901,134 @@ func TestRetentionPoliciesListsOnlyTheViewersScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retention.policies tenant: %v", err)
 	}
-	if !reflect.DeepEqual(ids(tenant), map[string]bool{a.ID.String(): true}) || tenant.Total != 1 {
-		t.Fatalf("tenant policies = %v (total %d), want tenant-a's one", ids(tenant), tenant.Total)
+	// The app-level "billing" policy governs tenant-a too, so it is listed,
+	// but tenant-a cannot edit it. Sibling and other-app policies stay hidden.
+	if !reflect.DeepEqual(ids(tenant), map[string]bool{a.ID.String(): true, appLevel.ID.String(): true}) || tenant.Total != 2 {
+		t.Fatalf("tenant policies = %v (total %d), want tenant-a's own and the app-level one", ids(tenant), tenant.Total)
 	}
+
+	for _, p := range wide.Policies {
+		if !p.Editable {
+			t.Errorf("app-wide viewer sees policy %s as not editable, want every row editable", p.ID)
+		}
+	}
+	for _, p := range tenant.Policies {
+		if want := p.ID == a.ID.String(); p.Editable != want {
+			t.Errorf("tenant viewer: policy %s editable = %v, want %v", p.ID, p.Editable, want)
+		}
+	}
+}
+
+// One app-level "*" policy purges every tenant's history. A tenant viewer
+// used to see "0 policies" and "no policies" beside a verification that
+// counted it, so the confirm dialog said nothing would be purged while the
+// scheduler purged it. The tenant now sees the policy, marked read only, and
+// the preview says how many app-level policies govern it. The tenant still
+// cannot change or delete it.
+func TestRetentionTenantViewerSeesTheAppLevelPolicyThatGovernsIt(t *testing.T) {
+	ctx := context.Background()
+	s := newSQLiteStore(t)
+	appLevel := retentionSavePolicyIn(t, s, retentionPolicy("app-1", "", "*", time.Hour))
+	retentionSavePolicyIn(t, s, retentionPolicy("app-1", "tenant-b", "auth", time.Hour)) // a sibling's, never shown
+	deps := Deps{Store: s}
+	tenant := principalWith(retentionApp1TenantA)
+
+	list, err := retentionPoliciesHandler(deps)(ctx, struct{}{}, tenant)
+	if err != nil {
+		t.Fatalf("retention.policies: %v", err)
+	}
+	if list.Total != 1 || len(list.Policies) != 1 || list.Policies[0].ID != appLevel.ID.String() || list.Policies[0].Editable {
+		t.Fatalf("policies = %+v, want the app-level policy alone, not editable", list)
+	}
+
+	preview, err := retentionPreviewHandler(deps)(ctx, struct{}{}, tenant)
+	if err != nil {
+		t.Fatalf("retention.preview: %v", err)
+	}
+	if preview.GoverningAppPolicies != 1 {
+		t.Fatalf("governingAppPolicies = %d, want 1", preview.GoverningAppPolicies)
+	}
+	// Preview stays what enforce would purge from here, which is the viewer's
+	// own policies, and there are none.
+	if !preview.NoPolicies || len(preview.ByPolicy) != 0 || preview.EventCount != 0 {
+		t.Fatalf("preview = %+v, want no own policies and nothing to purge from here", preview)
+	}
+
+	_, err = retentionSavePolicyHandler(deps)(ctx, SavePolicyInput{ID: retentionStr(appLevel.ID.String()), Duration: retentionStr("1m")}, tenant)
+	if got := retentionErrCode(t, err); got != fcontract.CodeNotFound {
+		t.Fatalf("tenant savePolicy on an app-level policy: code = %s, want %s", got, fcontract.CodeNotFound)
+	}
+	_, err = retentionDeletePolicyHandler(deps)(ctx, DeletePolicyInput{ID: appLevel.ID.String()}, tenant)
+	if got := retentionErrCode(t, err); got != fcontract.CodeNotFound {
+		t.Fatalf("tenant deletePolicy on an app-level policy: code = %s, want %s", got, fcontract.CodeNotFound)
+	}
+	if _, err := s.GetPolicy(ctx, appLevel.ID); err != nil {
+		t.Fatalf("the app-level policy was changed or removed by a tenant viewer: %v", err)
+	}
+
+	// An app-wide viewer owns that policy: it is in its own preview, and there
+	// is nothing "governing" it that it cannot edit.
+	wide, err := retentionPreviewHandler(deps)(ctx, struct{}{}, principalWith(retentionApp1Wide))
+	if err != nil {
+		t.Fatalf("app-wide retention.preview: %v", err)
+	}
+	if wide.GoverningAppPolicies != 0 || wide.NoPolicies {
+		t.Fatalf("app-wide preview = %+v, want governingAppPolicies 0 and its own policies listed", wide)
+	}
+}
+
+// listViewerPolicies feeds every policy's own scope into EventsOlderThan,
+// where an empty AppID reads as every app. A store that answers a scoped
+// listing with a foreign policy must not get that far.
+func TestRetentionNeverActsOnAForeignPolicyAStoreReturns(t *testing.T) {
+	ctx := context.Background()
+	foreign := retentionPolicy("app-2", "", "*", time.Hour)
+	noApp := retentionPolicy("", "", "*", time.Hour)
+	sibling := retentionPolicy("app-1", "tenant-b", "auth", time.Hour)
+	own := retentionPolicy("app-1", "tenant-a", "auth", time.Hour)
+	spy := &retentionEventsScopeSpy{policies: []*retention.Policy{foreign, noApp, sibling, own}}
+	deps := Deps{Store: spy}
+	tenant := principalWith(retentionApp1TenantA)
+
+	list, err := retentionPoliciesHandler(deps)(ctx, struct{}{}, tenant)
+	if err != nil {
+		t.Fatalf("retention.policies: %v", err)
+	}
+	if list.Total != 1 || len(list.Policies) != 1 || list.Policies[0].ID != own.ID.String() {
+		t.Fatalf("retention.policies = %+v, want tenant-a's own policy alone", list)
+	}
+
+	if _, err := retentionPreviewHandler(deps)(ctx, struct{}{}, tenant); err != nil {
+		t.Fatalf("retention.preview: %v", err)
+	}
+	if got := retentionMoreRemain(ctx, deps, viewScope{AppID: "app-1", TenantID: "tenant-a"}); !got {
+		t.Fatalf("retentionMoreRemain = false, want true for tenant-a's own policy over a store that returns events")
+	}
+	for _, sc := range spy.scopes {
+		if sc.AppID != "app-1" || sc.TenantID != "tenant-a" {
+			t.Errorf("EventsOlderThan was asked about scope %+v, want only app-1/tenant-a", sc)
+		}
+	}
+	if len(spy.scopes) == 0 {
+		t.Fatal("EventsOlderThan was never called, so the test proved nothing")
+	}
+}
+
+// retentionEventsScopeSpy answers every ListPolicies call with a fixed set,
+// however the call is scoped, and records the scope of each EventsOlderThan.
+type retentionEventsScopeSpy struct {
+	stubStore
+	policies []*retention.Policy
+	scopes   []retention.Scope
+}
+
+func (s *retentionEventsScopeSpy) ListPolicies(context.Context, retention.ListPoliciesOpts) ([]*retention.Policy, error) {
+	return s.policies, nil
+}
+
+func (s *retentionEventsScopeSpy) EventsOlderThan(_ context.Context, q retention.PurgeQuery) ([]*audit.Event, error) {
+	s.scopes = append(s.scopes, q.Scope)
+	return retentionFakeEvents(1), nil
 }
 
 func TestRetentionPolicyDetailRefusesAPolicyTheViewerDoesNotOwn(t *testing.T) {

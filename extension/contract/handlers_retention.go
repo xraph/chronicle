@@ -34,6 +34,13 @@ const (
 // Duration is Go's duration string ("720h0m0s"), which time.ParseDuration
 // reads back, so the page can round-trip it through retention.savePolicy
 // unchanged.
+//
+// Editable is true when the viewer may change or delete this policy through
+// retention.savePolicy and retention.deletePolicy, and false for an app-level
+// policy that governs a tenant viewer's chain but belongs to the app. Those
+// are shown so the tenant viewer can see what purges its history, and the two
+// commands answer NOT_FOUND for them. An app-wide viewer owns every policy in
+// its app, so every row it sees is editable.
 type PolicySummary struct {
 	ID        string `json:"id"`
 	Category  string `json:"category"`
@@ -43,9 +50,18 @@ type PolicySummary struct {
 	TenantID  string `json:"tenantId,omitempty"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
+	Editable  bool   `json:"editable"`
 }
 
-// PolicyListResponse is every retention policy in the viewer's scope.
+// PolicyListResponse is every retention policy that governs the viewer's
+// scope.
+//
+// For an app-wide viewer that is every policy in its app, tenants' included,
+// and all of them are editable. For a tenant viewer it is the tenant's own
+// policies (editable) and the app-level policies of its app (not editable):
+// the stores apply an app-level policy to every tenant in the app, so those
+// purge the tenant's history even though the tenant cannot change them. Total
+// counts every row returned.
 //
 // It is not paged. A policy is unique per (app, tenant, category), so a
 // scope holds one policy per category it governs, and that set is small.
@@ -115,16 +131,24 @@ type PolicyPreview struct {
 // a large backlog takes several passes. EnforceResponse.MoreRemain is what
 // says another one is needed.
 //
-// EventCount is the number of distinct events the viewer's policies select.
-// Capped true means at least one policy hit previewCap, so the real number
-// is at least EventCount. NoPolicies true means the scope has no policies
-// at all, which is a different answer from zero-because-nothing-is-old, and
-// the page has to be able to say which one it is.
+// EventCount is the number of distinct events the viewer's own policies
+// select. Capped true means at least one policy hit previewCap, so the real
+// number is at least EventCount.
+//
+// NoPolicies true means the viewer has no policy of its own, which is a
+// different answer from zero-because-nothing-is-old, and the page has to be
+// able to say which one it is. It does not mean nothing can purge this scope:
+// GoverningAppPolicies counts the app-level policies that also purge a tenant
+// viewer's chain. retention.enforce runs only the viewer's own policies, so
+// those are neither previewed nor enforced from here; the background
+// scheduler enforces them. It is always zero for an app-wide viewer, whose
+// app-level policies are its own and appear in ByPolicy.
 type RetentionPreviewResponse struct {
-	EventCount int64           `json:"eventCount"`
-	Capped     bool            `json:"capped"`
-	NoPolicies bool            `json:"noPolicies"`
-	ByPolicy   []PolicyPreview `json:"byPolicy"`
+	EventCount           int64           `json:"eventCount"`
+	Capped               bool            `json:"capped"`
+	NoPolicies           bool            `json:"noPolicies"`
+	GoverningAppPolicies int             `json:"governingAppPolicies"`
+	ByPolicy             []PolicyPreview `json:"byPolicy"`
 }
 
 // EnforceResponse is the outcome of one retention.enforce pass.
@@ -213,18 +237,64 @@ func purgeQueryFor(p *retention.Policy, limit int) retention.PurgeQuery {
 	}
 }
 
-// listViewerPolicies returns every policy in the viewer's scope, the same
-// set retention.Enforcer.EnforceScope runs for this viewer. Limit -1 means
+// listViewerPolicies returns every policy the viewer owns, the same set
+// retention.Enforcer.EnforceScope runs for this viewer. Limit -1 means
 // unbounded.
+//
+// Every row is checked against the viewer's ownership before it is returned.
+// The stores read an empty AppID as every app, and every consumer of this
+// list feeds each policy's own scope into EventsOlderThan, so a foreign
+// policy that got through would make the preview and the moreRemain check
+// read another app's events.
 func listViewerPolicies(ctx context.Context, deps Deps, v viewScope) ([]*retention.Policy, error) {
-	return deps.Store.ListPolicies(ctx, retention.ListPoliciesOpts{
+	all, err := deps.Store.ListPolicies(ctx, retention.ListPoliciesOpts{
 		Scope: v.retentionScope(),
 		Limit: -1,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	owned := make([]*retention.Policy, 0, len(all))
+	for _, p := range all {
+		if p != nil && v.owns(p.AppID, p.TenantID) {
+			owned = append(owned, p)
+		}
+	}
+	return owned, nil
 }
 
-// projectPolicy turns a stored policy into its wire summary.
-func projectPolicy(p *retention.Policy) PolicySummary {
+// listGoverningAppPolicies returns the app-level policies (empty TenantID)
+// that purge a tenant viewer's chain without being the viewer's to edit. An
+// app-wide viewer has none: its app-level policies are its own.
+//
+// It lists the whole app and keeps the app-level rows, because a listing
+// scoped to the tenant cannot see them.
+func listGoverningAppPolicies(ctx context.Context, deps Deps, v viewScope) ([]*retention.Policy, error) {
+	if v.TenantID == "" {
+		return nil, nil
+	}
+	all, err := deps.Store.ListPolicies(ctx, retention.ListPoliciesOpts{
+		Scope: retention.Scope{AppID: v.AppID},
+		Limit: -1,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var governing []*retention.Policy
+	for _, p := range all {
+		// AppID is checked again here rather than trusted to the listing.
+		if p != nil && p.AppID == v.AppID && p.TenantID == "" {
+			governing = append(governing, p)
+		}
+	}
+	return governing, nil
+}
+
+// projectPolicy turns a stored policy into its wire summary. editable says
+// whether the viewer may change it.
+func projectPolicy(p *retention.Policy, editable bool) PolicySummary {
 	return PolicySummary{
 		ID:        p.ID.String(),
 		Category:  p.Category,
@@ -234,6 +304,7 @@ func projectPolicy(p *retention.Policy) PolicySummary {
 		TenantID:  p.TenantID,
 		CreatedAt: formatTime(p.CreatedAt),
 		UpdatedAt: formatTime(p.UpdatedAt),
+		Editable:  editable,
 	}
 }
 
@@ -352,13 +423,17 @@ func retentionPoliciesHandler(deps Deps) func(context.Context, struct{}, fcontra
 		if err != nil {
 			return PolicyListResponse{}, deps.mapStoreError("retention.policies", err)
 		}
+		governing, err := listGoverningAppPolicies(ctx, deps, v)
+		if err != nil {
+			return PolicyListResponse{}, deps.mapStoreError("retention.policies", err)
+		}
 
-		out := PolicyListResponse{Policies: make([]PolicySummary, 0, len(policies))}
+		out := PolicyListResponse{Policies: make([]PolicySummary, 0, len(policies)+len(governing))}
 		for _, pol := range policies {
-			if pol == nil {
-				continue
-			}
-			out.Policies = append(out.Policies, projectPolicy(pol))
+			out.Policies = append(out.Policies, projectPolicy(pol, true))
+		}
+		for _, pol := range governing {
+			out.Policies = append(out.Policies, projectPolicy(pol, false))
 		}
 		out.Total = len(out.Policies)
 		return out, nil
@@ -376,7 +451,7 @@ func retentionPolicyDetailHandler(deps Deps) func(context.Context, GetPolicyInpu
 		if err != nil {
 			return PolicySummary{}, err
 		}
-		return projectPolicy(pol), nil
+		return projectPolicy(pol, true), nil
 	}
 }
 
@@ -449,7 +524,7 @@ func updatePolicy(
 	if err := deps.Store.SavePolicy(ctx, &updated); err != nil {
 		return PolicySummary{}, deps.mapStoreError("retention.savePolicy", err)
 	}
-	return projectPolicy(&updated), nil
+	return projectPolicy(&updated, true), nil
 }
 
 // createPolicy creates a policy in the viewer's own scope.
@@ -509,7 +584,7 @@ func createPolicy(
 	if err := deps.Store.SavePolicy(ctx, pol); err != nil {
 		return PolicySummary{}, deps.mapStoreError("retention.savePolicy", err)
 	}
-	return projectPolicy(pol), nil
+	return projectPolicy(pol, true), nil
 }
 
 func retentionDeletePolicyHandler(deps Deps) func(context.Context, DeletePolicyInput, fcontract.Principal) (DeletePolicyResponse, error) {
@@ -582,6 +657,12 @@ func retentionPreviewHandler(deps Deps) func(context.Context, struct{}, fcontrac
 				Capped:     capped,
 			})
 		}
+
+		governing, err := listGoverningAppPolicies(ctx, deps, v)
+		if err != nil {
+			return RetentionPreviewResponse{}, deps.mapStoreError("retention.preview", err)
+		}
+		out.GoverningAppPolicies = len(governing)
 
 		out.NoPolicies = len(out.ByPolicy) == 0
 		// Distinct events, not the sum of the per-policy counts: enforcement
