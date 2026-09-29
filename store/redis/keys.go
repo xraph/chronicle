@@ -5,14 +5,24 @@ import (
 	"strings"
 )
 
+// DefaultKeyPrefix is what every key starts with unless New is given
+// WithKeyPrefix. The names below are relative to it: with the default, the
+// event index zEventAll is the key "chronicle:z:evt:all".
+const DefaultKeyPrefix = "chronicle:"
+
+// key puts the store's prefix in front of one of the names below.
+func (s *Store) key(name string) string {
+	return s.prefix + name
+}
+
 // Key prefixes for primary entity storage.
 const (
-	prefixEvent   = "chronicle:evt:"
-	prefixStream  = "chronicle:str:"
-	prefixErasure = "chronicle:era:"
-	prefixPolicy  = "chronicle:pol:"
-	prefixArchive = "chronicle:arc:"
-	prefixReport  = "chronicle:rpt:"
+	prefixEvent   = "evt:"
+	prefixStream  = "str:"
+	prefixErasure = "era:"
+	prefixPolicy  = "pol:"
+	prefixArchive = "arc:"
+	prefixReport  = "rpt:"
 )
 
 // Key prefixes for sorted set indexes.
@@ -23,36 +33,36 @@ const (
 // has boundaries to get wrong, and those go through scopeSuffix.
 const (
 	// Events
-	zEventAll      = "chronicle:z:evt:all"
-	zEventStream   = "chronicle:z:evt:stream:"   // + stream ID
-	zEventScope    = "chronicle:z:evt:scopev2:"  // + scopeSuffix(appID, tenantID)
-	zEventApp      = "chronicle:z:evt:app:"      // + appID
-	zEventCategory = "chronicle:z:evt:category:" // + category
-	zEventUser     = "chronicle:z:evt:user:"     // + user ID
-	zEventSubject  = "chronicle:z:evt:subject:"  // + subject ID
+	zEventAll      = "z:evt:all"
+	zEventStream   = "z:evt:stream:"   // + stream ID
+	zEventScope    = "z:evt:scopev2:"  // + scopeSuffix(appID, tenantID)
+	zEventApp      = "z:evt:app:"      // + appID
+	zEventCategory = "z:evt:category:" // + category
+	zEventUser     = "z:evt:user:"     // + user ID
+	zEventSubject  = "z:evt:subject:"  // + subject ID
 
 	// Streams
-	zStreamAll = "chronicle:z:str:all"
+	zStreamAll = "z:str:all"
 
 	// Erasures
-	zErasureAll = "chronicle:z:era:all"
+	zErasureAll = "z:era:all"
 
 	// Policies
-	zPolicyAll = "chronicle:z:pol:all"
+	zPolicyAll = "z:pol:all"
 
 	// Archives
-	zArchiveAll = "chronicle:z:arc:all"
+	zArchiveAll = "z:arc:all"
 
 	// Reports
-	zReportAll = "chronicle:z:rpt:all"
+	zReportAll = "z:rpt:all"
 )
 
 // Key prefixes for unique indexes.
 const (
-	uniqueStreamScope = "chronicle:u:str:scopev2:" // + scopeSuffix(appID, tenantID)
+	uniqueStreamScope = "u:str:scopev2:" // + scopeSuffix(appID, tenantID)
 	// uniquePolicyScope keys a policy by its owner, not by category alone: a
 	// category-only key let one app evict another app's policy.
-	uniquePolicyScope = "chronicle:u:pol:scopev2:" // + scopeSuffix(appID, tenantID, category)
+	uniquePolicyScope = "u:pol:scopev2:" // + scopeSuffix(appID, tenantID, category)
 )
 
 // Scope keys written before scopeSuffix existed. They joined the parts with a
@@ -64,20 +74,20 @@ const (
 // for legacy+"*" never matches a v2 key. They could not share a prefix: an old
 // key's suffix is arbitrary text, so every v2 suffix is also a valid old one.
 const (
-	legacyEventScope  = "chronicle:z:evt:scope:"
-	legacyStreamScope = "chronicle:u:str:scope:"
-	legacyPolicyScope = "chronicle:u:pol:scope:"
+	legacyEventScope  = "z:evt:scope:"
+	legacyStreamScope = "u:str:scope:"
+	legacyPolicyScope = "u:pol:scope:"
 )
 
 // Keys Migrate keeps its own state in.
 const (
 	// scopeKeyFormatMarker exists once every scope index is in the v2 format.
 	// GetStreamByScope will not report a miss until it does.
-	scopeKeyFormatMarker = "chronicle:meta:scope-key-format"
+	scopeKeyFormatMarker = "meta:scope-key-format"
 
 	// scopeCollisionsKey is a set of the stream IDs Migrate found holding
 	// events from more than one scope. See ErrScopeCollision.
-	scopeCollisionsKey = "chronicle:meta:scope-collisions"
+	scopeCollisionsKey = "meta:scope-collisions"
 )
 
 // scopeSuffix renders caller-supplied scope parts as one key suffix: each part
@@ -100,19 +110,19 @@ func scopeSuffix(parts ...string) string {
 }
 
 // streamScopeKey is the unique index from an app+tenant scope to its stream.
-func streamScopeKey(appID, tenantID string) string {
-	return uniqueStreamScope + scopeSuffix(appID, tenantID)
+func (s *Store) streamScopeKey(appID, tenantID string) string {
+	return s.key(uniqueStreamScope) + scopeSuffix(appID, tenantID)
 }
 
 // eventScopeKey is the sorted set holding an app+tenant scope's events.
-func eventScopeKey(appID, tenantID string) string {
-	return zEventScope + scopeSuffix(appID, tenantID)
+func (s *Store) eventScopeKey(appID, tenantID string) string {
+	return s.key(zEventScope) + scopeSuffix(appID, tenantID)
 }
 
 // policyScopeKey is the unique index from (app, tenant, category) to the policy
 // that scope holds for that category.
-func policyScopeKey(appID, tenantID, category string) string {
-	return uniquePolicyScope + scopeSuffix(appID, tenantID, category)
+func (s *Store) policyScopeKey(appID, tenantID, category string) string {
+	return s.key(uniquePolicyScope) + scopeSuffix(appID, tenantID, category)
 }
 
 // entityKey returns the primary key for an entity.

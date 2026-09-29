@@ -39,8 +39,9 @@ var (
 
 // Store implements the Chronicle store interface using Redis via Grove KV.
 type Store struct {
-	kv  *kv.Store
-	rdb goredis.UniversalClient
+	kv     *kv.Store
+	rdb    goredis.UniversalClient
+	prefix string
 }
 
 // Compile-time interface checks.
@@ -55,12 +56,34 @@ var (
 	_ checkpoint.Store       = (*Store)(nil)
 )
 
-// New creates a new Redis store backed by Grove KV.
-func New(kvStore *kv.Store) *Store {
-	return &Store{
-		kv:  kvStore,
-		rdb: redisdriver.UnwrapClient(kvStore),
+// Option configures a Store.
+type Option func(*Store)
+
+// WithKeyPrefix puts every key the store reads or writes under prefix instead
+// of DefaultKeyPrefix, so two stores can share one redis database without
+// seeing each other's data. Migrate, the indexes and every count stay inside
+// the prefix.
+//
+// The prefix goes in front of each key as it is. End it with a separator such
+// as ":", and don't give two stores prefixes where one starts with the other
+// ("chronicle:" and "chronicle:evt:"), because the shorter one's scans would
+// reach into the longer one's keys.
+func WithKeyPrefix(prefix string) Option {
+	return func(s *Store) { s.prefix = prefix }
+}
+
+// New creates a new Redis store backed by Grove KV. Without WithKeyPrefix its
+// keys start with DefaultKeyPrefix, the layout every earlier version used.
+func New(kvStore *kv.Store, opts ...Option) *Store {
+	s := &Store{
+		kv:     kvStore,
+		rdb:    redisdriver.UnwrapClient(kvStore),
+		prefix: DefaultKeyPrefix,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Ping checks Redis connectivity.

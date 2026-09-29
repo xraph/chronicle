@@ -62,16 +62,16 @@ func fromStreamModel(m *streamModel) (*stream.Stream, error) {
 // CreateStream initializes a new hash chain stream.
 func (s *Store) CreateStream(ctx context.Context, st *stream.Stream) error {
 	m := toStreamModel(st)
-	key := entityKey(prefixStream, m.ID)
+	key := entityKey(s.key(prefixStream), m.ID)
 
 	if err := s.setEntity(ctx, key, m); err != nil {
 		return fmt.Errorf("chronicle/redis: create stream: %w", err)
 	}
 
 	pipe := s.rdb.Pipeline()
-	pipe.ZAdd(ctx, zStreamAll, goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
+	pipe.ZAdd(ctx, s.key(zStreamAll), goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
 	// Unique scope index.
-	pipe.Set(ctx, streamScopeKey(m.AppID, m.TenantID), m.ID, 0)
+	pipe.Set(ctx, s.streamScopeKey(m.AppID, m.TenantID), m.ID, 0)
 	_, err := pipe.Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("chronicle/redis: create stream indexes: %w", err)
@@ -82,7 +82,7 @@ func (s *Store) CreateStream(ctx context.Context, st *stream.Stream) error {
 // GetStream returns a stream by ID.
 func (s *Store) GetStream(ctx context.Context, streamID id.ID) (*stream.Stream, error) {
 	var m streamModel
-	if err := s.getEntity(ctx, entityKey(prefixStream, streamID.String()), &m); err != nil {
+	if err := s.getEntity(ctx, entityKey(s.key(prefixStream), streamID.String()), &m); err != nil {
 		if isNotFound(err) {
 			return nil, chronicle.ErrStreamNotFound
 		}
@@ -99,12 +99,12 @@ func (s *Store) GetStream(ctx context.Context, streamID id.ID) (*stream.Stream, 
 // for each tenant. Until then a miss returns ErrScopeKeysNotMigrated instead.
 // The check costs one EXISTS, and only on a miss.
 func (s *Store) GetStreamByScope(ctx context.Context, appID, tenantID string) (*stream.Stream, error) {
-	streamID, err := s.rdb.Get(ctx, streamScopeKey(appID, tenantID)).Result()
+	streamID, err := s.rdb.Get(ctx, s.streamScopeKey(appID, tenantID)).Result()
 	if err != nil {
 		if !isRedisNil(err) {
 			return nil, fmt.Errorf("chronicle/redis: get stream by scope: %w", err)
 		}
-		migrated, existsErr := s.rdb.Exists(ctx, scopeKeyFormatMarker).Result()
+		migrated, existsErr := s.rdb.Exists(ctx, s.key(scopeKeyFormatMarker)).Result()
 		if existsErr != nil {
 			return nil, fmt.Errorf("chronicle/redis: get stream by scope: check scope key format: %w", existsErr)
 		}
@@ -115,7 +115,7 @@ func (s *Store) GetStreamByScope(ctx context.Context, appID, tenantID string) (*
 	}
 
 	var m streamModel
-	if err := s.getEntity(ctx, entityKey(prefixStream, streamID), &m); err != nil {
+	if err := s.getEntity(ctx, entityKey(s.key(prefixStream), streamID), &m); err != nil {
 		if isNotFound(err) {
 			return nil, chronicle.ErrStreamNotFound
 		}
@@ -126,7 +126,7 @@ func (s *Store) GetStreamByScope(ctx context.Context, appID, tenantID string) (*
 
 // ListStreams returns all streams with pagination.
 func (s *Store) ListStreams(ctx context.Context, opts stream.ListOpts) ([]*stream.Stream, error) {
-	ids, err := s.rdb.ZRevRange(ctx, zStreamAll, 0, -1).Result()
+	ids, err := s.rdb.ZRevRange(ctx, s.key(zStreamAll), 0, -1).Result()
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: list streams: %w", err)
 	}
@@ -134,7 +134,7 @@ func (s *Store) ListStreams(ctx context.Context, opts stream.ListOpts) ([]*strea
 	result := make([]*stream.Stream, 0, len(ids))
 	for _, entryID := range ids {
 		var m streamModel
-		if err := s.getEntity(ctx, entityKey(prefixStream, entryID), &m); err != nil {
+		if err := s.getEntity(ctx, entityKey(s.key(prefixStream), entryID), &m); err != nil {
 			if isNotFound(err) {
 				continue
 			}
@@ -153,7 +153,7 @@ func (s *Store) ListStreams(ctx context.Context, opts stream.ListOpts) ([]*strea
 // UpdateStreamScheme moves the stream's digest pin to scheme, applying from
 // sequence since.
 func (s *Store) UpdateStreamScheme(ctx context.Context, streamID id.ID, scheme string, since uint64) error {
-	key := entityKey(prefixStream, streamID.String())
+	key := entityKey(s.key(prefixStream), streamID.String())
 
 	var m streamModel
 	if err := s.getEntity(ctx, key, &m); err != nil {
@@ -175,7 +175,7 @@ func (s *Store) UpdateStreamScheme(ctx context.Context, streamID id.ID, scheme s
 
 // UpdateStreamHead updates the stream's head hash and sequence after append.
 func (s *Store) UpdateStreamHead(ctx context.Context, streamID id.ID, hash string, seq uint64) error {
-	key := entityKey(prefixStream, streamID.String())
+	key := entityKey(s.key(prefixStream), streamID.String())
 
 	var m streamModel
 	if err := s.getEntity(ctx, key, &m); err != nil {

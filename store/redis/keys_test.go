@@ -32,16 +32,69 @@ func TestScopeSuffixSeparatesDistinctTuples(t *testing.T) {
 // Migrate deletes old keys with SCAN MATCH legacy+"*". If a v2 key started with
 // a legacy prefix, that delete would take the new index with it.
 func TestV2ScopeKeysAreOutsideLegacyPrefixes(t *testing.T) {
+	s := &Store{prefix: DefaultKeyPrefix}
 	v2 := []string{
-		streamScopeKey("a", "b"),
-		eventScopeKey("a", "b"),
-		policyScopeKey("a", "b", "c"),
+		s.streamScopeKey("a", "b"),
+		s.eventScopeKey("a", "b"),
+		s.policyScopeKey("a", "b", "c"),
 	}
 	for _, key := range v2 {
-		for _, legacy := range []string{legacyStreamScope, legacyEventScope, legacyPolicyScope} {
+		for _, legacy := range []string{s.key(legacyStreamScope), s.key(legacyEventScope), s.key(legacyPolicyScope)} {
 			if strings.HasPrefix(key, legacy) {
 				t.Errorf("v2 key %q is under legacy prefix %q", key, legacy)
 			}
+		}
+	}
+}
+
+// Data written before WithKeyPrefix existed has to stay where the store looks
+// for it. A change to the default layout orphans every key already in redis.
+func TestDefaultKeyLayoutIsUnchanged(t *testing.T) {
+	s := &Store{prefix: DefaultKeyPrefix}
+	for got, want := range map[string]string{
+		entityKey(s.key(prefixEvent), "e1"):  "chronicle:evt:e1",
+		entityKey(s.key(prefixStream), "s1"): "chronicle:str:s1",
+		s.key(zEventAll):                     "chronicle:z:evt:all",
+		s.key(zEventApp) + "app":             "chronicle:z:evt:app:app",
+		s.eventScopeKey("a", "t"):            "chronicle:z:evt:scopev2:1:a|1:t",
+		s.streamScopeKey("a", "t"):           "chronicle:u:str:scopev2:1:a|1:t",
+		s.policyScopeKey("a", "t", "c"):      "chronicle:u:pol:scopev2:1:a|1:t|1:c",
+		s.key(legacyEventScope):              "chronicle:z:evt:scope:",
+		s.key(scopeKeyFormatMarker):          "chronicle:meta:scope-key-format",
+	} {
+		if got != want {
+			t.Errorf("key = %q, want %q", got, want)
+		}
+	}
+}
+
+// WithKeyPrefix moves every key, including the ones built from scope parts.
+func TestKeyPrefixAppliesToEveryKey(t *testing.T) {
+	s := &Store{prefix: "tenant-a:"}
+	for _, key := range []string{
+		s.key(zEventAll),
+		s.eventScopeKey("a", "t"),
+		s.streamScopeKey("a", "t"),
+		s.policyScopeKey("a", "t", "c"),
+		s.key(scopeCollisionsKey),
+	} {
+		if !strings.HasPrefix(key, "tenant-a:") || strings.HasPrefix(key, DefaultKeyPrefix) {
+			t.Errorf("key %q is not under the configured prefix", key)
+		}
+	}
+}
+
+// A prefix is matched literally when Migrate scans for it, so one holding a
+// glob character cannot reach another store's keys.
+func TestGlobEscapeMatchesOnlyTheLiteralPrefix(t *testing.T) {
+	for in, want := range map[string]string{
+		"chronicle:":  "chronicle:",
+		"t[1]:":       `t\[1\]:`,
+		"a*b?:":       `a\*b\?:`,
+		`back\slash:`: `back\\slash:`,
+	} {
+		if got := globEscape(in); got != want {
+			t.Errorf("globEscape(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

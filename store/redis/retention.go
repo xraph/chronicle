@@ -123,21 +123,21 @@ func fromArchiveModel(m *archiveModel) (*retention.Archive, error) {
 func (s *Store) SavePolicy(ctx context.Context, p *retention.Policy) error {
 	m := toPolicyModel(p)
 
-	scopeKey := policyScopeKey(m.AppID, m.TenantID, m.Category)
+	scopeKey := s.policyScopeKey(m.AppID, m.TenantID, m.Category)
 	existingID, err := s.rdb.Get(ctx, scopeKey).Result()
 	if err == nil && existingID != "" && existingID != m.ID {
 		// Replace this scope's previous policy for the category.
-		s.rdb.Del(ctx, entityKey(prefixPolicy, existingID))
-		s.rdb.ZRem(ctx, zPolicyAll, existingID)
+		s.rdb.Del(ctx, entityKey(s.key(prefixPolicy), existingID))
+		s.rdb.ZRem(ctx, s.key(zPolicyAll), existingID)
 	}
 
-	key := entityKey(prefixPolicy, m.ID)
+	key := entityKey(s.key(prefixPolicy), m.ID)
 	if setErr := s.setEntity(ctx, key, m); setErr != nil {
 		return fmt.Errorf("chronicle/redis: save policy: %w", setErr)
 	}
 
 	pipe := s.rdb.Pipeline()
-	pipe.ZAdd(ctx, zPolicyAll, goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
+	pipe.ZAdd(ctx, s.key(zPolicyAll), goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
 	pipe.Set(ctx, scopeKey, m.ID, 0)
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("chronicle/redis: save policy indexes: %w", err)
@@ -148,7 +148,7 @@ func (s *Store) SavePolicy(ctx context.Context, p *retention.Policy) error {
 // GetPolicy returns a retention policy by ID.
 func (s *Store) GetPolicy(ctx context.Context, policyID id.ID) (*retention.Policy, error) {
 	var m policyModel
-	if err := s.getEntity(ctx, entityKey(prefixPolicy, policyID.String()), &m); err != nil {
+	if err := s.getEntity(ctx, entityKey(s.key(prefixPolicy), policyID.String()), &m); err != nil {
 		if isNotFound(err) {
 			return nil, chronicle.ErrPolicyNotFound
 		}
@@ -162,7 +162,7 @@ func (s *Store) GetPolicy(ctx context.Context, policyID id.ID) (*retention.Polic
 func (s *Store) ListPolicies(
 	ctx context.Context, opts retention.ListPoliciesOpts,
 ) ([]*retention.Policy, error) {
-	ids, err := s.rdb.ZRevRange(ctx, zPolicyAll, 0, -1).Result()
+	ids, err := s.rdb.ZRevRange(ctx, s.key(zPolicyAll), 0, -1).Result()
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: list policies: %w", err)
 	}
@@ -170,7 +170,7 @@ func (s *Store) ListPolicies(
 	result := make([]*retention.Policy, 0, len(ids))
 	for _, entryID := range ids {
 		var m policyModel
-		if getErr := s.getEntity(ctx, entityKey(prefixPolicy, entryID), &m); getErr != nil {
+		if getErr := s.getEntity(ctx, entityKey(s.key(prefixPolicy), entryID), &m); getErr != nil {
 			if isNotFound(getErr) {
 				continue
 			}
@@ -194,7 +194,7 @@ func (s *Store) ListPolicies(
 
 // DeletePolicy removes a retention policy.
 func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
-	key := entityKey(prefixPolicy, policyID.String())
+	key := entityKey(s.key(prefixPolicy), policyID.String())
 
 	var m policyModel
 	if err := s.getEntity(ctx, key, &m); err != nil {
@@ -209,8 +209,8 @@ func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
 	}
 
 	pipe := s.rdb.Pipeline()
-	pipe.ZRem(ctx, zPolicyAll, m.ID)
-	pipe.Del(ctx, policyScopeKey(m.AppID, m.TenantID, m.Category))
+	pipe.ZRem(ctx, s.key(zPolicyAll), m.ID)
+	pipe.Del(ctx, s.policyScopeKey(m.AppID, m.TenantID, m.Category))
 	_, err := pipe.Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("chronicle/redis: delete policy indexes: %w", err)
@@ -233,7 +233,7 @@ func (s *Store) EventsOlderThan(
 	// The scope index holds exactly one (app, tenant) pair, empty values
 	// included, so it is always the right index for a purge. The app and
 	// category indexes would read other tenants' events.
-	zKey := eventScopeKey(pq.AppID, pq.TenantID)
+	zKey := s.eventScopeKey(pq.AppID, pq.TenantID)
 
 	ids, err := s.zRangeByScoreIDs(ctx, zKey, math.Inf(-1), maxScore)
 	if err != nil {
@@ -249,7 +249,7 @@ func (s *Store) EventsOlderThan(
 		}
 
 		var m eventModel
-		if getErr := s.getEntity(ctx, entityKey(prefixEvent, eid), &m); getErr != nil {
+		if getErr := s.getEntity(ctx, entityKey(s.key(prefixEvent), eid), &m); getErr != nil {
 			if isNotFound(getErr) {
 				continue
 			}
@@ -289,7 +289,7 @@ func (s *Store) PurgeEvents(ctx context.Context, eventIDs []id.ID) (int64, error
 
 	var count int64
 	for _, eid := range eventIDs {
-		key := entityKey(prefixEvent, eid.String())
+		key := entityKey(s.key(prefixEvent), eid.String())
 
 		// Get event data to clean up indexes.
 		var m eventModel
@@ -307,18 +307,18 @@ func (s *Store) PurgeEvents(ctx context.Context, eventIDs []id.ID) (int64, error
 
 		// Clean up indexes.
 		pipe := s.rdb.Pipeline()
-		pipe.ZRem(ctx, zEventAll, m.ID)
-		pipe.ZRem(ctx, zEventStream+m.StreamID, m.ID)
-		pipe.ZRem(ctx, eventScopeKey(m.AppID, m.TenantID), m.ID)
-		pipe.ZRem(ctx, zEventApp+m.AppID, m.ID)
+		pipe.ZRem(ctx, s.key(zEventAll), m.ID)
+		pipe.ZRem(ctx, s.key(zEventStream)+m.StreamID, m.ID)
+		pipe.ZRem(ctx, s.eventScopeKey(m.AppID, m.TenantID), m.ID)
+		pipe.ZRem(ctx, s.key(zEventApp)+m.AppID, m.ID)
 		if m.Category != "" {
-			pipe.ZRem(ctx, zEventCategory+m.Category, m.ID)
+			pipe.ZRem(ctx, s.key(zEventCategory)+m.Category, m.ID)
 		}
 		if m.UserID != "" {
-			pipe.ZRem(ctx, zEventUser+m.UserID, m.ID)
+			pipe.ZRem(ctx, s.key(zEventUser)+m.UserID, m.ID)
 		}
 		if m.SubjectID != "" {
-			pipe.ZRem(ctx, zEventSubject+m.SubjectID, m.ID)
+			pipe.ZRem(ctx, s.key(zEventSubject)+m.SubjectID, m.ID)
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return count, fmt.Errorf("chronicle/redis: purge event indexes: %w", err)
@@ -333,19 +333,19 @@ func (s *Store) PurgeEvents(ctx context.Context, eventIDs []id.ID) (int64, error
 // RecordArchive records that a batch of events was archived.
 func (s *Store) RecordArchive(ctx context.Context, a *retention.Archive) error {
 	m := toArchiveModel(a)
-	key := entityKey(prefixArchive, m.ID)
+	key := entityKey(s.key(prefixArchive), m.ID)
 
 	if err := s.setEntity(ctx, key, m); err != nil {
 		return fmt.Errorf("chronicle/redis: record archive: %w", err)
 	}
 
-	s.rdb.ZAdd(ctx, zArchiveAll, goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
+	s.rdb.ZAdd(ctx, s.key(zArchiveAll), goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
 	return nil
 }
 
 // ListArchives returns archive records with pagination.
 func (s *Store) ListArchives(ctx context.Context, opts retention.ListOpts) ([]*retention.Archive, error) {
-	ids, err := s.rdb.ZRevRange(ctx, zArchiveAll, 0, -1).Result()
+	ids, err := s.rdb.ZRevRange(ctx, s.key(zArchiveAll), 0, -1).Result()
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: list archives: %w", err)
 	}
@@ -353,7 +353,7 @@ func (s *Store) ListArchives(ctx context.Context, opts retention.ListOpts) ([]*r
 	result := make([]*retention.Archive, 0, len(ids))
 	for _, entryID := range ids {
 		var m archiveModel
-		if err := s.getEntity(ctx, entityKey(prefixArchive, entryID), &m); err != nil {
+		if err := s.getEntity(ctx, entityKey(s.key(prefixArchive), entryID), &m); err != nil {
 			if isNotFound(err) {
 				continue
 			}

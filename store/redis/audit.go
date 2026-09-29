@@ -149,7 +149,7 @@ func (s *Store) AppendBatch(ctx context.Context, events []*audit.Event) error {
 // storeEvent stores a single event and updates all indexes.
 func (s *Store) storeEvent(ctx context.Context, event *audit.Event) error {
 	m := toEventModel(event)
-	key := entityKey(prefixEvent, m.ID)
+	key := entityKey(s.key(prefixEvent), m.ID)
 
 	if err := s.setEntity(ctx, key, m); err != nil {
 		return fmt.Errorf("chronicle/redis: store event: %w", err)
@@ -158,20 +158,20 @@ func (s *Store) storeEvent(ctx context.Context, event *audit.Event) error {
 	score := scoreFromTime(m.Timestamp)
 
 	pipe := s.rdb.Pipeline()
-	pipe.ZAdd(ctx, zEventAll, goredis.Z{Score: score, Member: m.ID})
-	pipe.ZAdd(ctx, zEventStream+m.StreamID, goredis.Z{Score: float64(m.Sequence), Member: m.ID})
-	pipe.ZAdd(ctx, eventScopeKey(m.AppID, m.TenantID), goredis.Z{Score: score, Member: m.ID})
+	pipe.ZAdd(ctx, s.key(zEventAll), goredis.Z{Score: score, Member: m.ID})
+	pipe.ZAdd(ctx, s.key(zEventStream)+m.StreamID, goredis.Z{Score: float64(m.Sequence), Member: m.ID})
+	pipe.ZAdd(ctx, s.eventScopeKey(m.AppID, m.TenantID), goredis.Z{Score: score, Member: m.ID})
 	// An app-only index so a single-tenant query (AppID set, TenantID empty)
 	// does not have to scan every event in the deployment.
-	pipe.ZAdd(ctx, zEventApp+m.AppID, goredis.Z{Score: score, Member: m.ID})
+	pipe.ZAdd(ctx, s.key(zEventApp)+m.AppID, goredis.Z{Score: score, Member: m.ID})
 	if m.Category != "" {
-		pipe.ZAdd(ctx, zEventCategory+m.Category, goredis.Z{Score: score, Member: m.ID})
+		pipe.ZAdd(ctx, s.key(zEventCategory)+m.Category, goredis.Z{Score: score, Member: m.ID})
 	}
 	if m.UserID != "" {
-		pipe.ZAdd(ctx, zEventUser+m.UserID, goredis.Z{Score: score, Member: m.ID})
+		pipe.ZAdd(ctx, s.key(zEventUser)+m.UserID, goredis.Z{Score: score, Member: m.ID})
 	}
 	if m.SubjectID != "" {
-		pipe.ZAdd(ctx, zEventSubject+m.SubjectID, goredis.Z{Score: score, Member: m.ID})
+		pipe.ZAdd(ctx, s.key(zEventSubject)+m.SubjectID, goredis.Z{Score: score, Member: m.ID})
 	}
 
 	_, err := pipe.Exec(ctx)
@@ -184,7 +184,7 @@ func (s *Store) storeEvent(ctx context.Context, event *audit.Event) error {
 // Get returns a single event by ID.
 func (s *Store) Get(ctx context.Context, eventID id.ID) (*audit.Event, error) {
 	var m eventModel
-	if err := s.getEntity(ctx, entityKey(prefixEvent, eventID.String()), &m); err != nil {
+	if err := s.getEntity(ctx, entityKey(s.key(prefixEvent), eventID.String()), &m); err != nil {
 		if isNotFound(err) {
 			return nil, chronicle.ErrEventNotFound
 		}
@@ -201,15 +201,15 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 	var zKey string
 	switch {
 	case q.AppID != "" && q.TenantID != "":
-		zKey = eventScopeKey(q.AppID, q.TenantID)
+		zKey = s.eventScopeKey(q.AppID, q.TenantID)
 	case q.AppID != "":
-		zKey = zEventApp + q.AppID
+		zKey = s.key(zEventApp) + q.AppID
 	case q.UserID != "":
-		zKey = zEventUser + q.UserID
+		zKey = s.key(zEventUser) + q.UserID
 	case len(q.Categories) == 1:
-		zKey = zEventCategory + q.Categories[0]
+		zKey = s.key(zEventCategory) + q.Categories[0]
 	default:
-		zKey = zEventAll
+		zKey = s.key(zEventAll)
 	}
 
 	minScore := math.Inf(-1)
@@ -230,7 +230,7 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 	var allEvents []*audit.Event
 	for i := len(ids) - 1; i >= 0; i-- {
 		var m eventModel
-		if err := s.getEntity(ctx, entityKey(prefixEvent, ids[i]), &m); err != nil {
+		if err := s.getEntity(ctx, entityKey(s.key(prefixEvent), ids[i]), &m); err != nil {
 			if isNotFound(err) {
 				continue
 			}
@@ -293,12 +293,12 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 	}
 
 	// Determine the narrowest index key available.
-	zKey := zEventAll
+	zKey := s.key(zEventAll)
 	switch {
 	case q.AppID != "" && q.TenantID != "":
-		zKey = eventScopeKey(q.AppID, q.TenantID)
+		zKey = s.eventScopeKey(q.AppID, q.TenantID)
 	case q.AppID != "":
-		zKey = zEventApp + q.AppID
+		zKey = s.key(zEventApp) + q.AppID
 	}
 
 	ids, err := s.zRangeByScoreIDs(ctx, zKey, minScore, maxScore)
@@ -312,7 +312,7 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 
 	for _, eid := range ids {
 		var m eventModel
-		if err := s.getEntity(ctx, entityKey(prefixEvent, eid), &m); err != nil {
+		if err := s.getEntity(ctx, entityKey(s.key(prefixEvent), eid), &m); err != nil {
 			if isNotFound(err) {
 				continue
 			}
@@ -392,7 +392,7 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 		maxScore = scoreFromTime(opts.Before)
 	}
 
-	ids, err := s.zRangeByScoreIDs(ctx, zEventUser+userID, minScore, maxScore)
+	ids, err := s.zRangeByScoreIDs(ctx, s.key(zEventUser)+userID, minScore, maxScore)
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: events by user: %w", err)
 	}
@@ -406,7 +406,7 @@ func (s *Store) ByUser(ctx context.Context, userID string, opts audit.TimeRange)
 		}
 
 		var m eventModel
-		if err := s.getEntity(ctx, entityKey(prefixEvent, ids[i]), &m); err != nil {
+		if err := s.getEntity(ctx, entityKey(s.key(prefixEvent), ids[i]), &m); err != nil {
 			if isNotFound(err) {
 				continue
 			}
@@ -446,16 +446,16 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 	// The other indexes stay post-filtered even when they would match: the
 	// loop below also drops members whose event is gone, and PurgeEvents
 	// deletes the event before it cleans the indexes.
-	zKey := zEventAll
+	zKey := s.key(zEventAll)
 	exact := false
 	switch {
 	case q.AppID != "" && q.TenantID != "":
-		zKey = eventScopeKey(q.AppID, q.TenantID)
+		zKey = s.eventScopeKey(q.AppID, q.TenantID)
 		exact = q.Category == ""
 	case q.AppID != "":
-		zKey = zEventApp + q.AppID
+		zKey = s.key(zEventApp) + q.AppID
 	case q.Category != "":
-		zKey = zEventCategory + q.Category
+		zKey = s.key(zEventCategory) + q.Category
 		exact = q.TenantID == ""
 	}
 
@@ -481,7 +481,7 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 	var count int64
 	for _, eid := range ids {
 		var m eventModel
-		if err := s.getEntity(ctx, entityKey(prefixEvent, eid), &m); err != nil {
+		if err := s.getEntity(ctx, entityKey(s.key(prefixEvent), eid), &m); err != nil {
 			if isNotFound(err) {
 				continue
 			}
@@ -504,7 +504,7 @@ func (s *Store) Count(ctx context.Context, q *audit.CountQuery) (int64, error) {
 // LastSequence returns the highest sequence number for a stream.
 func (s *Store) LastSequence(ctx context.Context, streamID id.ID) (uint64, error) {
 	// Get the highest scored member from the stream's sorted set.
-	ids, err := s.rdb.ZRevRangeWithScores(ctx, zEventStream+streamID.String(), 0, 0).Result()
+	ids, err := s.rdb.ZRevRangeWithScores(ctx, s.key(zEventStream)+streamID.String(), 0, 0).Result()
 	if err != nil {
 		return 0, err
 	}
@@ -516,7 +516,7 @@ func (s *Store) LastSequence(ctx context.Context, streamID id.ID) (uint64, error
 
 // LastHash returns the hash of the most recent event in a stream.
 func (s *Store) LastHash(ctx context.Context, streamID id.ID) (string, error) {
-	ids, err := s.rdb.ZRevRange(ctx, zEventStream+streamID.String(), 0, 0).Result()
+	ids, err := s.rdb.ZRevRange(ctx, s.key(zEventStream)+streamID.String(), 0, 0).Result()
 	if err != nil {
 		return "", err
 	}
@@ -525,7 +525,7 @@ func (s *Store) LastHash(ctx context.Context, streamID id.ID) (string, error) {
 	}
 
 	var m eventModel
-	if err := s.getEntity(ctx, entityKey(prefixEvent, ids[0]), &m); err != nil {
+	if err := s.getEntity(ctx, entityKey(s.key(prefixEvent), ids[0]), &m); err != nil {
 		if isNotFound(err) {
 			return "", chronicle.ErrEventNotFound
 		}
