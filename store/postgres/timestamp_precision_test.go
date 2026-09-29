@@ -127,18 +127,18 @@ func TestTimestampMigrationKeepsExistingRows(t *testing.T) {
 	ctx := context.Background()
 
 	exec := pgmigrate.New(s.pg)
-	var target *migrate.Migration
-	for _, m := range Migrations.Migrations() {
-		if m.Name == "keep_event_timestamp_nanoseconds" {
-			target = m
-			break
-		}
+	all := Migrations.Migrations()
+	at := slices.IndexFunc(all, func(m *migrate.Migration) bool {
+		return m.Name == "keep_event_timestamp_nanoseconds"
+	})
+	if at < 0 {
+		t.Fatal("migration keep_event_timestamp_nanoseconds not registered")
+	}
+	target, later := all[at], all[at+1:]
+	for _, m := range all[:at] {
 		if err := m.Up(ctx, exec); err != nil {
 			t.Fatalf("migration %s: %v", m.Name, err)
 		}
-	}
-	if target == nil {
-		t.Fatal("migration keep_event_timestamp_nanoseconds not registered")
 	}
 
 	streamID := id.NewStreamID()
@@ -152,6 +152,15 @@ VALUES ($1, $2, 1, 'h', 'legacy', 'touch', 'doc', 'auth', $3)`,
 
 	if err := target.Up(ctx, exec); err != nil {
 		t.Fatalf("Up: %v", err)
+	}
+
+	// The store reads every column the latest schema has, so bring the table
+	// the rest of the way up before reading back through it. None of these
+	// touch the timestamp.
+	for _, m := range later {
+		if err := m.Up(ctx, exec); err != nil {
+			t.Fatalf("migration %s: %v", m.Name, err)
+		}
 	}
 
 	got, err := s.Get(ctx, eventID)
