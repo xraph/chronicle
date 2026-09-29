@@ -928,14 +928,15 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 		yamlConfig.Auth.AllowUnauthenticated = true
 	}
 
-	// Dashboard default scope: YAML takes precedence per field, programmatic
-	// fills gaps. Losing app_id here would turn a working single-app dashboard
-	// into one that refuses every session, with nothing logged.
-	if yamlConfig.Dashboard.AppID == "" && programmaticConfig.Dashboard.AppID != "" {
-		yamlConfig.Dashboard.AppID = programmaticConfig.Dashboard.AppID
-	}
-	if yamlConfig.Dashboard.TenantID == "" && programmaticConfig.Dashboard.TenantID != "" {
-		yamlConfig.Dashboard.TenantID = programmaticConfig.Dashboard.TenantID
+	// Dashboard default scope merges as a unit, not field by field. The tenant
+	// belongs to the app it was configured beside, so a YAML app_id paired with
+	// a programmatic tenant_id would scope sessions to a tenant nobody chose
+	// for that app. If the YAML sets either field its whole section stands,
+	// and a YAML tenant_id with no app_id is then refused by Validate;
+	// otherwise the programmatic section does. Losing it entirely would turn a
+	// working single-app dashboard into one that refuses every session.
+	if yamlConfig.Dashboard.AppID == "" && yamlConfig.Dashboard.TenantID == "" {
+		yamlConfig.Dashboard = programmaticConfig.Dashboard
 	}
 
 	// String fields: YAML takes precedence.
