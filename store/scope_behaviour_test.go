@@ -23,6 +23,7 @@ import (
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/pgtest"
 	"github.com/xraph/chronicle/store"
 	chroniclemongo "github.com/xraph/chronicle/store/mongo"
 	chroniclepostgres "github.com/xraph/chronicle/store/postgres"
@@ -104,9 +105,10 @@ func openSQLite(t *testing.T) (store.Store, func(context.Context, id.ID)) {
 }
 
 // openPostgres opens a migrated postgres store against
-// CHRONICLE_TEST_POSTGRES_DSN. Skips only when that variable is unset;
-// every failure once it is set (dial, open, ping, migrate) is a
-// t.Fatalf, per the rule documented on backends.
+// CHRONICLE_TEST_POSTGRES_DSN, confined to a schema of its own that is
+// dropped when the test ends (see internal/pgtest). Skips only when that
+// variable is unset; every failure once it is set (dial, open, ping,
+// migrate) is a t.Fatalf, per the rule documented on backends.
 func openPostgres(t *testing.T) (store.Store, func(context.Context, id.ID)) {
 	t.Helper()
 
@@ -114,6 +116,7 @@ func openPostgres(t *testing.T) (store.Store, func(context.Context, id.ID)) {
 	if dsn == "" {
 		t.Skip("CHRONICLE_TEST_POSTGRES_DSN not set, skipping postgres")
 	}
+	dsn = pgtest.Schema(t, dsn)
 
 	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
