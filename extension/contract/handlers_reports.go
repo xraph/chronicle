@@ -348,10 +348,10 @@ func reportPeriod(p *ReportPeriod) (compliance.DateRange, error) {
 
 // reportGeneratedBy names who is generating a report, from the principal.
 // A compliance report has to say who produced it, so a principal with no
-// user, or a user with no subject, is refused rather than recorded as
-// nobody.
+// user, or a user whose subject is empty or only whitespace, is refused
+// rather than recorded as nobody.
 func reportGeneratedBy(p fcontract.Principal) (string, error) {
-	if p.User == nil || p.User.Subject == "" {
+	if !hasUser(p) {
 		return "", &fcontract.Error{
 			Code:    fcontract.CodeUnauthenticated,
 			Message: "a report must name the user who generated it",

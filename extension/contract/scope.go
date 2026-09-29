@@ -63,7 +63,7 @@ type viewScope struct {
 //
 // Every handler calls this before it touches the store.
 func scopeFromPrincipal(p fcontract.Principal, deps Deps) (viewScope, error) {
-	if p.User == nil || strings.TrimSpace(p.User.Subject) == "" {
+	if !hasUser(p) {
 		return viewScope{}, &fcontract.Error{
 			Code:    fcontract.CodeUnauthenticated,
 			Message: "no signed-in user on this session",
@@ -76,8 +76,9 @@ func scopeFromPrincipal(p fcontract.Principal, deps Deps) (viewScope, error) {
 	}
 	if !appFromClaim && (hasClaim(p, "tenant_id") || hasClaim(p, "org_id")) {
 		return viewScope{}, &fcontract.Error{
-			Code:    fcontract.CodePermissionDenied,
-			Message: "session names a tenant but no app: refusing rather than pairing it with the configured app",
+			Code: fcontract.CodePermissionDenied,
+			Message: "session carries a tenant claim with no app_id claim beside it: " +
+				"the auth provider must send app_id whenever it sends tenant_id or org_id",
 		}
 	}
 
@@ -87,6 +88,12 @@ func scopeFromPrincipal(p fcontract.Principal, deps Deps) (viewScope, error) {
 	}
 
 	return viewScope{AppID: appID, TenantID: tenantID}, nil
+}
+
+// hasUser reports whether the principal names a signed-in user. A subject that
+// is empty or only whitespace names nobody.
+func hasUser(p fcontract.Principal) bool {
+	return p.User != nil && strings.TrimSpace(p.User.Subject) != ""
 }
 
 // hasClaim reports whether key is in the claims map at all, whatever its value.

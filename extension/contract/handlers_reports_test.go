@@ -1175,3 +1175,19 @@ func TestReportExportAnswersNotFoundBeforeUnavailableForAForeignReport(t *testin
 		context.Background(), ExportReportInput{ID: id.NewReportID().String(), Format: "json"}, viewer)
 	reportsWantCode(t, err, fcontract.CodeNotFound, "missing report, no engine")
 }
+
+// reportGeneratedBy is also reached without scope resolution in front of it
+// if a later handler calls it first, so it has to refuse a subject that names
+// nobody on its own.
+func TestReportGeneratedByRefusesABlankSubject(t *testing.T) {
+	for _, subject := range []string{"", "   ", "\t\n", " "} {
+		p := fcontract.Principal{User: &dashauth.UserInfo{Subject: subject}}
+		if _, err := reportGeneratedBy(p); err == nil {
+			t.Errorf("subject %q was accepted as the report's author", subject)
+		}
+	}
+	got, err := reportGeneratedBy(fcontract.Principal{User: &dashauth.UserInfo{Subject: "operator-1"}})
+	if err != nil || got != "operator-1" {
+		t.Fatalf("reportGeneratedBy(operator-1) = %q, %v", got, err)
+	}
+}
