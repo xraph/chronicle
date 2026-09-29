@@ -161,12 +161,14 @@ func openMongo(t *testing.T, uri string) store.Store {
 	return mongostore.New(db)
 }
 
+// openRedis keeps the store's keys under a prefix of this test's own and
+// deletes that prefix when the test ends. Before that it refuses a database
+// holding any key outside "chronicle:" (see redistest.Isolate).
 func openRedis(t *testing.T, dsn string) store.Store {
 	t.Helper()
-	// A database of this package's own: see redistest.
-	dsn = redistest.PackageDSN(t, dsn, redistest.OffsetChronicle)
+	ctx := context.Background()
 	drv := redisdriver.New()
-	if err := drv.Open(context.Background(), dsn); err != nil {
+	if err := drv.Open(ctx, dsn); err != nil {
 		t.Fatalf("open redis: %v", err)
 	}
 	kvStore, err := kv.Open(drv)
@@ -174,5 +176,6 @@ func openRedis(t *testing.T, dsn string) store.Store {
 		t.Fatalf("kv open: %v", err)
 	}
 	t.Cleanup(func() { _ = kvStore.Close() })
-	return redisstore.New(kvStore)
+	prefix := redistest.Isolate(ctx, t, redisdriver.UnwrapClient(kvStore), dsn)
+	return redisstore.New(kvStore, redisstore.WithKeyPrefix(prefix))
 }

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,20 +16,16 @@ import (
 	"github.com/xraph/chronicle/internal/redistest"
 )
 
-// chronicleKeyPrefix is the prefix every key in keys.go starts with. The
-// guard and the cleanup below both lean on it staying true.
-const chronicleKeyPrefix = "chronicle:"
-
 // openTestStore opens a Store against CHRONICLE_TEST_REDIS_DSN, or skips when
 // that variable is unset. Once it is set, every failure is fatal: a skip and a
 // failure look the same without -v, and a broken backend must not pass as
 // untested.
 //
-// It refuses to run against a database holding any key outside "chronicle:",
-// and its cleanup deletes only keys under that prefix, never the whole
-// database. On the machine this was written on, the DSN a developer reaches
-// for first (localhost:6379) is another project's live redis. The two guards
-// are independent so that neither one failing can empty it.
+// The store's keys sit under a prefix no other test uses (see
+// redistest.Isolate), so tests running at the same time, from this package,
+// another package or another checkout, never see or delete each other's keys.
+// Migrate and every count stay inside that prefix too, so each store starts
+// empty.
 //
 // migrate controls whether Migrate runs before the store is handed back. The
 // migration tests need a store that has not been migrated yet, so they can
@@ -42,8 +37,6 @@ func openTestStore(t *testing.T, migrate bool) (*Store, goredis.UniversalClient)
 	if dsn == "" {
 		t.Skip("CHRONICLE_TEST_REDIS_DSN not set, skipping redis")
 	}
-	// A database of this package's own: see redistest.
-	dsn = redistest.PackageDSN(t, dsn, redistest.OffsetStoreRedis)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -58,85 +51,18 @@ func openTestStore(t *testing.T, migrate bool) (*Store, goredis.UniversalClient)
 	}
 	t.Cleanup(func() { _ = kvStore.Close() })
 
-	s := New(kvStore)
-	if err := s.Ping(ctx); err != nil {
+	if err := kvStore.Ping(ctx); err != nil {
 		t.Fatalf("redis ping failed: %v", err)
 	}
-
-	requireOnlyChronicleKeys(ctx, t, s.rdb, dsn)
-
-	// Start from an empty chronicle keyspace and leave one behind. Migrate
-	// looks at every stream, event and policy in the database, so a leftover
-	// from an earlier test would leak into the next test's result.
-	deleteByPrefix(ctx, t, s.rdb, chronicleKeyPrefix)
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		deleteByPrefix(cleanupCtx, t, s.rdb, chronicleKeyPrefix)
-	})
+	rdb := redisdriver.UnwrapClient(kvStore)
+	s := New(kvStore, WithKeyPrefix(redistest.Isolate(ctx, t, rdb, dsn)))
 
 	if migrate {
 		if err := s.Migrate(ctx); err != nil {
 			t.Fatalf("migrate: %v", err)
 		}
 	}
-	return s, s.rdb
-}
-
-// requireOnlyChronicleKeys fails the test the moment it finds a key outside
-// chronicleKeyPrefix. The message names host, port and db, never the password.
-func requireOnlyChronicleKeys(ctx context.Context, t *testing.T, rdb goredis.UniversalClient, dsn string) {
-	t.Helper()
-
-	opts, err := goredis.ParseURL(dsn)
-	if err != nil {
-		t.Fatalf("parse CHRONICLE_TEST_REDIS_DSN: %v", err)
-	}
-
-	var cursor uint64
-	for {
-		keys, next, err := rdb.Scan(ctx, cursor, "*", 1000).Result()
-		if err != nil {
-			t.Fatalf("scan redis %s db %d for foreign keys: %v", opts.Addr, opts.DB, err)
-		}
-		for _, key := range keys {
-			if !strings.HasPrefix(key, chronicleKeyPrefix) {
-				t.Fatalf("refusing to run against redis %s db %d: found a non-chronicle key %q. "+
-					"These tests delete everything under %q in whatever database "+
-					"CHRONICLE_TEST_REDIS_DSN names. Point it at a redis database "+
-					"dedicated to chronicle testing.",
-					opts.Addr, opts.DB, key, chronicleKeyPrefix)
-			}
-		}
-		cursor = next
-		if cursor == 0 {
-			return
-		}
-	}
-}
-
-// deleteByPrefix deletes exactly the keys starting with prefix. It uses SCAN
-// rather than KEYS so it never blocks the server.
-func deleteByPrefix(ctx context.Context, t *testing.T, rdb goredis.UniversalClient, prefix string) {
-	t.Helper()
-
-	var cursor uint64
-	for {
-		keys, next, err := rdb.Scan(ctx, cursor, prefix+"*", 1000).Result()
-		if err != nil {
-			t.Logf("redis cleanup: scan %q: %v", prefix+"*", err)
-			return
-		}
-		if len(keys) > 0 {
-			if err := rdb.Del(ctx, keys...).Err(); err != nil {
-				t.Logf("redis cleanup: del %d keys: %v", len(keys), err)
-			}
-		}
-		cursor = next
-		if cursor == 0 {
-			return
-		}
-	}
+	return s, rdb
 }
 
 // runSuffix returns a random hex token, so app and tenant IDs from one run

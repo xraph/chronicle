@@ -6,11 +6,9 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
-	goredis "github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/xraph/grove"
@@ -31,13 +29,6 @@ import (
 	"github.com/xraph/chronicle/store/sqlite"
 	"github.com/xraph/chronicle/stream"
 )
-
-// chronicleKeyPrefix is every key store/redis writes, per
-// store/redis/keys.go (chronicle:evt:, chronicle:str:, chronicle:z:evt:all,
-// and the rest -- all of them start here). Duplicated as a literal because
-// the individual prefix constants in that package are unexported; this is
-// the one string this test relies on staying true of them.
-const chronicleKeyPrefix = "chronicle:"
 
 // backends returns every store backend this test can exercise, keyed by
 // name, paired with an opener that returns the store plus an optional
@@ -205,16 +196,11 @@ func openMongo(t *testing.T) (store.Store, func(context.Context, id.ID)) {
 
 // openRedis opens a redis store against CHRONICLE_TEST_REDIS_DSN. Skips
 // only when that variable is unset; every failure once it is set (dial,
-// open, ping) is a t.Fatalf, per the rule documented on backends. Redis
-// has no schema to migrate. Its cleanup func is always nil by design:
-// redis cleans up via a prefix-scoped delete registered below instead of a
-// per-stream func -- see the comments further down in this function.
-//
-// Before returning, this refuses (t.Fatalf) to proceed at all if the
-// target database holds any key outside chronicle's own "chronicle:"
-// prefix, and its cleanup only ever deletes keys under that same prefix --
-// never a whole-database flush. Both checks are enforced in code, not
-// merely documented: see requireOnlyChronicleKeys and deleteByPrefix.
+// open, ping) is a t.Fatalf, per the rule documented on backends. Its cleanup
+// func is always nil: the store's keys sit under a prefix of this test's own
+// (see redistest.Isolate), and the whole prefix is deleted when the test
+// ends. redistest also refuses a database holding any key outside
+// "chronicle:" before this writes a byte.
 func openRedis(t *testing.T) (store.Store, func(context.Context, id.ID)) {
 	t.Helper()
 
@@ -222,8 +208,6 @@ func openRedis(t *testing.T) (store.Store, func(context.Context, id.ID)) {
 	if dsn == "" {
 		t.Skip("CHRONICLE_TEST_REDIS_DSN not set, skipping redis")
 	}
-	// A database of this package's own: see redistest.
-	dsn = redistest.PackageDSN(t, dsn, redistest.OffsetStore)
 
 	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -238,95 +222,12 @@ func openRedis(t *testing.T) (store.Store, func(context.Context, id.ID)) {
 	}
 	t.Cleanup(func() { _ = kvStore.Close() })
 
-	s := chronicleredis.New(kvStore)
-	if err := s.Ping(dialCtx); err != nil {
+	if err := kvStore.Ping(dialCtx); err != nil {
 		t.Fatalf("redis ping failed: %v", err)
 	}
-
-	// Refuse to touch this database at all if it holds anything this test
-	// did not write itself. Cleanup below deletes every key under
-	// "chronicle:", so before writing a single byte, confirm that prefix
-	// is the only thing here -- the default DSN a developer reaches for
-	// first, redis://localhost:6379/0, is on THIS machine an unrelated
-	// project's live redis, and this guard is what stops that from being
-	// silently emptied.
 	rdb := redisdriver.UnwrapClient(kvStore)
-	requireOnlyChronicleKeys(dialCtx, t, rdb, dsn)
-
-	// Cleanup is prefix-bounded, not a whole-database flush: SCAN for
-	// "chronicle:*" and DEL exactly what comes back. Even if the guard
-	// above were somehow bypassed, this can still never remove a
-	// non-chronicle key -- the two safeguards are independent, not one
-	// relying on the other.
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		deleteByPrefix(cleanupCtx, t, rdb, chronicleKeyPrefix)
-	})
-
+	s := chronicleredis.New(kvStore, chronicleredis.WithKeyPrefix(redistest.Isolate(dialCtx, t, rdb, dsn)))
 	return s, nil
-}
-
-// requireOnlyChronicleKeys scans the database dialCtx/rdb is connected to
-// and t.Fatalf's, naming the DSN's host, port and db index (never its
-// password), the moment it finds one key that does not start with
-// chronicleKeyPrefix. It stops at the first foreign key rather than
-// scanning to completion, so a misdirected DSN pointed at a large,
-// unrelated database fails fast instead of paying for a full scan.
-func requireOnlyChronicleKeys(ctx context.Context, t *testing.T, rdb goredis.UniversalClient, dsn string) {
-	t.Helper()
-
-	opts, err := goredis.ParseURL(dsn)
-	if err != nil {
-		t.Fatalf("parse CHRONICLE_TEST_REDIS_DSN: %v", err)
-	}
-
-	var cursor uint64
-	for {
-		keys, next, err := rdb.Scan(ctx, cursor, "*", 1000).Result()
-		if err != nil {
-			t.Fatalf("scan redis %s db %d for foreign keys: %v", opts.Addr, opts.DB, err)
-		}
-		for _, key := range keys {
-			if !strings.HasPrefix(key, chronicleKeyPrefix) {
-				t.Fatalf("refusing to run against redis %s db %d: found a non-chronicle key %q. "+
-					"This test's cleanup deletes everything under the %q prefix in whatever "+
-					"database CHRONICLE_TEST_REDIS_DSN names, so it will not run against one "+
-					"that already holds something else. Point CHRONICLE_TEST_REDIS_DSN at a "+
-					"redis database dedicated to chronicle testing.",
-					opts.Addr, opts.DB, key, chronicleKeyPrefix)
-			}
-		}
-		cursor = next
-		if cursor == 0 {
-			return
-		}
-	}
-}
-
-// deleteByPrefix scans for every key starting with prefix and deletes
-// exactly those, using SCAN (not KEYS, which blocks the server) so this
-// stays safe to run against a live instance.
-func deleteByPrefix(ctx context.Context, t *testing.T, rdb goredis.UniversalClient, prefix string) {
-	t.Helper()
-
-	var cursor uint64
-	for {
-		keys, next, err := rdb.Scan(ctx, cursor, prefix+"*", 1000).Result()
-		if err != nil {
-			t.Logf("redis cleanup: scan %q: %v", prefix+"*", err)
-			return
-		}
-		if len(keys) > 0 {
-			if err := rdb.Del(ctx, keys...).Err(); err != nil {
-				t.Logf("redis cleanup: del %d keys: %v", len(keys), err)
-			}
-		}
-		cursor = next
-		if cursor == 0 {
-			return
-		}
-	}
 }
 
 // seedEventIn creates a fresh stream scoped to appID/tenantID and appends
