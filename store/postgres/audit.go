@@ -184,6 +184,28 @@ func (s *Store) Query(ctx context.Context, q *audit.Query) (*audit.QueryResult, 
 	}, nil
 }
 
+// selectExpr renders one group_by field for the SELECT and GROUP BY clauses.
+// Bucket fields become a date_trunc, everything else is the whitelisted
+// column. Both come from ResolveGroupBy, so neither is caller input.
+//
+// timestamp is TIMESTAMPTZ, and date_trunc on a TIMESTAMPTZ truncates in the
+// SESSION time zone, not UTC. `column AT TIME ZONE 'UTC'` converts it to the
+// UTC wall-clock value as a plain timestamp first, so the truncation below is
+// always UTC regardless of what time zone the connection happens to be in.
+// Without this, day and hour boundaries shift on any server whose session
+// time zone is not UTC, even though every test here (run in a UTC container)
+// would still pass.
+func selectExpr(field, column string) string {
+	switch field {
+	case "day":
+		return "to_char(date_trunc('day', " + column + " AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
+	case "hour":
+		return `to_char(date_trunc('hour', ` + column + ` AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:00:00"Z"')`
+	default:
+		return column
+	}
+}
+
 // Aggregate returns grouped event statistics.
 func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.AggregateResult, error) {
 	// Resolve the grouping columns BEFORE building any SQL. An identifier
@@ -227,12 +249,18 @@ func (s *Store) Aggregate(ctx context.Context, q *audit.AggregateQuery) (*audit.
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// Safe: every element of columns is a constant from audit's whitelist.
-	columnList := strings.Join(columns, ", ")
+	// Safe: every element of columns is a constant from audit's whitelist, and
+	// q.GroupBy[i] pairs with columns[i] one-for-one (see audit.ResolveGroupBy),
+	// so selectExpr only ever sees the field name that produced that column.
+	exprs := make([]string, len(columns))
+	for i, column := range columns {
+		exprs[i] = selectExpr(q.GroupBy[i], column)
+	}
+	exprList := strings.Join(exprs, ", ")
 
 	query := fmt.Sprintf(
 		"SELECT %s, COUNT(*) as count FROM chronicle_events %s GROUP BY %s ORDER BY count DESC",
-		columnList, whereClause, columnList,
+		exprList, whereClause, exprList,
 	)
 
 	rows, err := s.pg.Query(ctx, query, args...)

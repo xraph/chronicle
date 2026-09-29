@@ -55,7 +55,17 @@ type AggregateGroup struct {
 	Outcome  string `json:"outcome,omitempty"`
 	Severity string `json:"severity,omitempty"`
 	Resource string `json:"resource,omitempty"`
-	Count    int64  `json:"count"`
+
+	// Bucket is the time bucket this group covers, when the query grouped by
+	// "day" or "hour". It is RFC3339, truncated to the bucket: "2026-09-23"
+	// for a day, "2026-09-23T14:00:00Z" for an hour.
+	//
+	// A period in which nothing was recorded produces NO group at all rather
+	// than a group with Count 0. That absence is the point: a gap in an audit
+	// series is itself a finding, and the dashboard renders it as one.
+	Bucket string `json:"bucket,omitempty"`
+
+	Count int64 `json:"count"`
 }
 
 // CountQuery defines filters for counting events.

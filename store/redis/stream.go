@@ -71,7 +71,7 @@ func (s *Store) CreateStream(ctx context.Context, st *stream.Stream) error {
 	pipe := s.rdb.Pipeline()
 	pipe.ZAdd(ctx, zStreamAll, goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
 	// Unique scope index.
-	pipe.Set(ctx, uniqueStreamScope+m.AppID+":"+m.TenantID, m.ID, 0)
+	pipe.Set(ctx, streamScopeKey(m.AppID, m.TenantID), m.ID, 0)
 	_, err := pipe.Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("chronicle/redis: create stream indexes: %w", err)
@@ -92,14 +92,26 @@ func (s *Store) GetStream(ctx context.Context, streamID id.ID) (*stream.Stream, 
 }
 
 // GetStreamByScope returns the stream for a given app+tenant scope.
+//
+// Chronicle.resolveStream creates a new stream on ErrStreamNotFound, so a miss
+// has to be true. Before Migrate has moved the scope index to the v2 format,
+// every existing scope misses, and reporting that would start a second chain
+// for each tenant. Until then a miss returns ErrScopeKeysNotMigrated instead.
+// The check costs one EXISTS, and only on a miss.
 func (s *Store) GetStreamByScope(ctx context.Context, appID, tenantID string) (*stream.Stream, error) {
-	scopeKey := uniqueStreamScope + appID + ":" + tenantID
-	streamID, err := s.rdb.Get(ctx, scopeKey).Result()
+	streamID, err := s.rdb.Get(ctx, streamScopeKey(appID, tenantID)).Result()
 	if err != nil {
-		if isRedisNil(err) {
-			return nil, chronicle.ErrStreamNotFound
+		if !isRedisNil(err) {
+			return nil, fmt.Errorf("chronicle/redis: get stream by scope: %w", err)
 		}
-		return nil, fmt.Errorf("chronicle/redis: get stream by scope: %w", err)
+		migrated, existsErr := s.rdb.Exists(ctx, scopeKeyFormatMarker).Result()
+		if existsErr != nil {
+			return nil, fmt.Errorf("chronicle/redis: get stream by scope: check scope key format: %w", existsErr)
+		}
+		if migrated == 0 {
+			return nil, ErrScopeKeysNotMigrated
+		}
+		return nil, chronicle.ErrStreamNotFound
 	}
 
 	var m streamModel
