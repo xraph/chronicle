@@ -12,7 +12,9 @@ import (
 //
 // A policy is owned by exactly one (AppID, TenantID) pair and may only ever
 // purge events belonging to that pair. An empty TenantID means the policy
-// covers the app's untenanted events.
+// covers the app's untenanted events, and nothing recorded under any tenant.
+// Tenants do not inherit an app-level policy: only a tenant's own policies
+// purge its events.
 type Policy struct {
 	chronicle.Entity
 	ID       id.ID         `json:"id"`
@@ -35,13 +37,18 @@ func (p *Policy) Scope() Scope {
 	return Scope{AppID: p.AppID, TenantID: p.TenantID}
 }
 
-// IsZero reports whether the scope names no app and no tenant. A zero scope
-// matches everything, so it must only be used by trusted in-process callers
-// such as the background retention scheduler.
+// IsZero reports whether the scope names no app and no tenant. When listing
+// policies or archives a zero scope matches everything, so it must only be
+// used by trusted in-process callers such as the background retention
+// scheduler. A PurgeQuery's scope never works that way: see PurgeQuery.
 func (s Scope) IsZero() bool { return s.AppID == "" && s.TenantID == "" }
 
 // PurgeQuery selects the events a retention policy may act on.
 type PurgeQuery struct {
+	// Scope is the policy's owner, and it matches exactly. An empty TenantID
+	// selects the app's untenanted events only, and an empty AppID selects
+	// events recorded with no app. Neither is a wildcard, unlike the list
+	// filters, because a purge cannot be undone.
 	Scope
 
 	// Category is the event category the policy governs.

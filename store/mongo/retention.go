@@ -104,8 +104,10 @@ func (s *Store) ListPolicies(
 	return policies, nil
 }
 
-// scopeFilter builds a bson filter for an optional app/tenant scope. An empty
-// value means "unscoped", which only trusted in-process callers may use.
+// scopeFilter builds a bson filter for an optional app/tenant scope, for
+// listing policies and archives. An empty value means "unscoped", which only
+// trusted in-process callers may use. EventsOlderThan must not use it: a purge
+// scope is exact.
 func scopeFilter(appID, tenantID string) bson.M {
 	filter := bson.M{}
 	if appID != "" {
@@ -136,13 +138,18 @@ func (s *Store) DeletePolicy(ctx context.Context, policyID id.ID) error {
 // EventsOlderThan returns the events the purge query selects.
 //
 // Security-critical: the scope filter is what keeps one tenant's policy from
-// selecting, and therefore purging, every tenant's history. The bound keeps a
-// large backlog from being loaded into memory all at once.
+// selecting, and therefore purging, every tenant's history. It deliberately
+// does not use scopeFilter: both fields are always matched, so an empty
+// TenantID selects untenanted events rather than every tenant. The bound keeps
+// a large backlog from being loaded into memory all at once.
 func (s *Store) EventsOlderThan(
 	ctx context.Context, pq retention.PurgeQuery,
 ) ([]*audit.Event, error) {
-	filter := scopeFilter(pq.AppID, pq.TenantID)
-	filter["timestamp"] = bson.M{"$lt": pq.Before}
+	filter := bson.M{
+		"app_id":    pq.AppID,
+		"tenant_id": pq.TenantID,
+		"timestamp": bson.M{"$lt": pq.Before},
+	}
 	if pq.Category != "*" {
 		filter["category"] = pq.Category
 	}

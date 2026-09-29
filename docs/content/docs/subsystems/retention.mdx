@@ -16,6 +16,19 @@ A `retention.Policy` defines how long events of a given category are kept:
 | `Duration` | `time.Duration` | Retain events for this duration. Events older than this are candidates. |
 | `Archive` | `bool` | If `true`, write to the archive sink before purging. |
 | `AppID` | `string` | Application scope. |
+| `TenantID` | `string` | Tenant scope. Empty means the app's untenanted events. |
+
+## Which events a policy purges
+
+A policy only ever purges events recorded under its own `AppID` and `TenantID`, and both have to match exactly.
+
+That matters most when `TenantID` is empty. A policy you save at app level, with no tenant, covers the events your app recorded without a tenant. It does not reach any tenant's events, even for the same category. If tenant `acme` keeps its `auth` events for seven years and you save a 30-day `auth` policy at app level, acme's events stay put.
+
+So if you want every tenant held to the same window, save the policy once per tenant. There's no app-wide default that tenants inherit.
+
+The HTTP API and the dashboard stamp the caller's own scope on every policy they create, so you get this for free there. It only needs thought when you build a `retention.Policy` yourself.
+
+Listing is different. `ListPolicies` and `ListArchives` treat an empty `AppID` or `TenantID` as "any", which is how the background scheduler finds every policy to run. Each policy it finds still purges only its own scope.
 
 ## Create a policy
 

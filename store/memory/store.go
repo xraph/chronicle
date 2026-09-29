@@ -721,10 +721,9 @@ func (s *Store) EventsOlderThan(_ context.Context, q retention.PurgeQuery) ([]*a
 			continue
 		}
 		// Security-critical: a policy may only purge its own scope's events.
-		if q.AppID != "" && e.AppID != q.AppID {
-			continue
-		}
-		if q.TenantID != "" && e.TenantID != q.TenantID {
+		// The match is exact, so an empty TenantID selects untenanted events
+		// and never stands for "every tenant".
+		if e.AppID != q.AppID || e.TenantID != q.TenantID {
 			continue
 		}
 		result = append(result, e)
