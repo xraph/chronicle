@@ -69,7 +69,7 @@ func newGuardedSetup(t *testing.T, g *recordingGuard) *testSetup {
 	store := memory.New()
 	logger := log.NewNoopLogger()
 	engine := compliance.NewEngine(store, store, store, logger)
-	enforcer := retention.NewEnforcer(store, nil, logger)
+	enforcer := retention.NewEnforcer(store, nil, logger, retention.WithUnrecordedPurge())
 
 	router := forge.NewRouter()
 	api := handler.New(handler.Dependencies{

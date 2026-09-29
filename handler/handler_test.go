@@ -50,7 +50,7 @@ func newTestSetup(t *testing.T) *testSetup {
 	engine := compliance.NewEngine(store, store, store, logger)
 
 	// Create a retention enforcer (nil archive sink for tests).
-	enforcer := retention.NewEnforcer(store, nil, logger)
+	enforcer := retention.NewEnforcer(store, nil, logger, retention.WithUnrecordedPurge())
 
 	router := forge.NewRouter()
 	api := handler.New(handler.Dependencies{

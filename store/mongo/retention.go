@@ -143,8 +143,13 @@ func (s *Store) EventsOlderThan(
 ) ([]*audit.Event, error) {
 	filter := scopeFilter(pq.AppID, pq.TenantID)
 	filter["timestamp"] = bson.M{"$lt": pq.Before}
-	if pq.Category != "*" {
-		filter["category"] = pq.Category
+	// Retention records are what keep purged sequences verifiable; they are
+	// never themselves up for retention. A policy naming their category
+	// selects nothing.
+	if pq.Category == "*" {
+		filter["category"] = bson.M{"$ne": audit.CategoryRetention}
+	} else {
+		filter["category"] = bson.M{"$eq": pq.Category, "$ne": audit.CategoryRetention}
 	}
 
 	var models []EventModel

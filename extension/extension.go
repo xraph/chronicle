@@ -337,8 +337,10 @@ func (e *Extension) init(fapp forge.App) error {
 	// Create compliance engine.
 	e.engine = compliance.NewEngine(s, s, s, logger)
 
-	// Create retention enforcer.
-	e.enforcer = retention.NewEnforcer(s, e.opts.archiveSink, logger)
+	// Create retention enforcer. Chronicle records every purge in the chain
+	// before the rows go, so the removed sequences verify as retained rather
+	// than as deletions.
+	e.enforcer = retention.NewEnforcer(s, e.opts.archiveSink, logger, retention.WithChainRecorder(c))
 
 	// Security-critical: decide API access before building the handler. The API
 	// can purge audit history, so an unauthenticated mount has to be a choice the

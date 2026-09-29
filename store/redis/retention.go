@@ -270,6 +270,11 @@ func (s *Store) EventsOlderThan(
 		if pq.Category != "*" && m.Category != pq.Category {
 			continue
 		}
+		// Retention records are what keep purged sequences verifiable; they
+		// are never themselves up for retention.
+		if m.Category == audit.CategoryRetention {
+			continue
+		}
 		if pq.AppID != "" && m.AppID != pq.AppID {
 			continue
 		}

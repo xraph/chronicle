@@ -102,15 +102,27 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 	if err != nil {
 		return nil, err
 	}
-	if len(gaps) > 0 {
-		report.Valid = false
-		report.Gaps = gaps
-	}
 
 	// Get the events in the range.
 	events, err := v.store.EventRange(ctx, input.StreamID, fromSeq, toSeq)
 	if err != nil {
 		return nil, err
+	}
+
+	// Separate what retention removed from what is missing. Only a sequence
+	// an authentic retention record lists is excused; anything else missing
+	// is a gap, exactly as before retention records existed.
+	var retained map[uint64]retainedEntry
+	if len(gaps) > 0 {
+		retained, err = v.retentionEntries(ctx, input, events)
+		if err != nil {
+			return nil, err
+		}
+		gaps, report.Retained = splitGaps(gaps, retained)
+	}
+	if len(gaps) > 0 {
+		report.Valid = false
+		report.Gaps = gaps
 	}
 
 	if len(events) == 0 {
@@ -123,7 +135,13 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 		// covered it. A stream with no claimed head (HeadSeq == 0) is
 		// different: that is what a genuinely empty, freshly created stream
 		// reports, and verifying it vacuously true is correct.
-		if input.HeadSeq > 0 {
+		//
+		// The one exception is a bounded range that retention emptied
+		// entirely, short of the head. Every sequence in it is accounted
+		// for, and the head itself can never be retained: the record
+		// explaining a purge is appended after it, so it is always newer.
+		allRetained := len(report.Retained) > 0 && len(gaps) == 0 && toSeq < input.HeadSeq
+		if input.HeadSeq > 0 && !allRetained {
 			report.Valid = false
 			report.HeadChecked = true
 		}
@@ -135,12 +153,52 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 
 	// Verify each event's hash.
 	for i, event := range events {
-		var expectedPrevHash string
-		if i == 0 {
-			// First event in range — use its declared PrevHash.
-			expectedPrevHash = event.PrevHash
-		} else {
-			expectedPrevHash = events[i-1].Hash
+		// The hash this event must name as its predecessor, and whether that
+		// can be established at all. Three cases:
+		//
+		//   - No missing sequence before it (or it opens the range): its
+		//     predecessor is the previous event, or for the first event its
+		//     own declared PrevHash.
+		//   - Only retained sequences before it: carry the hash across them
+		//     from each record entry to the next. A break there is a broken
+		//     chain, reported against this event like any other.
+		//   - A sequence nothing explains: the gap is already reported, and
+		//     no hash in the store says what the missing event was, so there
+		//     is nothing to link to. Check this event's content against its
+		//     own declared PrevHash instead. Reporting it as tampered too
+		//     would claim an edit that never happened; it is why a retention
+		//     run once read as gaps=[1 3 5] tampered=[4 6].
+		expectedPrevHash := event.PrevHash
+		linkable := i > 0
+		prevSeq, prevHash := fromSeq-1, ""
+		if i > 0 {
+			prevSeq, prevHash = events[i-1].Sequence, events[i-1].Hash
+			expectedPrevHash = prevHash
+		}
+		if event.Sequence > prevSeq+1 {
+			start := prevHash
+			if i == 0 {
+				// Nothing before the range to anchor to, as with the first
+				// event itself: start from the first entry's own claim.
+				if e, ok := retained[prevSeq+1]; ok {
+					start = e.PrevHash
+				}
+			}
+			next, linked, accounted := linkAcross(start, prevSeq+1, event.Sequence-1, retained)
+			switch {
+			case accounted && linked:
+				expectedPrevHash, linkable = next, true
+			case accounted:
+				// Every sequence is retained but the entries do not chain
+				// from the event before them.
+				report.Valid = false
+				if !containsSeq(report.Tampered, event.Sequence) {
+					report.Tampered = append(report.Tampered, event.Sequence)
+				}
+				expectedPrevHash, linkable = event.PrevHash, false
+			default:
+				expectedPrevHash, linkable = event.PrevHash, false
+			}
 		}
 
 		// Recompute the hash and cross-check the event's claimed scheme against
@@ -164,8 +222,8 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 			}
 		}
 
-		// Check chain linkage (except first event).
-		if i > 0 && event.PrevHash != events[i-1].Hash {
+		// Check chain linkage wherever a predecessor hash is established.
+		if linkable && event.PrevHash != expectedPrevHash {
 			report.Valid = false
 			if !containsSeq(report.Tampered, event.Sequence) {
 				report.Tampered = append(report.Tampered, event.Sequence)
@@ -193,7 +251,7 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 	// things have to hold: the signature is genuine, the events still hash to
 	// what it recorded, and it follows its predecessor without a gap.
 	if v.checkpoints != nil && v.signer != nil {
-		results, covered, checked, err := v.verifyCheckpoints(ctx, input, fromSeq, toSeq, events)
+		results, covered, checked, err := v.verifyCheckpoints(ctx, input, fromSeq, toSeq, events, retained)
 		if err != nil {
 			return nil, err
 		}
@@ -252,6 +310,7 @@ func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, erro
 // when it does not have them" contract exists for.
 func (v *Verifier) verifyCheckpoints(
 	ctx context.Context, input *Input, fromSeq, toSeq uint64, events []*audit.Event,
+	retained map[uint64]retainedEntry,
 ) ([]CheckpointResult, []Coverage, bool, error) {
 	cps, err := v.checkpoints.CheckpointsInRange(ctx, input.StreamID, fromSeq, toSeq)
 	if err != nil {
@@ -291,11 +350,23 @@ func (v *Verifier) verifyCheckpoints(
 			res.Note = fmt.Sprintf("signature does not verify: %v", verr)
 		}
 
+		entry, wasRetained := retained[cp.ToSeq]
+		inRange := cp.ToSeq >= fromSeq && cp.ToSeq <= toSeq
 		if event, ok := bySeq[cp.ToSeq]; ok {
 			res.HashChecked = true
 			res.HashMatch = event.Hash == cp.ToHash
 			if !res.HashMatch && res.Note == "" {
 				res.Note = "chain hash at to_seq no longer matches what the checkpoint recorded"
+			}
+		} else if wasRetained && inRange {
+			// Retention removed the event at to_seq, but its record still
+			// carries the hash it had. Checking that against the signed
+			// checkpoint is what ties the record to something its own key
+			// did not produce.
+			res.HashChecked = true
+			res.HashMatch = entry.Hash == cp.ToHash
+			if !res.HashMatch && res.Note == "" {
+				res.Note = "retention record's hash at to_seq does not match what the checkpoint recorded"
 			}
 		} else if res.Note == "" {
 			res.Note = "to_seq falls outside the verified range; hash not re-checked"
@@ -382,9 +453,13 @@ func (v *Verifier) verifyCheckpoints(
 // forever. A forged row that lands inside the verified range is still
 // reported, by verifyCheckpoints, as the signature failure it is.
 //
-// There is no false positive to trade against here. Retention purges from
-// the front of a stream and never lowers HeadSeq, so latest.ToSeq >
-// input.HeadSeq can only hold if events left the tail.
+// There is no false positive to trade against here. Retention never lowers
+// HeadSeq: it deletes rows and never touches the stream row, and it appends a
+// retention record after every purge, so the head only ever moves up.
+// latest.ToSeq > input.HeadSeq can only hold if the head row was moved down.
+// (Retention does not purge only from the front of a stream. A per-category
+// policy removes events scattered all through it, which is what retention
+// records exist to account for.)
 func (v *Verifier) checkClaimedHead(ctx context.Context, input *Input) (checked, ok bool, err error) {
 	// A caller that bounded its own range and supplied no head has claimed
 	// nothing for a checkpoint to contradict. HeadSeq 0 is not "the chain

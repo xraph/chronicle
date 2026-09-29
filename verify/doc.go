@@ -7,8 +7,8 @@
 // re-derives each hash from scratch and compares it against the stored value,
 // making two classes of tampering detectable:
 //
-//   - Gaps     — sequence numbers are missing, indicating events were deleted
-//   - Tampered — a stored hash does not match the recomputed value, indicating
+//   - Gaps: sequence numbers are missing, indicating events were deleted
+//   - Tampered: a stored hash does not match the recomputed value, indicating
 //     the event's content was modified after recording
 //
 // A chain that passes verification has Valid = true, Gaps = nil, and
@@ -18,42 +18,54 @@
 // computed over event metadata (action, resource, timestamp, etc.), not the
 // encrypted payload, so key destruction does not invalidate any hash.
 //
+// Retention does delete events, so it needs its own answer. Before a policy
+// purges anything, it appends a retention record to the same stream listing
+// each removed event's sequence, prev_hash and hash (see
+// [audit.NewRetentionRecord]). Verification reports a missing sequence an
+// authentic record lists as Retained, and links the chain across it from those
+// hashes; anything else missing is still a Gap. A record is authentic when its
+// own digest verifies under the stream's pin, so it is exactly as hard to forge
+// as any other event in the chain.
+//
 // # Types
 //
 // [Input] defines the verification request:
 //
-//   - StreamID  — the stream to verify
-//   - FromSeq   — first sequence number to check (0 = genesis)
-//   - ToSeq     — last sequence number to check (0 = the stream head)
-//   - AppID     — required for scope enforcement
-//   - TenantID  — required for scope enforcement
-//   - HeadSeq, HeadHash — the stream's recorded head, so a truncated tail is
+//   - StreamID: the stream to verify
+//   - FromSeq: first sequence number to check (0 = genesis)
+//   - ToSeq: last sequence number to check (0 = the stream head)
+//   - AppID: required for scope enforcement
+//   - TenantID: required for scope enforcement
+//   - HeadSeq, HeadHash: the stream's recorded head, so a truncated tail is
 //     detectable rather than silently verifying whatever range is asked for
 //
 // [Report] is returned by the verifier:
 //
-//   - Valid      — true if the full range has no gaps, no tampered hashes,
+//   - Valid: true if the full range has no gaps, no tampered hashes,
 //     no downgrades, and (when checked) the tail matches the recorded head
-//   - Verified   — count of events successfully checked
-//   - Gaps       — sequence numbers that are absent from the store
-//   - Tampered   — sequence numbers whose stored hash differs from recomputed
-//   - FirstEvent — sequence of the first checked event
-//   - LastEvent  — sequence of the last checked event
-//   - Partial     — true when the caller bounded the range rather than
+//   - Verified: count of events successfully checked
+//   - Gaps: sequence numbers that are absent from the store and that
+//     no retention record accounts for
+//   - Retained: ranges of sequence numbers a retention policy removed,
+//     each naming the record that lists them; these do not affect Valid
+//   - Tampered: sequence numbers whose stored hash differs from recomputed
+//   - FirstEvent: sequence of the first checked event
+//   - LastEvent: sequence of the last checked event
+//   - Partial: true when the caller bounded the range rather than
 //     verifying genesis to head
-//   - HeadMatch   — whether the verified tail's hash equals the recorded head
-//   - HeadChecked — whether HeadMatch was actually evaluated. False means no
+//   - HeadMatch: whether the verified tail's hash equals the recorded head
+//   - HeadChecked: whether HeadMatch was actually evaluated. False means no
 //     head was supplied, or the range was Partial; read HeadMatch only when
 //     this is true, since "false" otherwise means "not checked," not
 //     "checked and mismatched"
-//   - Coverage    — the assurance [Level] over each span of the verified range
+//   - Coverage: the assurance [Level] over each span of the verified range
 //
 // # Store
 //
 // [Store] provides the data access needed for verification:
 //
-//   - [Store.EventRange] — fetch events between two sequence numbers
-//   - [Store.Gaps]       — detect missing sequence numbers in a range
+//   - [Store.EventRange]: fetch events between two sequence numbers
+//   - [Store.Gaps]: detect missing sequence numbers in a range
 //
 // The composite [store.Store] embeds this interface, so any Chronicle backend
 // satisfies it automatically.

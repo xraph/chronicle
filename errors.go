@@ -87,4 +87,17 @@ var (
 			"intended, record that decision and lower the stream's pin " +
 			"deliberately through the store",
 	)
+
+	// ErrRetentionWithheld is returned when retention was asked to remove
+	// events that no longer verify.
+	//
+	// Purging an event destroys the evidence of anything done to it, and a
+	// retention record would then vouch for its hashes as if it had been
+	// intact. So an event whose digest fails is kept, with its tampering still
+	// on the record for verification to report, and the rest of the batch is
+	// purged as usual. The same holds for an event that cannot be verified at
+	// all, such as one digested under a key that can no longer be resolved.
+	ErrRetentionWithheld = errors.New(
+		"chronicle: retention withheld events that do not verify; they are kept as evidence",
+	)
 )
