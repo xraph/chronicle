@@ -163,6 +163,7 @@ func registrations() []registration {
 		overviewRegistrations(),
 		erasuresRegistrations(),
 		retentionRegistrations(),
+		reportsRegistrations(),
 		// Each later task adds its group's <group>Registrations() here.
 	}
 

@@ -102,3 +102,18 @@ intents:
                     overview.stats, streams.mine, verify.run, verify.event,
                     erasures.preview] }
   - { name: retention.archives,     kind: query, version: 1, capability: read }
+  # Compliance reports: SOC2, HIPAA and EU AI Act, plus custom ones, the
+  # documents that go to an auditor. Every intent is confined to the viewer's
+  # own app and tenant, and no request carries an appId or tenantId. The
+  # generate commands persist through the engine itself and never save twice.
+  # reports.detail's verification is null when a report carries none, which
+  # means unverified and never that verification passed.
+  - { name: reports.list,           kind: query,   version: 1, capability: read }
+  - { name: reports.detail,         kind: query,   version: 1, capability: read }
+  - { name: reports.generate,       kind: command, version: 1, capability: write,
+      invalidates: [reports.list] }
+  - { name: reports.generateCustom, kind: command, version: 1, capability: write,
+      invalidates: [reports.list] }
+  # A query: it renders a stored report and writes nothing. The client saves
+  # the returned content as a file.
+  - { name: reports.export,         kind: query,   version: 1, capability: read }
