@@ -16,6 +16,12 @@
 // When using a standard Chronicle backend (Postgres, Bun, SQLite, Memory) the
 // same [store.Store] value satisfies all three interfaces.
 //
+// Reports verify the hash chain behind their scope when the engine is given
+// the deployment's chain with [WithChain], and optionally its checkpoint
+// store and signer with [WithCheckpoints]. Each report records the result in
+// Report.Verification and what it covered in Report.VerificationScope. See
+// [WithVerifyWindow] for how much of a long chain one report checks.
+//
 // # Report Types
 //
 // Four report types are supported, each with its own input struct:
@@ -40,7 +46,8 @@
 //   - TenantID    — tenant scope (empty for single-tenant)
 //   - Sections    — []Section, each with a Title, Events, Stats, and Notes
 //   - Stats       — [*Stats] aggregate (TotalEvents, CriticalEvents, FailedEvents, DeniedEvents)
-//   - Verification — optional [*verify.Report] snapshot of chain integrity at generation time
+//   - Verification — the [*verify.Report] from generation time, nil when none ran
+//   - VerificationScope — what that verification covered, and why it did not run when it did not
 //   - GeneratedBy  — identity of the requestor
 //   - Format       — the [Format] the report was exported in
 //   - Data         — raw exported bytes (populated by [Engine.Export])

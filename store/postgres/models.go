@@ -2,7 +2,6 @@
 package postgres
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"time"
@@ -440,7 +439,7 @@ type ReportModel struct {
 	AppID       string    `grove:"app_id"`
 	TenantID    string    `grove:"tenant_id"`
 	Format      string    `grove:"format"`
-	Data        []byte    `grove:"data,type:jsonb"` // Sections serialized as JSON
+	Data        []byte    `grove:"data,type:jsonb"` // compliance.EncodeReportBody: sections, stats and verification
 	GeneratedBy string    `grove:"generated_by"`
 	CreatedAt   time.Time `grove:"created_at"`
 }
@@ -451,12 +450,7 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		return nil, fmt.Errorf("failed to parse report id %q: %w", m.ID, err)
 	}
 
-	var sections []compliance.Section
-	if err := json.Unmarshal(m.Data, &sections); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal report sections: %w", err)
-	}
-
-	return &compliance.Report{
+	r := &compliance.Report{
 		Entity: chronicle.Entity{
 			CreatedAt: m.CreatedAt,
 		},
@@ -470,15 +464,18 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		AppID:       m.AppID,
 		TenantID:    m.TenantID,
 		Format:      compliance.Format(m.Format),
-		Sections:    sections,
 		GeneratedBy: m.GeneratedBy,
-	}, nil
+	}
+	if decodeErr := compliance.DecodeReportBody(m.Data, r); decodeErr != nil {
+		return nil, decodeErr
+	}
+	return r, nil
 }
 
 func fromReport(r *compliance.Report) (*ReportModel, error) {
-	data, err := json.Marshal(r.Sections)
+	data, err := compliance.EncodeReportBody(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal report sections: %w", err)
+		return nil, err
 	}
 
 	return &ReportModel{

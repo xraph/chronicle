@@ -1,7 +1,6 @@
 package mongo
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -432,7 +431,7 @@ type ReportModel struct {
 	AppID       string    `grove:"app_id"      bson:"app_id"`
 	TenantID    string    `grove:"tenant_id"   bson:"tenant_id"`
 	Format      string    `grove:"format"      bson:"format"`
-	Data        []byte    `grove:"data"        bson:"data"` // Sections serialized as JSON
+	Data        []byte    `grove:"data"        bson:"data"` // compliance.EncodeReportBody: sections, stats and verification
 	GeneratedBy string    `grove:"generated_by" bson:"generated_by"`
 	CreatedAt   time.Time `grove:"created_at"  bson:"created_at"`
 }
@@ -443,12 +442,7 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		return nil, fmt.Errorf("failed to parse report id %q: %w", m.ID, err)
 	}
 
-	var sections []compliance.Section
-	if err := json.Unmarshal(m.Data, &sections); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal report sections: %w", err)
-	}
-
-	return &compliance.Report{
+	r := &compliance.Report{
 		Entity: chronicle.Entity{
 			CreatedAt: m.CreatedAt,
 		},
@@ -462,15 +456,18 @@ func toReport(m *ReportModel) (*compliance.Report, error) {
 		AppID:       m.AppID,
 		TenantID:    m.TenantID,
 		Format:      compliance.Format(m.Format),
-		Sections:    sections,
 		GeneratedBy: m.GeneratedBy,
-	}, nil
+	}
+	if decodeErr := compliance.DecodeReportBody(m.Data, r); decodeErr != nil {
+		return nil, decodeErr
+	}
+	return r, nil
 }
 
 func fromReport(r *compliance.Report) (*ReportModel, error) {
-	data, err := json.Marshal(r.Sections)
+	data, err := compliance.EncodeReportBody(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal report sections: %w", err)
+		return nil, err
 	}
 
 	return &ReportModel{
