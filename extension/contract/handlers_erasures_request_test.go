@@ -606,12 +606,16 @@ func TestErasureRequestLeavesAnotherAppsEventsAlone(t *testing.T) {
 	}
 }
 
-// The same probe one level down: two tenants of one app. A tenant viewer's
-// erasure stays in its tenant, and the sibling's events keep decrypting.
+// The same probe one level down: two tenants of one app, and the app's own
+// untenanted events beside them. A tenant viewer's erasure stays in its
+// tenant: the sibling's events and the app-level events keep decrypting. An
+// empty tenant means "any" to every store query, so a tenant scope that also
+// covered tenant "" would destroy the app-level key along the way.
 func TestErasureRequestLeavesASiblingTenantsEventsAlone(t *testing.T) {
 	e := newErasureSealed(t)
 	e.record(t, "app-1", "tenant-a", "user-42", "a-event")
 	e.record(t, "app-1", "tenant-b", "user-42", "b-event")
+	e.record(t, "app-1", "", "user-42", "app-level-event")
 
 	tenantA := erasureAdmin(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"})
 	tenantB := erasureAdmin(map[string]any{"app_id": "app-1", "tenant_id": "tenant-b"})
@@ -626,6 +630,16 @@ func TestErasureRequestLeavesASiblingTenantsEventsAlone(t *testing.T) {
 
 	assertErased(t, "tenant-a", e.read(t, "app-1", "tenant-a"), 1)
 	assertReadable(t, "tenant-b", e.read(t, "app-1", "tenant-b"), "b-event")
+
+	// Reading app-1 with no tenant returns every tenant's events, so keep the
+	// app-level ones by their own empty TenantID.
+	var appLevel []*audit.Event
+	for _, ev := range e.read(t, "app-1", "") {
+		if ev.TenantID == "" {
+			appLevel = append(appLevel, ev)
+		}
+	}
+	assertReadable(t, "app-level", appLevel, "app-level-event")
 
 	if got := e.listErasures(t, tenantB); got.Total != 0 {
 		t.Errorf("tenant-b sees %d erasure records after tenant-a's erasure, want none", got.Total)
