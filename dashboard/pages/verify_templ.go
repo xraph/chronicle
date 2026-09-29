@@ -299,7 +299,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 					var templ_7745c5c3_Var10 string
 					templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(data.Error)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 108, Col: 53}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 108, Col: 53}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 					if templ_7745c5c3_Err != nil {
@@ -440,7 +440,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 							var templ_7745c5c3_Var15 string
 							templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(seq, 10))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 141, Col: 93}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 141, Col: 93}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 							if templ_7745c5c3_Err != nil {
@@ -473,7 +473,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 							var templ_7745c5c3_Var16 string
 							templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(retainedLabel(r))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 157, Col: 82}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 157, Col: 82}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 							if templ_7745c5c3_Err != nil {
@@ -506,7 +506,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 							var templ_7745c5c3_Var17 string
 							templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(seq, 10))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 173, Col: 116}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 173, Col: 116}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 							if templ_7745c5c3_Err != nil {
@@ -549,7 +549,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 							var templ_7745c5c3_Var18 string
 							templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(seq, 10))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 197, Col: 116}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 197, Col: 116}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 							if templ_7745c5c3_Err != nil {
@@ -582,7 +582,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 							var templ_7745c5c3_Var19 string
 							templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(seq, 10))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 213, Col: 93}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 213, Col: 93}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 							if templ_7745c5c3_Err != nil {
@@ -615,7 +615,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 							var templ_7745c5c3_Var20 string
 							templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(cov.FromSeq, 10))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 226, Col: 48}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 226, Col: 48}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 							if templ_7745c5c3_Err != nil {
@@ -628,7 +628,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 							var templ_7745c5c3_Var21 string
 							templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(cov.ToSeq, 10))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 226, Col: 86}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 226, Col: 86}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 							if templ_7745c5c3_Err != nil {
@@ -641,7 +641,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 							var templ_7745c5c3_Var22 string
 							templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(string(cov.Level))
 							if templ_7745c5c3_Err != nil {
-								return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 226, Col: 109}
+								return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 226, Col: 109}
 							}
 							_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 							if templ_7745c5c3_Err != nil {
@@ -659,7 +659,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 								var templ_7745c5c3_Var23 string
 								templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(cov.Note)
 								if templ_7745c5c3_Err != nil {
-									return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 229, Col: 57}
+									return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 229, Col: 57}
 								}
 								_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 								if templ_7745c5c3_Err != nil {
@@ -699,7 +699,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 								var templ_7745c5c3_Var24 string
 								templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(cp.FromSeq, 10))
 								if templ_7745c5c3_Err != nil {
-									return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 246, Col: 49}
+									return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 246, Col: 49}
 								}
 								_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 								if templ_7745c5c3_Err != nil {
@@ -712,7 +712,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 								var templ_7745c5c3_Var25 string
 								templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(cp.ToSeq, 10))
 								if templ_7745c5c3_Err != nil {
-									return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 246, Col: 86}
+									return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 246, Col: 86}
 								}
 								_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 								if templ_7745c5c3_Err != nil {
@@ -730,7 +730,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 									var templ_7745c5c3_Var26 string
 									templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(cp.Note)
 									if templ_7745c5c3_Err != nil {
-										return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 249, Col: 63}
+										return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 249, Col: 63}
 									}
 									_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 									if templ_7745c5c3_Err != nil {
@@ -753,7 +753,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 								var templ_7745c5c3_Var27 string
 								templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(cp.FromSeq, 10))
 								if templ_7745c5c3_Err != nil {
-									return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 255, Col: 49}
+									return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 255, Col: 49}
 								}
 								_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 								if templ_7745c5c3_Err != nil {
@@ -766,7 +766,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 								var templ_7745c5c3_Var28 string
 								templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(cp.ToSeq, 10))
 								if templ_7745c5c3_Err != nil {
-									return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 255, Col: 86}
+									return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 255, Col: 86}
 								}
 								_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 								if templ_7745c5c3_Err != nil {
@@ -784,7 +784,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 									var templ_7745c5c3_Var29 string
 									templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(cp.Note)
 									if templ_7745c5c3_Err != nil {
-										return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 258, Col: 68}
+										return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 258, Col: 68}
 									}
 									_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 									if templ_7745c5c3_Err != nil {
@@ -807,7 +807,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 								var templ_7745c5c3_Var30 string
 								templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(cp.FromSeq, 10))
 								if templ_7745c5c3_Err != nil {
-									return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 264, Col: 49}
+									return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 264, Col: 49}
 								}
 								_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 								if templ_7745c5c3_Err != nil {
@@ -820,7 +820,7 @@ func VerifyPage(data VerifyPageData) templ.Component {
 								var templ_7745c5c3_Var31 string
 								templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatUint(cp.ToSeq, 10))
 								if templ_7745c5c3_Err != nil {
-									return templ.Error{Err: templ_7745c5c3_Err, FileName: `verify.templ`, Line: 264, Col: 86}
+									return templ.Error{Err: templ_7745c5c3_Err, FileName: `dashboard/pages/verify.templ`, Line: 264, Col: 86}
 								}
 								_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 								if templ_7745c5c3_Err != nil {
@@ -881,13 +881,18 @@ func issueCount(r *verify.Report) int {
 }
 
 // retainedLabel renders one retained range and the record that explains it.
-// Retained sequences are not issues: a policy removed them and said so.
+// Retained sequences are not issues: a policy removed them and said so. A
+// backfilled range names the archive its record was recovered from.
 func retainedLabel(r verify.RetainedRange) string {
 	span := strconv.FormatUint(r.FromSeq, 10)
 	if r.ToSeq != r.FromSeq {
 		span += "-" + strconv.FormatUint(r.ToSeq, 10)
 	}
-	return span + " (record " + strconv.FormatUint(r.RecordSeq, 10) + ")"
+	label := span + " (record " + strconv.FormatUint(r.RecordSeq, 10)
+	if r.Backfill != "" {
+		label += ", backfilled from " + r.Backfill
+	}
+	return label + ")"
 }
 
 // checkpointStatus classifies one checkpoint result for display.

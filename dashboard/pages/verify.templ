@@ -298,13 +298,18 @@ func issueCount(r *verify.Report) int {
 }
 
 // retainedLabel renders one retained range and the record that explains it.
-// Retained sequences are not issues: a policy removed them and said so.
+// Retained sequences are not issues: a policy removed them and said so. A
+// backfilled range names the archive its record was recovered from.
 func retainedLabel(r verify.RetainedRange) string {
 	span := strconv.FormatUint(r.FromSeq, 10)
 	if r.ToSeq != r.FromSeq {
 		span += "-" + strconv.FormatUint(r.ToSeq, 10)
 	}
-	return span + " (record " + strconv.FormatUint(r.RecordSeq, 10) + ")"
+	label := span + " (record " + strconv.FormatUint(r.RecordSeq, 10)
+	if r.Backfill != "" {
+		label += ", backfilled from " + r.Backfill
+	}
+	return label + ")"
 }
 
 // checkpointStatus classifies one checkpoint result for display.

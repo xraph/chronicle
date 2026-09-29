@@ -337,3 +337,15 @@ func TestVerifyPageStaysQuietWhenTheHeadComparisonAgrees(t *testing.T) {
 		})
 	}
 }
+
+// TestRetainedLabelNamesABackfill: a range recovered from an archive says so,
+// so an operator can tell it from one the enforcer recorded at purge time.
+func TestRetainedLabelNamesABackfill(t *testing.T) {
+	if got := retainedLabel(verify.RetainedRange{FromSeq: 3, ToSeq: 5, RecordSeq: 9}); got != "3-5 (record 9)" {
+		t.Errorf("label = %q", got)
+	}
+	got := retainedLabel(verify.RetainedRange{FromSeq: 1, ToSeq: 1, RecordSeq: 7, Backfill: "s3://b/p"})
+	if got != "1 (record 7, backfilled from s3://b/p)" {
+		t.Errorf("label = %q", got)
+	}
+}
