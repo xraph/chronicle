@@ -60,12 +60,11 @@ Templ routes do not carry over, and neither do their query strings (`?severity=c
 
 ## How to read the tables
 
-Every templ item has an ID made from its file, so the rows can be checked against the files on the `main` history before this change. Status is one of four phrases:
+Every templ item has an ID made from its file, so the rows can be checked against the files on the `main` history before this change. Status is one of three phrases:
 
 - Migrated: the React plugin does it. The last column names the page or component and route, and says so when the behaviour changed.
 - Dropped: deliberately left out. The last column gives the reason.
 - Blocked: it needs Go work first. The last column says what.
-- Not carried over yet: the templ page did it, the plugin doesn't, and nobody chose that. It needs plugin work only, no Go change. These get their own list below.
 
 Routes below are plugin routes, under the `chronicle` namespace. Intent names (`events.list`) are the contract's.
 
@@ -81,8 +80,8 @@ The landing page at `/`. React has no overview page. Its counts moved to Activit
 |---|---|---|---|
 | OV-1 | Page title "Overview", subtitle "Monitor your immutable audit trail at a glance.", and being the landing page | Dropped | The landing page is Chain (`/`, `/chain`), because this library's job is to prove a record was not altered and that comes first. Nothing replaces the title. |
 | OV-2 | Tile "Total Events", "All recorded events" | Migrated | Activity (`/activity`), tile "Total events", from `overview.stats`. |
-| OV-3 | Tile "Critical Events", "Last 30 days" | Migrated | Activity, tile "Critical". Changed: it counts every critical event in your scope (all time), not the last 30 days. Volume over time is on the same page. See "Numbers that mean something different". |
-| OV-4 | Tile "Failed / Denied", "Last 30 days" | Migrated | Activity, tile "Failed or denied", with a hint splitting the two. Changed: all time (your whole scope), not 30 days. The page adds `failedEvents` (failure only) to `deniedEvents`. |
+| OV-3 | Tile "Critical Events", "Last 30 days" | Migrated | Activity, tile "Critical", hint "All time". Changed: it counts every critical event in your scope (all time), not the last 30 days. Volume over time is on the same page. See "Numbers that mean something different". |
+| OV-4 | Tile "Failed / Denied", "Last 30 days" | Migrated | Activity, tile "Failed or denied", with a hint that says "All time" and splits the two. Changed: all time (your whole scope), not 30 days. The page adds `failedEvents` (failure only) to `deniedEvents`. |
 | OV-5 | Tile "Erasures", "GDPR erasure requests" | Migrated | Activity, tile "Erasures". |
 | OV-6 | Card "Recent Events", "The last 10 audit events recorded." | Migrated | Events (`/events`), newest first. Changed: no fixed 10-row card, it is the whole log at 50 a page. |
 | OV-7 | Empty state "No events yet" / "Audit events will appear here once they are recorded." | Migrated | Events: "This chain holds no events yet." |
@@ -113,7 +112,7 @@ Route `/events/:id`. The page loads lazily, because the JSON viewer is CodeMirro
 | ID | Templ item | Status | Now |
 |---|---|---|---|
 | ED-1 | Title "Event Detail" and the event ID in a code tag | Migrated | Title "Event", ID in the "Event" row. |
-| ED-2 | "Back" button to the list | Not carried over yet | There is no in-page back link on an event. Use the browser's back button or the nav. The report, erasure and policy pages all have one. |
+| ED-2 | "Back" button to the list | Migrated | "Back to events" link at the foot. It shows even when the event can't be read, so a not-found event still has a way back. |
 | ED-3 | Card title "{Action} on {Resource}", description "Recorded {time ago}" | Migrated | "Action", "Resource" and "Time" rows. The time is the kit's timestamp component. |
 | ED-4 | Fields Action, Resource, Category | Migrated | Same rows. |
 | ED-5 | Resource ID, shown only when set | Migrated | Beside Resource. |
@@ -129,7 +128,7 @@ Route `/events/:id`. The page loads lazily, because the JSON viewer is CodeMirro
 | ED-15 | Hash Chain card "Hash Chain" / "Immutable hash chain linking for tamper detection." and its Stream ID | Migrated | Side column, "Chain" row. |
 | ED-16 | Hash, in a select-all code block | Migrated | "Hash" row, monospace, full value. |
 | ED-17 | Previous Hash | Migrated | "Previous hash" row. |
-| ED-18 | Text "Genesis event (no previous hash)" on the first event | Not carried over yet | The "Previous hash" row is just empty for a first event. |
+| ED-18 | Text "Genesis event (no previous hash)" on the first event | Migrated | Changed: the "Previous hash" row on sequence 1 reads "Genesis event, the first in its chain." Templ went by an empty previous hash. The plugin goes by the sequence, and a later event with no previous hash is never called genesis: the row says only a first event should look like that and points you to the chain check. |
 | ED-19 | GDPR Status card, shown when the event has a subject or was erased | Migrated | Changed: the "Subject" row is always there ("None" when empty), and the erasure details sit in the side column when the event is erased. |
 | ED-20 | GDPR: Subject ID | Migrated | "Subject" row. |
 | ED-21 | GDPR: Encryption Key ID | Blocked | Not shown. Needs `encryptionKeyId` added to `EventDetail`. (The "Key id" row in React is the digest key, a different thing.) |
@@ -166,16 +165,16 @@ The templ page is called Verification and sits at `/verify`. The React page is C
 | VF-18 | "Sequence Gaps" list | Migrated | "What was found", rows titled "Sequences 40 to 42 missing", consecutive runs merged. |
 | VF-19 | "Removed by Retention" list with its explanation | Migrated | "Removed by retention" section, plus a verdict sentence saying the chain links across the range and what the events said is gone. Retained ranges are never counted as breaks. |
 | VF-20 | Backfilled range label, "1 (record 7, backfilled from s3://...)" (added on main in e5df302) | Migrated | "recorded at sequence 7 under {policy}, recovered from {archive}", and the verdict says the record was recovered afterwards. |
-| VF-21 | "Scheme Downgrades" panel and its advice to investigate who can write the events table | Migrated | Rows titled "Sequence N relabelled", explained as a weaker scheme than the chain required. The advice about who holds write access is not repeated. See VF-30. |
+| VF-21 | "Scheme Downgrades" panel and its advice to investigate who can write the events table | Migrated | Rows titled "Sequence N relabelled", explained as a weaker scheme than the chain required. Each row ends with the advice to treat it as tampering and find out who has write access to the events table. See VF-30. |
 | VF-22 | "Truncated Tail" panel, shown when a signed checkpoint reaches past the head | Migrated | A break titled "A signed checkpoint contradicts the head", and the verdict says so. The advice that went with it is VF-30. |
 | VF-23 | "Tampered Events" list | Migrated | Rows titled "Sequence N altered". |
-| VF-24 | "Resolved Tolerantly" panel, with the sequence numbers | Not carried over yet | A verdict sentence gives the count ("3 events recorded no digest scheme"). The individual sequence numbers are not listed, though the report carries them. |
+| VF-24 | "Resolved Tolerantly" panel, with the sequence numbers | Migrated | Changed: a "Scheme inferred" section lists the sequences in monospace, consecutive runs merged, and a verdict sentence on a pass still gives the count. A tolerant sequence that is also altered says so and points at its break row, because the fallback marks an event tolerant whether or not any scheme recomputes it. |
 | VF-25 | "Coverage" list, `from-to: level` and its note | Migrated | "Coverage" section (level badge, range, note) and the coloured bands on the "Where" ribbon. |
-| VF-26 | Checkpoints: a failed checkpoint in a red box, with its note | Not carried over yet | The failed check itself is there: per checkpoint, Signature, Hash and Continuity rows, a failed one in a destructive badge. The checkpoint's note shows only beside a hash check that did not run, so a failed checkpoint loses its note. |
+| VF-26 | Checkpoints: a failed checkpoint in a red box, with its note | Migrated | Per checkpoint, Signature, Hash and Continuity rows, a failed one in a destructive badge with the note beside it. The verifier keeps one note, the first reason it found (signature, then hash, then continuity), so the note goes on the first row that did not hold and never beside a check it doesn't describe. |
 | VF-27 | Checkpoints: "not fully checked" in a grey box, with its note | Migrated | The unchecked row is plain muted text, "Not checked", with the note appended. |
 | VF-28 | Checkpoints: "signed and intact" | Migrated | Held rows in an outline badge. |
 | VF-29 | Nothing rendered until you submitted the form | Migrated | The chain's posture (head, hash, scheme, latest checkpoint, the best level it can reach) shows on load. Nothing is verified until you ask. |
-| VF-30 | The advice on the "Truncated Tail" panel ("find out who holds write access to the events and streams tables") and on "Scheme Downgrades" ("treat it as tampering and investigate who has write access to the events table") | Not carried over yet | Checked in `src/verification/breaks.ts`: the plugin explains what each break is and says nothing about who to go and ask. |
+| VF-30 | The advice on the "Truncated Tail" panel ("find out who holds write access to the events and streams tables") and on "Scheme Downgrades" ("treat it as tampering and investigate who has write access to the events table") | Migrated | A relabelled row ends "Treat it as tampering, and find out who has write access to the events table." Both head breaks, a head that doesn't match its last event and a signed checkpoint that contradicts the head, end with "find out who holds write access to the events and streams tables". |
 | VF-31 | Placeholders in the sequence fields, "1" and "100" | Dropped | The From and To fields start filled with the default window, the latest 10,000 sequences, so there is nothing to hint at. |
 
 ### reports.templ (RP)
@@ -324,7 +323,7 @@ Shared page helpers. They count as the thirteenth page file.
 |---|---|---|---|
 | HP-1 | `fieldRow`, a label and value pair in a definition list | Migrated | The kit's `DescriptionList`. |
 | HP-2 | `codeBlock`, preformatted text | Migrated | `JsonView` for structured data, monospace spans for values. |
-| HP-3 | `credentialField`, a select-all monospace field | Not carried over yet | The value carries over as a monospace, break-all span. Click to select all does not. |
+| HP-3 | `credentialField`, a select-all monospace field | Migrated | Monospace spans with CSS `select-all` on the event page's hash, previous hash, event ID and chain ID: one click selects the whole value for copying. There is no copy button. |
 | HP-4 | `formatTimeAgo` ("just now", "5m ago", "3h ago", "2d ago", "1mo ago", "1y ago") | Migrated | The kit's timestamp component. |
 | HP-5 | `formatJSON`, pretty-printed JSON | Migrated | `prettyJSON` in `components/json-view.tsx`. |
 | HP-6 | `truncateString`, shorten with "..." | Dropped | The plugin shows full IDs. |
@@ -564,9 +563,9 @@ Needs Go work before it can exist.
 - Tenant ID on event, erasure and report detail (ED-12, ERD-10, RD-6). The contract's `EventDetail`, `ErasureSummary` and `ReportSummary` do not carry `tenantId`. An app-wide operator who reads several tenants' records cannot tell them apart. Add the field to those three types in `extension/contract`, then to the plugin's `types.ts` and the detail pages.
 - Encryption Key ID on an event (ED-21). Add `encryptionKeyId` to `EventDetail`.
 
-## Not carried over yet (plugin work)
+## Carried over after the removal
 
-The templ page did these, the plugin doesn't, and nobody decided that. None of it needs a Go change: the contract already sends what's needed. The work is in `packages/plugin-chronicle` in forge-dashboard.
+The templ page did these and the first plugin release didn't, although nobody had decided to drop them. They landed in forge-dashboard 62fbbce, in `packages/plugin-chronicle`, with no Go change, and their rows above now read Migrated.
 
 - A back link on the event page (ED-2).
 - The "Genesis event (no previous hash)" line for a first event (ED-18).
@@ -604,7 +603,7 @@ The templ dashboard had these. They are fixed by the move, so nobody should read
 
 ## Numbers that mean something different now
 
-- Templ counted critical events, and failed or denied events, over the last 30 days. The React overview counts them across the whole scope (all time), and the Activity page shows volume over time, by day or hour. The "Last 30 days" labels are gone.
+- Templ counted critical events, and failed or denied events, over the last 30 days. The React overview counts them across the whole scope (all time), and the Activity page shows volume over time, by day or hour. Each count on Activity says "All time" where the templ tile said "Last 30 days".
 - "Failed" on the old overview meant failure plus denied. The contract's `failedEvents` is failure only, and `deniedEvents` is separate. Activity adds them for its "Failed or denied" tile and shows both parts beside it.
 - Verifying with no range used to check the whole chain. The page now defaults to the latest 10,000 sequences and says plainly that the result does not speak for the rest.
 - A result is never "Valid". It is a sentence that names the range, the method and what that method cannot see.
