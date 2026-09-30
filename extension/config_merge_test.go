@@ -212,9 +212,12 @@ func TestYAMLConfigKeepsProgrammaticAuthProvider(t *testing.T) {
 // key may change what a caller can do. Both still have to load, because dropping
 // them would break the build or the start of every deployment that set them.
 //
-// Each variant is asked the same two questions: can a user with no scope save a
-// retention policy, and can one holding chronicle.admin. The answers must match
-// the deployment that never heard of the flag.
+// What is compared is the dispatcher's outcome for retention.savePolicy, once
+// for a session with an app claim, no tenant claim and no scope, and once for one
+// holding chronicle.admin, with the flag set and without it. The first is refused
+// by scopeFromPrincipal's app-wide rule, not by the command's requires: the
+// dispatcher never checks requires, forge's HTTP transport does. Either way the
+// outcomes must match the deployment that never heard of the flag.
 func TestDashboardMutationsIsANoOp(t *testing.T) {
 	type outcome struct{ unscoped, admin string }
 
@@ -273,4 +276,10 @@ func TestDashboardMutationsIsANoOp(t *testing.T) {
 			t.Errorf("both forms together changed the outcome: got %+v, baseline %+v", got, base)
 		}
 	})
+}
+
+// Config.DashboardMutations has to stay for one release so that existing code
+// and YAML still compile and load. Removing the field breaks this line.
+func TestDashboardMutationsFieldStillCompiles(t *testing.T) {
+	_ = extension.Config{DashboardMutations: true}
 }
