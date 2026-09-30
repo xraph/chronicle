@@ -119,8 +119,8 @@ intents:
   # pass. A policy that fails part-way still answers with the true counts
   # and failed: true, so these invalidations fire after every purge. The
   # verify intents are on the list because a purge removes events from the
-  # middle of the chain: verification reports the purged sequences as gaps
-  # and the events after them as tampered.
+  # middle of the chain: verification reports a recorded purge as retained
+  # and an unrecorded one as gaps.
   - { name: retention.enforce, kind: command, version: 1, capability: write,
       requires: { all: ["scope:chronicle.admin"] },
       invalidates: [retention.policies, retention.archives, retention.preview,

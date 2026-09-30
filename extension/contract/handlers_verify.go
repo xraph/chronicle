@@ -131,11 +131,14 @@ type VerifyReport struct {
 	// RetentionPolicies is how many retention policies can purge the chain
 	// this report verified. Purges those policies recorded in the chain are
 	// reported in Retained and are not gaps. A non-zero value therefore means
-	// only this: Gaps may still include purges that happened before
-	// retention records existed and were never backfilled, which Chronicle
-	// cannot tell from deletion. A purge removes events from the middle of
-	// the chain, so such purged sequences read as gaps and the events after
-	// them as tampered.
+	// only this: Gaps may still include purges that were never recorded in
+	// the chain, which Chronicle cannot tell from deletion. That happens for
+	// purges from before retention records existed that were never
+	// backfilled, for an enforcer built without a chain recorder, and for a
+	// record that does not verify under the chain's pin. Such a purged
+	// sequence reads as a gap. The event after it is checked against its own
+	// declared predecessor, so an unrecorded purge alone does not mark it
+	// tampered.
 	//
 	// A chain is one (app, tenant). A policy purges it when the policy's
 	// app is the chain's app and the policy's tenant is either empty (the

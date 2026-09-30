@@ -952,9 +952,9 @@ func verifySavePolicy(t *testing.T, s store.Store, appID, tenantID, category str
 	}
 }
 
-// Retention purges read as gaps and tampering, and Chronicle cannot yet tell
-// them from deletion, so the report says how many policies can purge the
-// chain it verified. A chain is one (app, tenant). An app-level policy
+// A purge that was never recorded in the chain reads as a gap, which
+// Chronicle cannot tell from deletion, so the report says how many policies
+// can purge the chain it verified. A chain is one (app, tenant). An app-level policy
 // (empty tenant) purges every tenant's chain in its app; a tenant policy
 // purges only its own tenant's. So a tenant chain counts its own tenant's
 // policies plus the app-level ones, an app-wide chain counts only the
