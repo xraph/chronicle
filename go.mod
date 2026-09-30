@@ -3,11 +3,11 @@ module github.com/xraph/chronicle
 go 1.26.0
 
 require (
-	github.com/a-h/templ v0.3.1001
-	github.com/jackc/pgx/v5 v5.10.0
-	github.com/redis/go-redis/v9 v9.21.0
-	github.com/xraph/forge v1.11.1
-	github.com/xraph/forge/extensions/auth v1.11.1
+	github.com/a-h/templ v0.3.1020
+	github.com/jackc/pgx/v5 v5.11.0
+	github.com/redis/go-redis/v9 v9.22.0
+	github.com/xraph/forge v1.11.2
+	github.com/xraph/forge/extensions/auth v1.11.2
 	github.com/xraph/forgeui v1.4.1
 	github.com/xraph/go-utils v1.3.0
 	github.com/xraph/grove v1.6.3
@@ -18,9 +18,9 @@ require (
 	github.com/xraph/grove/kv/drivers/redisdriver v1.6.3
 	github.com/xraph/vessel v1.0.4
 	go.jetify.com/typeid/v2 v2.0.0-alpha.3
-	go.mongodb.org/mongo-driver/v2 v2.5.0
-	go.opentelemetry.io/otel v1.44.0
-	go.opentelemetry.io/otel/trace v1.44.0
+	go.mongodb.org/mongo-driver/v2 v2.9.1
+	go.opentelemetry.io/otel v1.46.0
+	go.opentelemetry.io/otel/trace v1.46.0
 )
 
 require (
@@ -79,7 +79,7 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.19.1 // indirect
+	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
@@ -110,7 +110,7 @@ require (
 	go.opentelemetry.io/otel/exporters/jaeger v1.17.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.43.0 // indirect
-	go.opentelemetry.io/otel/metric v1.44.0 // indirect
+	go.opentelemetry.io/otel/metric v1.46.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
