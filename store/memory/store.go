@@ -484,6 +484,30 @@ func (s *Store) RecordErasure(_ context.Context, e *erasure.Erasure) error {
 	return nil
 }
 
+// CompleteErasure writes an erasure's outcome and marks it completed. The
+// stored record is replaced rather than edited, so a pointer GetErasure handed
+// out earlier is never written under a reader.
+func (s *Store) CompleteErasure(_ context.Context, erasureID id.ID, o erasure.Outcome) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idStr := erasureID.String()
+	for i, e := range s.erasures {
+		if e.ID.String() != idStr {
+			continue
+		}
+		done := *e
+		done.EventsAffected = o.EventsAffected
+		done.KeyDestroyed = o.KeyDestroyed
+		done.LegacyKeyRetained = o.LegacyKeyRetained
+		done.Status = erasure.StatusCompleted
+		done.UpdatedAt = time.Now().UTC()
+		s.erasures[i] = &done
+		return nil
+	}
+	return chronicle.ErrErasureNotFound
+}
+
 // GetErasure returns an erasure record by ID.
 func (s *Store) GetErasure(_ context.Context, erasureID id.ID) (*erasure.Erasure, error) {
 	s.mu.RLock()
@@ -555,6 +579,7 @@ func (s *Store) CountBySubject(_ context.Context, sq erasure.SubjectQuery) (int6
 }
 
 // MarkErased flags a subject's events as erased within the query's scope.
+// Events already marked are re-pointed at erasureID; see erasure.Store.
 func (s *Store) MarkErased(
 	_ context.Context, sq erasure.SubjectQuery, erasureID id.ID,
 ) (int64, error) {
@@ -565,7 +590,7 @@ func (s *Store) MarkErased(
 	eidStr := erasureID.String()
 	var count int64
 	for _, e := range s.events {
-		if e.SubjectID != sq.SubjectID || e.Erased {
+		if e.SubjectID != sq.SubjectID {
 			continue
 		}
 		if !eventInErasureScope(e, sq.Scope) {

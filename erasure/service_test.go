@@ -285,6 +285,10 @@ func TestEraseRetainsASharedLegacyKey(t *testing.T) {
 	if rec.KeyDestroyed {
 		t.Error("erasure record claims the key was destroyed while it was retained")
 	}
+	if !rec.LegacyKeyRetained || rec.Status != erasure.StatusCompleted {
+		t.Errorf("erasure record Status=%q LegacyKeyRetained=%v, want completed and retained",
+			rec.Status, rec.LegacyKeyRetained)
+	}
 
 	// The other tenant's data is intact.
 	if _, err := f.keys.Get("user-42"); err != nil {

@@ -432,6 +432,35 @@ CREATE INDEX IF NOT EXISTS idx_chronicle_checkpoints_scope
 				return nil
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_erasure_status",
+			Version: "20260929000001",
+			Comment: "Add status and legacy_key_retained to chronicle_erasures",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Every record written before this migration was written after
+				// its keys were destroyed, so existing rows are completed.
+				for _, stmt := range []string{
+					`ALTER TABLE chronicle_erasures ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'`,
+					`ALTER TABLE chronicle_erasures ADD COLUMN legacy_key_retained INTEGER NOT NULL DEFAULT 0`,
+				} {
+					if _, err := exec.Exec(ctx, stmt); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				for _, stmt := range []string{
+					`ALTER TABLE chronicle_erasures DROP COLUMN legacy_key_retained`,
+					`ALTER TABLE chronicle_erasures DROP COLUMN status`,
+				} {
+					if _, err := exec.Exec(ctx, stmt); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
 	)
 	return g
 }()

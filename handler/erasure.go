@@ -85,6 +85,7 @@ func (a *API) requestErasure(ctx forge.Context, req *RequestErasureRequest) (*er
 		EventsAffected: affected,
 		AppID:          info.AppID,
 		TenantID:       info.TenantID,
+		Status:         erasure.StatusPending,
 	}
 	rec.CreatedAt = now
 	rec.UpdatedAt = now
@@ -99,6 +100,12 @@ func (a *API) requestErasure(ctx forge.Context, req *RequestErasureRequest) (*er
 	if err != nil {
 		a.deps.Logger.Error("failed to mark events as erased", log.Error(err))
 		return nil, fmt.Errorf("mark events as erased: %w", err)
+	}
+
+	// No key was destroyed on this path, so the record says so.
+	if err := a.deps.ErasureStore.CompleteErasure(c, erasureID, erasure.Outcome{EventsAffected: marked}); err != nil {
+		a.deps.Logger.Error("failed to complete erasure", log.Error(err))
+		return nil, fmt.Errorf("complete erasure: %w", err)
 	}
 
 	result := &erasure.Result{

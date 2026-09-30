@@ -380,5 +380,25 @@ ALTER TABLE chronicle_events DROP COLUMN IF EXISTS user_agent;
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_erasure_status",
+			Version: "20260929000001",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Every record written before this migration was written after
+				// its keys were destroyed, so existing rows are completed.
+				_, err := exec.Exec(ctx, `
+ALTER TABLE chronicle_erasures ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'completed';
+ALTER TABLE chronicle_erasures ADD COLUMN IF NOT EXISTS legacy_key_retained BOOLEAN NOT NULL DEFAULT FALSE;
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+ALTER TABLE chronicle_erasures DROP COLUMN IF EXISTS legacy_key_retained;
+ALTER TABLE chronicle_erasures DROP COLUMN IF EXISTS status;
+`)
+				return err
+			},
+		},
 	)
 }

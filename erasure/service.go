@@ -2,6 +2,8 @@ package erasure
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/crypto"
@@ -26,13 +28,28 @@ func NewService(store Store, keyStore crypto.KeyStore) *Service {
 // tenant:
 //
 //  1. Count the subject's events in scope.
-//  2. Destroy the keys those events were sealed under, and no others.
-//  3. Record the erasure.
-//  4. Mark the events erased.
+//  2. Record the erasure as pending, with KeyDestroyed false.
+//  3. Mark the events erased.
+//  4. Destroy the keys those events were sealed under, and no others.
+//  5. Complete the record with the outcome.
+//
+// Destroying keys is the one step that cannot be undone, so it runs only once
+// the erasure is on record and the events are marked. If a step fails, Erase
+// returns an error naming the erasure and stops. The record stays pending, and
+// until step 4 the keys are untouched. If step 4 fails part way, the keys
+// that failed to delete survive, the ones that did delete stay deleted, and
+// the record still says KeyDestroyed false. If step 5 fails, the keys are gone
+// but the record still says pending.
+//
+// A pending record is the signal to run Erase again for the same subject and
+// scope. The retry writes its own record, marks every event again (including
+// any the failed attempt reached), deletes the keys again (deleting a missing
+// key is not an error) and completes. The pending record stays as the trail of
+// the failed attempt.
 //
 // Everything is confined to the scope. An empty TenantID covers every tenant in
 // the app, and an empty AppID and TenantID together cover everything, which is
-// the rule the stores apply to CountBySubject and MarkErased. Step 2 follows the
+// the rule the stores apply to CountBySubject and MarkErased. Step 4 follows the
 // same rule, so the keys destroyed always belong to exactly the events marked.
 //
 // # Keys sealed before scoping
@@ -45,13 +62,17 @@ func NewService(store Store, keyStore crypto.KeyStore) *Service {
 //
 // Erase destroys a legacy key only when no other scope still holds unerased
 // events sealed under it. Otherwise it marks the caller's events erased as
-// usual, keeps the key, reports KeyDestroyed false with LegacyKeyRetained set,
-// and records KeyDestroyed false on the erasure record. [crypto.Sealer.Open]
+// usual, keeps the key, and completes the record with KeyDestroyed false and
+// LegacyKeyRetained set, which the result reports too. [crypto.Sealer.Open]
 // redacts any event flagged erased, so the payload stops being readable through
 // Chronicle straight away, but the erasure is not cryptographic until the key
 // goes. The key goes the first time any sharing scope erases the subject and
 // finds every other scope's legacy events already erased, so running Erase
 // again later is how a retained key gets cleaned up.
+//
+// Which keys to destroy is decided after the events are marked, from a fresh
+// read. Other scopes' legacy events only ever go from unerased to erased, so a
+// retry can move from keeping the legacy key to destroying it, never back.
 //
 // Re-sealing the caller's events under a scoped key was ruled out. The hash
 // chain covers the sealed bytes, so rewriting them makes every re-sealed event
@@ -73,24 +94,10 @@ func (s *Service) Erase(ctx context.Context, input *Input, appID, tenantID strin
 	// 1. Count events for subject.
 	count, err := s.store.CountBySubject(ctx, subject)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("count subject events: %w", err)
 	}
 
-	// 2. Destroy the keys this scope's events were sealed under.
-	usage, err := s.store.SubjectKeyUsage(ctx, input.SubjectID)
-	if err != nil {
-		return nil, err
-	}
-	plan := planKeyDestruction(scope, input.SubjectID, usage)
-
-	keyDestroyed := !plan.legacyRetained
-	for _, keyID := range plan.destroy {
-		if delErr := s.keyStore.Delete(keyID); delErr != nil {
-			keyDestroyed = false
-		}
-	}
-
-	// 3. Create erasure record.
+	// 2. Record the erasure before anything irreversible happens.
 	erasureID := id.NewErasureID()
 	rec := &Erasure{
 		Entity:         chronicle.NewEntity(),
@@ -99,28 +106,55 @@ func (s *Service) Erase(ctx context.Context, input *Input, appID, tenantID strin
 		Reason:         input.Reason,
 		RequestedBy:    input.RequestedBy,
 		EventsAffected: count,
-		KeyDestroyed:   keyDestroyed,
 		AppID:          appID,
 		TenantID:       tenantID,
+		Status:         StatusPending,
+	}
+	if err = s.store.RecordErasure(ctx, rec); err != nil {
+		return nil, fmt.Errorf("record erasure: %w", err)
 	}
 
-	err = s.store.RecordErasure(ctx, rec)
-	if err != nil {
-		return nil, err
-	}
-
-	// 4. Mark events as erased.
+	// 3. Mark events as erased.
 	affected, err := s.store.MarkErased(ctx, subject, erasureID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("erasure %s: mark events: %w", erasureID, err)
+	}
+
+	// 4. Destroy the keys this scope's events were sealed under. Every key is
+	// attempted even after a failure: the events are already marked, so each
+	// key that goes is one fewer for the retry.
+	usage, err := s.store.SubjectKeyUsage(ctx, input.SubjectID)
+	if err != nil {
+		return nil, fmt.Errorf("erasure %s: read key usage: %w", erasureID, err)
+	}
+	plan := planKeyDestruction(scope, input.SubjectID, usage)
+
+	var delErrs []error
+	for _, keyID := range plan.destroy {
+		if delErr := s.keyStore.Delete(keyID); delErr != nil {
+			delErrs = append(delErrs, delErr)
+		}
+	}
+	if err = errors.Join(delErrs...); err != nil {
+		return nil, fmt.Errorf("erasure %s: destroy keys: %w", erasureID, err)
+	}
+
+	// 5. Complete the record.
+	outcome := Outcome{
+		EventsAffected:    affected,
+		KeyDestroyed:      !plan.legacyRetained,
+		LegacyKeyRetained: plan.legacyRetained,
+	}
+	if err = s.store.CompleteErasure(ctx, erasureID, outcome); err != nil {
+		return nil, fmt.Errorf("erasure %s: complete record: %w", erasureID, err)
 	}
 
 	return &Result{
 		ID:                erasureID,
 		SubjectID:         input.SubjectID,
 		EventsAffected:    affected,
-		KeyDestroyed:      keyDestroyed,
-		LegacyKeyRetained: plan.legacyRetained,
+		KeyDestroyed:      outcome.KeyDestroyed,
+		LegacyKeyRetained: outcome.LegacyKeyRetained,
 	}, nil
 }
 

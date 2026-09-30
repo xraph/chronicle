@@ -23,6 +23,9 @@ type erasureModel struct {
 	AppID          string    `json:"app_id"`
 	TenantID       string    `json:"tenant_id"`
 	CreatedAt      time.Time `json:"created_at"`
+	Status         string    `json:"status,omitempty"`
+
+	LegacyKeyRetained bool `json:"legacy_key_retained,omitempty"`
 }
 
 func toErasureModel(e *erasure.Erasure) *erasureModel {
@@ -36,6 +39,9 @@ func toErasureModel(e *erasure.Erasure) *erasureModel {
 		AppID:          e.AppID,
 		TenantID:       e.TenantID,
 		CreatedAt:      e.CreatedAt,
+		Status:         string(e.Status),
+
+		LegacyKeyRetained: e.LegacyKeyRetained,
 	}
 }
 
@@ -56,7 +62,20 @@ func fromErasureModel(m *erasureModel) (*erasure.Erasure, error) {
 		KeyDestroyed:   m.KeyDestroyed,
 		AppID:          m.AppID,
 		TenantID:       m.TenantID,
+		Status:         erasureStatus(m.Status),
+
+		LegacyKeyRetained: m.LegacyKeyRetained,
 	}, nil
+}
+
+// erasureStatus reads a stored status. Records written before erasures had a
+// status have none, and every one of them was written after its keys were
+// destroyed, so they are completed.
+func erasureStatus(s string) erasure.Status {
+	if s == "" {
+		return erasure.StatusCompleted
+	}
+	return erasure.Status(s)
 }
 
 // RecordErasure persists an erasure event.
@@ -69,6 +88,30 @@ func (s *Store) RecordErasure(ctx context.Context, e *erasure.Erasure) error {
 	}
 
 	s.rdb.ZAdd(ctx, zErasureAll, goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
+	return nil
+}
+
+// CompleteErasure writes an erasure's outcome and marks it completed.
+//
+// The read and write are not atomic. Only the erasure service writes a record
+// after creating it, once, so there is no competing writer to lose.
+func (s *Store) CompleteErasure(ctx context.Context, erasureID id.ID, o erasure.Outcome) error {
+	key := entityKey(prefixErasure, erasureID.String())
+	var m erasureModel
+	if err := s.getEntity(ctx, key, &m); err != nil {
+		if isNotFound(err) {
+			return chronicle.ErrErasureNotFound
+		}
+		return fmt.Errorf("chronicle/redis: complete erasure: %w", err)
+	}
+
+	m.Status = string(erasure.StatusCompleted)
+	m.EventsAffected = o.EventsAffected
+	m.KeyDestroyed = o.KeyDestroyed
+	m.LegacyKeyRetained = o.LegacyKeyRetained
+	if err := s.setEntity(ctx, key, &m); err != nil {
+		return fmt.Errorf("chronicle/redis: complete erasure: %w", err)
+	}
 	return nil
 }
 

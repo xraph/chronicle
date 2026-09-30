@@ -6,7 +6,27 @@ import (
 	"github.com/xraph/chronicle/id"
 )
 
+// Status is how far an erasure got.
+type Status string
+
+const (
+	// StatusPending means the erasure was recorded but did not finish. Its
+	// events may be marked and some of its keys may be gone, but not every key
+	// it set out to destroy is confirmed destroyed, so KeyDestroyed is false.
+	// Running Erase again for the same subject and scope finishes the job
+	// under a new record, which is the one the events end up pointing at.
+	StatusPending Status = "pending"
+
+	// StatusCompleted means the events are marked and the key outcome is final:
+	// KeyDestroyed or LegacyKeyRetained says which.
+	StatusCompleted Status = "completed"
+)
+
 // Erasure records a GDPR erasure event.
+//
+// The record is written before anything irreversible happens, as pending, and
+// completed once the keys are dealt with. Records written before erasures had
+// a status are completed.
 type Erasure struct {
 	chronicle.Entity
 	ID             id.ID  `json:"id"`
@@ -17,6 +37,17 @@ type Erasure struct {
 	KeyDestroyed   bool   `json:"key_destroyed"`
 	AppID          string `json:"app_id"`
 	TenantID       string `json:"tenant_id"`
+	Status         Status `json:"status"`
+
+	// LegacyKeyRetained mirrors Result.LegacyKeyRetained.
+	LegacyKeyRetained bool `json:"legacy_key_retained"`
+}
+
+// Outcome is what an erasure achieved, written by Store.CompleteErasure.
+type Outcome struct {
+	EventsAffected    int64
+	KeyDestroyed      bool
+	LegacyKeyRetained bool
 }
 
 // Input is the request to erase a subject's data.

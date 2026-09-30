@@ -11,6 +11,11 @@ type Store interface {
 	// RecordErasure persists an erasure event.
 	RecordErasure(ctx context.Context, e *Erasure) error
 
+	// CompleteErasure writes an erasure's outcome and sets its status to
+	// StatusCompleted. It returns chronicle.ErrErasureNotFound when no record
+	// has that ID.
+	CompleteErasure(ctx context.Context, erasureID id.ID, o Outcome) error
+
 	// GetErasure returns an erasure record by ID.
 	GetErasure(ctx context.Context, erasureID id.ID) (*Erasure, error)
 
@@ -28,9 +33,13 @@ type Store interface {
 	// reveals how much data other tenants hold on that subject.
 	CountBySubject(ctx context.Context, q SubjectQuery) (int64, error)
 
-	// MarkErased flags a subject's events as erased within the query's scope.
-	// Implementations must honour the scope: an unscoped update lets any caller
-	// tamper with every tenant's audit records.
+	// MarkErased flags a subject's events as erased within the query's scope
+	// and points them at erasureID. Implementations must honour the scope: an
+	// unscoped update lets any caller tamper with every tenant's audit records.
+	//
+	// Events already marked are marked again and re-pointed, and count towards
+	// the result. That is what lets a retry after a failed erasure take over
+	// every event the failed attempt reached.
 	MarkErased(ctx context.Context, q SubjectQuery, erasureID id.ID) (int64, error)
 
 	// SubjectKeyUsage groups a subject's events by app, tenant, encryption key

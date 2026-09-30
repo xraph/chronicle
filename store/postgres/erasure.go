@@ -16,6 +16,28 @@ func (s *Store) RecordErasure(ctx context.Context, e *erasure.Erasure) error {
 	return err
 }
 
+// CompleteErasure writes an erasure's outcome and marks it completed.
+func (s *Store) CompleteErasure(ctx context.Context, erasureID id.ID, o erasure.Outcome) error {
+	result, err := s.pg.NewUpdate((*ErasureModel)(nil)).
+		Set("status = ?", string(erasure.StatusCompleted)).
+		Set("events_affected = ?", o.EventsAffected).
+		Set("key_destroyed = ?", o.KeyDestroyed).
+		Set("legacy_key_retained = ?", o.LegacyKeyRetained).
+		Where("id = ?", erasureID.String()).
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return chronicle.ErrErasureNotFound
+	}
+	return nil
+}
+
 // GetErasure returns an erasure record by ID.
 func (s *Store) GetErasure(ctx context.Context, erasureID id.ID) (*erasure.Erasure, error) {
 	m := new(ErasureModel)
