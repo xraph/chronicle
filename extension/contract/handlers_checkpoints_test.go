@@ -526,3 +526,124 @@ func TestCheckpointsListNeverAnswersNullForTheList(t *testing.T) {
 		})
 	}
 }
+
+// checkpointsTwoTenantFixture records three events in each of two sibling
+// tenants, takes one checkpoint over each chain, and returns the deps plus
+// both checkpoints and both chains' IDs, so a test can compare what the wire
+// says a checkpoint's owner is against the chain it was actually taken over.
+func checkpointsTwoTenantFixture(t *testing.T) (deps Deps, own, foreign *CheckpointSummary, ownStream, foreignStream string) {
+	t.Helper()
+	ctx := context.Background()
+	s := newSQLiteStore(t)
+	c, err := chronicle.New(chronicle.WithStore(store.NewAdapter(s)))
+	if err != nil {
+		t.Fatalf("chronicle.New: %v", err)
+	}
+	for _, tenant := range []string{"tenant-a", "tenant-b"} {
+		for i := 0; i < 3; i++ {
+			e := &audit.Event{AppID: "app-1", TenantID: tenant, Action: "action", Resource: "res", Category: "cat"}
+			if err := c.Record(ctx, e); err != nil {
+				t.Fatalf("record %s event %d: %v", tenant, i, err)
+			}
+		}
+	}
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	signer := checkpoint.NewEd25519Signer(hmacKeyProvider{key: priv, keyID: "cp-1"})
+	deps = Deps{Store: s, Checkpointer: checkpoint.NewCheckpointer(s, signer, nil), CheckpointStore: s, CheckpointSigner: signer}
+
+	take := func(tenant string) (*CheckpointSummary, string) {
+		out, err := checkpointsTakeHandler(deps)(ctx, TakeCheckpointInput{},
+			principalWith(map[string]any{"app_id": "app-1", "tenant_id": tenant}))
+		if err != nil || out.Checkpoint == nil {
+			t.Fatalf("checkpoints.take for %s: out=%+v err=%v", tenant, out, err)
+		}
+		st, err := s.GetStreamByScope(ctx, "app-1", tenant)
+		if err != nil {
+			t.Fatalf("GetStreamByScope %s: %v", tenant, err)
+		}
+		return out.Checkpoint, st.ID.String()
+	}
+	own, ownStream = take("tenant-a")
+	foreign, foreignStream = take("tenant-b")
+	if ownStream == foreignStream {
+		t.Fatalf("both tenants resolved to the same chain %s", ownStream)
+	}
+	return deps, own, foreign, ownStream, foreignStream
+}
+
+// The dashboard links a checkpoint to /chain/<streamId>/<from>/<to>, so every
+// projection must name the chain the checkpoint was taken over, taken from
+// the record itself. Before streamId existed the plugin had to guess the
+// owner from streams.list, which fails once that list is truncated.
+func TestCheckpointSummaryCarriesItsOwnStreamID(t *testing.T) {
+	ctx := context.Background()
+	deps, own, _, ownStream, _ := checkpointsTwoTenantFixture(t)
+	viewer := principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"})
+
+	if own.StreamID != ownStream {
+		t.Errorf("checkpoints.take streamId = %q, want %q", own.StreamID, ownStream)
+	}
+
+	detail, err := checkpointsDetailHandler(deps)(ctx, GetCheckpointInput{ID: own.ID}, viewer)
+	if err != nil {
+		t.Fatalf("checkpoints.detail: %v", err)
+	}
+	if detail.Checkpoint.StreamID != ownStream {
+		t.Errorf("checkpoints.detail streamId = %q, want %q", detail.Checkpoint.StreamID, ownStream)
+	}
+
+	list, err := checkpointsListHandler(deps)(ctx, CheckpointListInput{}, viewer)
+	if err != nil {
+		t.Fatalf("checkpoints.list: %v", err)
+	}
+	if len(list.Checkpoints) != 1 {
+		t.Fatalf("checkpoints.list returned %d checkpoints, want 1", len(list.Checkpoints))
+	}
+	if got := list.Checkpoints[0].StreamID; got != ownStream {
+		t.Errorf("checkpoints.list streamId = %q, want %q", got, ownStream)
+	}
+
+	mine, err := streamsMineHandler(deps)(ctx, MineInput{}, viewer)
+	if err != nil {
+		t.Fatalf("streams.mine: %v", err)
+	}
+	if mine.Stream == nil || mine.Stream.LatestCheckpoint == nil {
+		t.Fatalf("streams.mine = %+v, want a latest checkpoint", mine.Stream)
+	}
+	if got := mine.Stream.LatestCheckpoint.StreamID; got != ownStream {
+		t.Errorf("streams.mine latestCheckpoint.streamId = %q, want %q", got, ownStream)
+	}
+
+	// The key on the wire is what the React plugin reads, so pin it.
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"streamId":"`+ownStream+`"`) {
+		t.Errorf("checkpoints.detail JSON = %s, want a streamId key naming %s", raw, ownStream)
+	}
+}
+
+// Adding streamId must not turn the detail intent into a way to learn which
+// chain a foreign checkpoint belongs to. A sibling tenant's checkpoint, asked
+// for by its real ID, still answers the same NOT_FOUND as a miss, and the
+// answer carries no checkpoint at all.
+func TestCheckpointsDetailStillHidesAForeignCheckpoint(t *testing.T) {
+	deps, _, foreign, _, foreignStream := checkpointsTwoTenantFixture(t)
+	viewer := principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"})
+
+	out, err := checkpointsDetailHandler(deps)(context.Background(), GetCheckpointInput{ID: foreign.ID}, viewer)
+	if !errors.Is(err, fcontract.ErrNotFound) {
+		t.Fatalf("tenant-a fetched tenant-b's checkpoint: err = %v, want NOT_FOUND", err)
+	}
+	if out.Checkpoint != (CheckpointSummary{}) {
+		t.Fatalf("NOT_FOUND answer still carried a checkpoint: %+v", out.Checkpoint)
+	}
+	if strings.Contains(err.Error(), foreignStream) {
+		t.Fatalf("NOT_FOUND error names the foreign chain: %v", err)
+	}
+}

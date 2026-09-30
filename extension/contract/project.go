@@ -43,8 +43,14 @@ type StreamSummary struct {
 // It lives here rather than beside the checkpoints handlers because
 // StreamSummary embeds it. The checkpoints group reuses this type and must
 // not declare a second one.
+//
+// StreamID names the chain the checkpoint was taken over, read off the
+// signed record rather than inferred from the request, so the page can link
+// straight to that chain's sequences. It discloses nothing new: every intent
+// that returns a checkpoint has already confirmed the viewer owns its chain.
 type CheckpointSummary struct {
 	ID         string `json:"id"`
+	StreamID   string `json:"streamId"`
 	FromSeq    uint64 `json:"fromSeq"`
 	ToSeq      uint64 `json:"toSeq"`
 	EventCount int64  `json:"eventCount"`
@@ -97,6 +103,7 @@ func projectCheckpoint(cp *checkpoint.Checkpoint) *CheckpointSummary {
 	}
 	return &CheckpointSummary{
 		ID:         cp.ID.String(),
+		StreamID:   cp.StreamID.String(),
 		FromSeq:    cp.FromSeq,
 		ToSeq:      cp.ToSeq,
 		EventCount: cp.EventCount,
