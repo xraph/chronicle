@@ -31,8 +31,9 @@ import (
 // Rebuilding is idempotent, so a Migrate interrupted part way is safe to run
 // again. Run it with every writer on this version: a process still on the old
 // version keeps writing old-format keys, which nothing reads once the marker
-// is set. If that happened, delete the key "chronicle:meta:scope-key-format"
-// and run Migrate again.
+// is set. If that happened, delete the key "meta:scope-key-format" under the
+// store's key prefix ("chronicle:meta:scope-key-format" by default) and run
+// Migrate again.
 //
 // A collision that already happened cannot be undone here. When a second
 // scope found the first scope's stream, it appended its events into that
@@ -42,13 +43,15 @@ import (
 // see only its own events again, and the scope that created the stream keeps
 // it. The other scope's next event starts a chain of its own. The shared
 // chains are listed in the error, which wraps ErrScopeCollision, and kept in
-// the set "chronicle:meta:scope-collisions" for whoever has to investigate.
+// the set "meta:scope-collisions" under the store's key prefix
+// ("chronicle:meta:scope-collisions" by default) for whoever has to
+// investigate.
 // Only the Migrate call that does the migration returns that error.
 //
 // A retention policy lost to a collision cannot be found either: the old
 // SavePolicy deleted it when the colliding scope saved its own. Re-save it.
 func (s *Store) Migrate(ctx context.Context) error {
-	done, err := s.rdb.Exists(ctx, scopeKeyFormatMarker).Result()
+	done, err := s.rdb.Exists(ctx, s.key(scopeKeyFormatMarker)).Result()
 	if err != nil {
 		return fmt.Errorf("chronicle/redis: migrate: check scope key format: %w", err)
 	}
@@ -66,12 +69,12 @@ func (s *Store) Migrate(ctx context.Context) error {
 		for i, m := range merged {
 			members[i] = m
 		}
-		if err := s.rdb.SAdd(ctx, scopeCollisionsKey, members...).Err(); err != nil {
+		if err := s.rdb.SAdd(ctx, s.key(scopeCollisionsKey), members...).Err(); err != nil {
 			return fmt.Errorf("chronicle/redis: migrate: record merged streams: %w", err)
 		}
 	}
 
-	if err := s.rdb.Set(ctx, scopeKeyFormatMarker, "2", 0).Err(); err != nil {
+	if err := s.rdb.Set(ctx, s.key(scopeKeyFormatMarker), "2", 0).Err(); err != nil {
 		return fmt.Errorf("chronicle/redis: migrate: set scope key format: %w", err)
 	}
 
@@ -79,7 +82,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("%w: %s. Each holds events recorded under more than one app+tenant "+
 			"scope, from before scope keys were length-prefixed. A chain cannot be split "+
 			"without breaking its hashes, so these stay as they are; the IDs are kept in %q",
-			ErrScopeCollision, strings.Join(merged, ", "), scopeCollisionsKey)
+			ErrScopeCollision, strings.Join(merged, ", "), s.key(scopeCollisionsKey))
 	}
 	return nil
 }
@@ -111,7 +114,7 @@ func (s *Store) migrateScopeKeys(ctx context.Context) ([]string, error) {
 
 	// Old keys go last: until the v2 indexes are complete, a rerun still needs
 	// the old stream and policy pointers to pick which entity a scope keeps.
-	for _, prefix := range []string{legacyStreamScope, legacyEventScope, legacyPolicyScope} {
+	for _, prefix := range []string{s.key(legacyStreamScope), s.key(legacyEventScope), s.key(legacyPolicyScope)} {
 		if err := s.unlinkByPrefix(ctx, prefix); err != nil {
 			return nil, err
 		}
@@ -122,7 +125,7 @@ func (s *Store) migrateScopeKeys(ctx context.Context) ([]string, error) {
 // migrateStreamIndex points each scope's v2 key at its stream and returns every
 // stream's scope, which the event pass checks events against.
 func (s *Store) migrateStreamIndex(ctx context.Context) (map[string]scopePair, error) {
-	ids, err := s.rdb.ZRange(ctx, zStreamAll, 0, -1).Result()
+	ids, err := s.rdb.ZRange(ctx, s.key(zStreamAll), 0, -1).Result()
 	if err != nil {
 		return nil, fmt.Errorf("list streams: %w", err)
 	}
@@ -131,7 +134,7 @@ func (s *Store) migrateStreamIndex(ctx context.Context) (map[string]scopePair, e
 	entries := make([]uniqueEntry, 0, len(ids))
 	for _, streamID := range ids {
 		var m streamModel
-		if err := s.getEntity(ctx, entityKey(prefixStream, streamID), &m); err != nil {
+		if err := s.getEntity(ctx, entityKey(s.key(prefixStream), streamID), &m); err != nil {
 			if isNotFound(err) {
 				continue
 			}
@@ -140,8 +143,8 @@ func (s *Store) migrateStreamIndex(ctx context.Context) (map[string]scopePair, e
 		scopes[m.ID] = scopePair{m.AppID, m.TenantID}
 		entries = append(entries, uniqueEntry{
 			id:     m.ID,
-			legacy: legacyStreamScope + m.AppID + ":" + m.TenantID,
-			v2:     streamScopeKey(m.AppID, m.TenantID),
+			legacy: s.key(legacyStreamScope) + m.AppID + ":" + m.TenantID,
+			v2:     s.streamScopeKey(m.AppID, m.TenantID),
 		})
 	}
 
@@ -165,7 +168,7 @@ func (s *Store) migrateEventIndex(ctx context.Context, streamScopes map[string]s
 	var cursor uint64
 	for {
 		// ZSCAN replies member, score, member, score, ...
-		page, next, err := s.rdb.ZScan(ctx, zEventAll, cursor, "", 1000).Result()
+		page, next, err := s.rdb.ZScan(ctx, s.key(zEventAll), cursor, "", 1000).Result()
 		if err != nil {
 			return nil, fmt.Errorf("scan events: %w", err)
 		}
@@ -174,14 +177,14 @@ func (s *Store) migrateEventIndex(ctx context.Context, streamScopes map[string]s
 		for i := 0; i+1 < len(page); i += 2 {
 			eventID := page[i]
 			var m eventModel
-			if err := s.getEntity(ctx, entityKey(prefixEvent, eventID), &m); err != nil {
+			if err := s.getEntity(ctx, entityKey(s.key(prefixEvent), eventID), &m); err != nil {
 				if isNotFound(err) {
 					continue
 				}
 				return nil, fmt.Errorf("load event %s: %w", eventID, err)
 			}
 			// Same score storeEvent gives the scope index.
-			pipe.ZAdd(ctx, eventScopeKey(m.AppID, m.TenantID),
+			pipe.ZAdd(ctx, s.eventScopeKey(m.AppID, m.TenantID),
 				goredis.Z{Score: scoreFromTime(m.Timestamp), Member: m.ID})
 
 			if owner, ok := streamScopes[m.StreamID]; ok && owner != (scopePair{m.AppID, m.TenantID}) {
@@ -208,7 +211,7 @@ func (s *Store) migrateEventIndex(ctx context.Context, streamScopes map[string]s
 
 // migratePolicyIndex points each (app, tenant, category) v2 key at its policy.
 func (s *Store) migratePolicyIndex(ctx context.Context) error {
-	ids, err := s.rdb.ZRange(ctx, zPolicyAll, 0, -1).Result()
+	ids, err := s.rdb.ZRange(ctx, s.key(zPolicyAll), 0, -1).Result()
 	if err != nil {
 		return fmt.Errorf("list policies: %w", err)
 	}
@@ -216,7 +219,7 @@ func (s *Store) migratePolicyIndex(ctx context.Context) error {
 	entries := make([]uniqueEntry, 0, len(ids))
 	for _, policyID := range ids {
 		var m policyModel
-		if err := s.getEntity(ctx, entityKey(prefixPolicy, policyID), &m); err != nil {
+		if err := s.getEntity(ctx, entityKey(s.key(prefixPolicy), policyID), &m); err != nil {
 			if isNotFound(err) {
 				continue
 			}
@@ -224,8 +227,8 @@ func (s *Store) migratePolicyIndex(ctx context.Context) error {
 		}
 		entries = append(entries, uniqueEntry{
 			id:     m.ID,
-			legacy: legacyPolicyScope + m.AppID + ":" + m.TenantID + ":" + m.Category,
-			v2:     policyScopeKey(m.AppID, m.TenantID, m.Category),
+			legacy: s.key(legacyPolicyScope) + m.AppID + ":" + m.TenantID + ":" + m.Category,
+			v2:     s.policyScopeKey(m.AppID, m.TenantID, m.Category),
 		})
 	}
 
@@ -270,7 +273,7 @@ func (s *Store) rebuildUniqueIndex(ctx context.Context, entries []uniqueEntry) e
 func (s *Store) unlinkByPrefix(ctx context.Context, prefix string) error {
 	var cursor uint64
 	for {
-		keys, next, err := s.rdb.Scan(ctx, cursor, prefix+"*", 1000).Result()
+		keys, next, err := s.rdb.Scan(ctx, cursor, globEscape(prefix)+"*", 1000).Result()
 		if err != nil {
 			return fmt.Errorf("scan %q: %w", prefix+"*", err)
 		}
@@ -284,4 +287,18 @@ func (s *Store) unlinkByPrefix(ctx context.Context, prefix string) error {
 			return nil
 		}
 	}
+}
+
+// globEscape quotes the characters SCAN's MATCH treats as a pattern, so a key
+// prefix holding one ("tenant[1]:") matches only itself.
+func globEscape(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '*', '?', '[', ']', '\\':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

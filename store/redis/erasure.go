@@ -81,13 +81,13 @@ func erasureStatus(s string) erasure.Status {
 // RecordErasure persists an erasure event.
 func (s *Store) RecordErasure(ctx context.Context, e *erasure.Erasure) error {
 	m := toErasureModel(e)
-	key := entityKey(prefixErasure, m.ID)
+	key := entityKey(s.key(prefixErasure), m.ID)
 
 	if err := s.setEntity(ctx, key, m); err != nil {
 		return fmt.Errorf("chronicle/redis: record erasure: %w", err)
 	}
 
-	s.rdb.ZAdd(ctx, zErasureAll, goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
+	s.rdb.ZAdd(ctx, s.key(zErasureAll), goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
 	return nil
 }
 
@@ -118,7 +118,7 @@ func (s *Store) CompleteErasure(ctx context.Context, erasureID id.ID, o erasure.
 // GetErasure returns an erasure record by ID.
 func (s *Store) GetErasure(ctx context.Context, erasureID id.ID) (*erasure.Erasure, error) {
 	var m erasureModel
-	if err := s.getEntity(ctx, entityKey(prefixErasure, erasureID.String()), &m); err != nil {
+	if err := s.getEntity(ctx, entityKey(s.key(prefixErasure), erasureID.String()), &m); err != nil {
 		if isNotFound(err) {
 			return nil, chronicle.ErrErasureNotFound
 		}
@@ -129,7 +129,7 @@ func (s *Store) GetErasure(ctx context.Context, erasureID id.ID) (*erasure.Erasu
 
 // ListErasures returns erasure records with pagination.
 func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*erasure.Erasure, error) {
-	ids, err := s.rdb.ZRevRange(ctx, zErasureAll, 0, -1).Result()
+	ids, err := s.rdb.ZRevRange(ctx, s.key(zErasureAll), 0, -1).Result()
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: list erasures: %w", err)
 	}
@@ -137,7 +137,7 @@ func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*era
 	result := make([]*erasure.Erasure, 0, len(ids))
 	for _, entryID := range ids {
 		var m erasureModel
-		if err := s.getEntity(ctx, entityKey(prefixErasure, entryID), &m); err != nil {
+		if err := s.getEntity(ctx, entityKey(s.key(prefixErasure), entryID), &m); err != nil {
 			if isNotFound(err) {
 				continue
 			}
@@ -165,10 +165,10 @@ func (s *Store) ListErasures(ctx context.Context, opts erasure.ListOpts) ([]*era
 // by app/tenant, so each record is read to confirm ownership.
 func (s *Store) CountErasures(ctx context.Context, sc erasure.Scope) (int64, error) {
 	if sc.IsZero() {
-		return s.rdb.ZCard(ctx, zErasureAll).Result()
+		return s.rdb.ZCard(ctx, s.key(zErasureAll)).Result()
 	}
 
-	ids, err := s.rdb.ZRange(ctx, zErasureAll, 0, -1).Result()
+	ids, err := s.rdb.ZRange(ctx, s.key(zErasureAll), 0, -1).Result()
 	if err != nil {
 		return 0, fmt.Errorf("chronicle/redis: count erasures: %w", err)
 	}
@@ -176,7 +176,7 @@ func (s *Store) CountErasures(ctx context.Context, sc erasure.Scope) (int64, err
 	var count int64
 	for _, entryID := range ids {
 		var m erasureModel
-		if getErr := s.getEntity(ctx, entityKey(prefixErasure, entryID), &m); getErr != nil {
+		if getErr := s.getEntity(ctx, entityKey(s.key(prefixErasure), entryID), &m); getErr != nil {
 			if isNotFound(getErr) {
 				continue
 			}
@@ -200,10 +200,10 @@ func (s *Store) CountErasures(ctx context.Context, sc erasure.Scope) (int64, err
 // each event is read to confirm ownership. ZCard is only correct unscoped.
 func (s *Store) CountBySubject(ctx context.Context, sq erasure.SubjectQuery) (int64, error) {
 	if sq.IsZero() {
-		return s.rdb.ZCard(ctx, zEventSubject+sq.SubjectID).Result()
+		return s.rdb.ZCard(ctx, s.key(zEventSubject)+sq.SubjectID).Result()
 	}
 
-	ids, err := s.rdb.ZRange(ctx, zEventSubject+sq.SubjectID, 0, -1).Result()
+	ids, err := s.rdb.ZRange(ctx, s.key(zEventSubject)+sq.SubjectID, 0, -1).Result()
 	if err != nil {
 		return 0, fmt.Errorf("chronicle/redis: count by subject: %w", err)
 	}
@@ -211,7 +211,7 @@ func (s *Store) CountBySubject(ctx context.Context, sq erasure.SubjectQuery) (in
 	var count int64
 	for _, eid := range ids {
 		var m eventModel
-		if getErr := s.getEntity(ctx, entityKey(prefixEvent, eid), &m); getErr != nil {
+		if getErr := s.getEntity(ctx, entityKey(s.key(prefixEvent), eid), &m); getErr != nil {
 			if isNotFound(getErr) {
 				continue
 			}
@@ -232,7 +232,7 @@ func (s *Store) CountBySubject(ctx context.Context, sq erasure.SubjectQuery) (in
 // erasure service can see every scope sharing a legacy key. It must never back
 // a response to a caller; see erasure.Store.
 func (s *Store) SubjectKeyUsage(ctx context.Context, subjectID string) ([]erasure.KeyUsage, error) {
-	ids, err := s.rdb.ZRange(ctx, zEventSubject+subjectID, 0, -1).Result()
+	ids, err := s.rdb.ZRange(ctx, s.key(zEventSubject)+subjectID, 0, -1).Result()
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: subject key usage: %w", err)
 	}
@@ -245,7 +245,7 @@ func (s *Store) SubjectKeyUsage(ctx context.Context, subjectID string) ([]erasur
 	var usage []erasure.KeyUsage
 	for _, eid := range ids {
 		var m eventModel
-		if getErr := s.getEntity(ctx, entityKey(prefixEvent, eid), &m); getErr != nil {
+		if getErr := s.getEntity(ctx, entityKey(s.key(prefixEvent), eid), &m); getErr != nil {
 			if isNotFound(getErr) {
 				continue
 			}
@@ -286,7 +286,7 @@ func scopeMatches(s erasure.Scope, appID, tenantID string) bool {
 func (s *Store) MarkErased(
 	ctx context.Context, sq erasure.SubjectQuery, erasureID id.ID,
 ) (int64, error) {
-	ids, err := s.rdb.ZRange(ctx, zEventSubject+sq.SubjectID, 0, -1).Result()
+	ids, err := s.rdb.ZRange(ctx, s.key(zEventSubject)+sq.SubjectID, 0, -1).Result()
 	if err != nil {
 		return 0, fmt.Errorf("chronicle/redis: mark erased: %w", err)
 	}
@@ -294,7 +294,7 @@ func (s *Store) MarkErased(
 	nowTime := now()
 	var count int64
 	for _, eid := range ids {
-		key := entityKey(prefixEvent, eid)
+		key := entityKey(s.key(prefixEvent), eid)
 		var m eventModel
 		if getErr := s.getEntity(ctx, key, &m); getErr != nil {
 			if isNotFound(getErr) {

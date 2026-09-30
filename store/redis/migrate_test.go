@@ -28,12 +28,12 @@ func seedLegacyStream(ctx context.Context, t *testing.T, s *Store, sc retention.
 	st := &stream.Stream{ID: id.NewStreamID(), AppID: sc.AppID, TenantID: sc.TenantID}
 	st.CreatedAt = time.Now().UTC()
 	m := toStreamModel(st)
-	if err := s.setEntity(ctx, entityKey(prefixStream, m.ID), m); err != nil {
+	if err := s.setEntity(ctx, entityKey(s.key(prefixStream), m.ID), m); err != nil {
 		t.Fatalf("seed stream: %v", err)
 	}
 	pipe := s.rdb.Pipeline()
-	pipe.ZAdd(ctx, zStreamAll, goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
-	pipe.Set(ctx, legacyKey(legacyStreamScope, sc.AppID, sc.TenantID), m.ID, 0)
+	pipe.ZAdd(ctx, s.key(zStreamAll), goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
+	pipe.Set(ctx, legacyKey(s.key(legacyStreamScope), sc.AppID, sc.TenantID), m.ID, 0)
 	if _, err := pipe.Exec(ctx); err != nil {
 		t.Fatalf("seed stream indexes: %v", err)
 	}
@@ -52,16 +52,16 @@ func seedLegacyEvent(ctx context.Context, t *testing.T, s *Store, streamID id.ID
 		Outcome: audit.OutcomeSuccess, Severity: audit.SeverityInfo,
 	}
 	m := toEventModel(evt)
-	if err := s.setEntity(ctx, entityKey(prefixEvent, m.ID), m); err != nil {
+	if err := s.setEntity(ctx, entityKey(s.key(prefixEvent), m.ID), m); err != nil {
 		t.Fatalf("seed event: %v", err)
 	}
 	score := scoreFromTime(m.Timestamp)
 	pipe := s.rdb.Pipeline()
-	pipe.ZAdd(ctx, zEventAll, goredis.Z{Score: score, Member: m.ID})
-	pipe.ZAdd(ctx, zEventStream+m.StreamID, goredis.Z{Score: float64(m.Sequence), Member: m.ID})
-	pipe.ZAdd(ctx, legacyKey(legacyEventScope, sc.AppID, sc.TenantID), goredis.Z{Score: score, Member: m.ID})
-	pipe.ZAdd(ctx, zEventApp+m.AppID, goredis.Z{Score: score, Member: m.ID})
-	pipe.ZAdd(ctx, zEventCategory+m.Category, goredis.Z{Score: score, Member: m.ID})
+	pipe.ZAdd(ctx, s.key(zEventAll), goredis.Z{Score: score, Member: m.ID})
+	pipe.ZAdd(ctx, s.key(zEventStream)+m.StreamID, goredis.Z{Score: float64(m.Sequence), Member: m.ID})
+	pipe.ZAdd(ctx, legacyKey(s.key(legacyEventScope), sc.AppID, sc.TenantID), goredis.Z{Score: score, Member: m.ID})
+	pipe.ZAdd(ctx, s.key(zEventApp)+m.AppID, goredis.Z{Score: score, Member: m.ID})
+	pipe.ZAdd(ctx, s.key(zEventCategory)+m.Category, goredis.Z{Score: score, Member: m.ID})
 	if _, err := pipe.Exec(ctx); err != nil {
 		t.Fatalf("seed event indexes: %v", err)
 	}
@@ -76,12 +76,12 @@ func seedLegacyPolicy(ctx context.Context, t *testing.T, s *Store, sc retention.
 	}
 	p.CreatedAt = time.Now().UTC()
 	m := toPolicyModel(p)
-	if err := s.setEntity(ctx, entityKey(prefixPolicy, m.ID), m); err != nil {
+	if err := s.setEntity(ctx, entityKey(s.key(prefixPolicy), m.ID), m); err != nil {
 		t.Fatalf("seed policy: %v", err)
 	}
 	pipe := s.rdb.Pipeline()
-	pipe.ZAdd(ctx, zPolicyAll, goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
-	pipe.Set(ctx, legacyKey(legacyPolicyScope, sc.AppID, sc.TenantID, category), m.ID, 0)
+	pipe.ZAdd(ctx, s.key(zPolicyAll), goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
+	pipe.Set(ctx, legacyKey(s.key(legacyPolicyScope), sc.AppID, sc.TenantID, category), m.ID, 0)
 	if _, err := pipe.Exec(ctx); err != nil {
 		t.Fatalf("seed policy indexes: %v", err)
 	}
@@ -180,12 +180,12 @@ func TestMigrateMovesLegacyScopeKeys(t *testing.T) {
 		t.Errorf("old policy after replacement: err = %v, want ErrPolicyNotFound (the v2 index missed it)", err)
 	}
 
-	for _, prefix := range []string{legacyStreamScope, legacyEventScope, legacyPolicyScope} {
+	for _, prefix := range []string{s.key(legacyStreamScope), s.key(legacyEventScope), s.key(legacyPolicyScope)} {
 		if n := countKeys(ctx, t, rdb, prefix+"*"); n != 0 {
 			t.Errorf("%d keys left under legacy prefix %q", n, prefix)
 		}
 	}
-	if n := countKeys(ctx, t, rdb, scopeKeyFormatMarker); n != 1 {
+	if n := countKeys(ctx, t, rdb, s.key(scopeKeyFormatMarker)); n != 1 {
 		t.Errorf("format marker not set after Migrate")
 	}
 
@@ -261,12 +261,12 @@ func TestMigrateReportsMergedChain(t *testing.T) {
 		t.Errorf("Migrate error does not name the merged stream %s: %v", shared, err)
 	}
 
-	isMember, err := rdb.SIsMember(ctx, scopeCollisionsKey, shared.String()).Result()
+	isMember, err := rdb.SIsMember(ctx, s.key(scopeCollisionsKey), shared.String()).Result()
 	if err != nil {
-		t.Fatalf("SISMEMBER %s: %v", scopeCollisionsKey, err)
+		t.Fatalf("SISMEMBER %s: %v", s.key(scopeCollisionsKey), err)
 	}
 	if !isMember {
-		t.Errorf("merged stream %s not recorded in %s", shared, scopeCollisionsKey)
+		t.Errorf("merged stream %s not recorded in %s", shared, s.key(scopeCollisionsKey))
 	}
 
 	// The stream stays with the scope that created it. The other scope has no

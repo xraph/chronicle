@@ -26,6 +26,16 @@ if err != nil {
 s := redis.New(kvStore)
 ```
 
+Every key the store writes starts with `chronicle:`. To share one Redis database between several Chronicle stores, give each one a prefix of its own:
+
+```go
+s := redis.New(kvStore, redis.WithKeyPrefix("billing:chronicle:"))
+```
+
+Each store then sees only its own keys. Migrate, counts and retention purges all stay inside the prefix. End the prefix with a separator, and don't pick two where one starts with the other (`chronicle:` and `chronicle:evt:`), because the shorter one's scans reach into the longer one's keys. The key names further down this page assume the default prefix.
+
+Changing the prefix on a store that already holds data doesn't move anything. The store just stops seeing the old keys.
+
 ## Migrations
 
 ```go

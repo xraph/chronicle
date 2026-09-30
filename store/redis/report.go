@@ -87,20 +87,20 @@ func fromReportModel(m *reportModel) (*compliance.Report, error) {
 // SaveReport persists a generated compliance report.
 func (s *Store) SaveReport(ctx context.Context, r *compliance.Report) error {
 	m := toReportModel(r)
-	key := entityKey(prefixReport, m.ID)
+	key := entityKey(s.key(prefixReport), m.ID)
 
 	if err := s.setEntity(ctx, key, m); err != nil {
 		return fmt.Errorf("chronicle/redis: save report: %w", err)
 	}
 
-	s.rdb.ZAdd(ctx, zReportAll, goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
+	s.rdb.ZAdd(ctx, s.key(zReportAll), goredis.Z{Score: scoreFromTime(m.CreatedAt), Member: m.ID})
 	return nil
 }
 
 // GetReport returns a report by ID.
 func (s *Store) GetReport(ctx context.Context, reportID id.ID) (*compliance.Report, error) {
 	var m reportModel
-	if err := s.getEntity(ctx, entityKey(prefixReport, reportID.String()), &m); err != nil {
+	if err := s.getEntity(ctx, entityKey(s.key(prefixReport), reportID.String()), &m); err != nil {
 		if isNotFound(err) {
 			return nil, chronicle.ErrReportNotFound
 		}
@@ -111,7 +111,7 @@ func (s *Store) GetReport(ctx context.Context, reportID id.ID) (*compliance.Repo
 
 // ListReports returns reports matching opts, scoped before pagination.
 func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*compliance.Report, error) {
-	ids, err := s.rdb.ZRevRange(ctx, zReportAll, 0, -1).Result()
+	ids, err := s.rdb.ZRevRange(ctx, s.key(zReportAll), 0, -1).Result()
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: list reports: %w", err)
 	}
@@ -119,7 +119,7 @@ func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*c
 	result := make([]*compliance.Report, 0, len(ids))
 	for _, entryID := range ids {
 		var m reportModel
-		if getErr := s.getEntity(ctx, entityKey(prefixReport, entryID), &m); getErr != nil {
+		if getErr := s.getEntity(ctx, entityKey(s.key(prefixReport), entryID), &m); getErr != nil {
 			if isNotFound(getErr) {
 				continue
 			}
@@ -143,7 +143,7 @@ func (s *Store) ListReports(ctx context.Context, opts compliance.ListOpts) ([]*c
 
 // DeleteReport removes a report by ID.
 func (s *Store) DeleteReport(ctx context.Context, reportID id.ID) error {
-	key := entityKey(prefixReport, reportID.String())
+	key := entityKey(s.key(prefixReport), reportID.String())
 
 	var m reportModel
 	if err := s.getEntity(ctx, key, &m); err != nil {
@@ -157,7 +157,7 @@ func (s *Store) DeleteReport(ctx context.Context, reportID id.ID) error {
 		return fmt.Errorf("chronicle/redis: delete report: %w", err)
 	}
 
-	s.rdb.ZRem(ctx, zReportAll, m.ID)
+	s.rdb.ZRem(ctx, s.key(zReportAll), m.ID)
 	return nil
 }
 

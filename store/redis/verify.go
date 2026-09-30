@@ -12,7 +12,7 @@ import (
 // EventRange returns events in a sequence range for chain verification.
 func (s *Store) EventRange(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64) ([]*audit.Event, error) {
 	// Use the stream sorted set (scored by sequence).
-	ids, err := s.zRangeByScoreIDs(ctx, zEventStream+streamID.String(),
+	ids, err := s.zRangeByScoreIDs(ctx, s.key(zEventStream)+streamID.String(),
 		float64(fromSeq), float64(toSeq))
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: event range: %w", err)
@@ -21,7 +21,7 @@ func (s *Store) EventRange(ctx context.Context, streamID id.ID, fromSeq, toSeq u
 	events := make([]*audit.Event, 0, len(ids))
 	for _, eid := range ids {
 		var m eventModel
-		if err := s.getEntity(ctx, entityKey(prefixEvent, eid), &m); err != nil {
+		if err := s.getEntity(ctx, entityKey(s.key(prefixEvent), eid), &m); err != nil {
 			if isNotFound(err) {
 				continue
 			}
@@ -44,7 +44,7 @@ func (s *Store) EventRange(ctx context.Context, streamID id.ID, fromSeq, toSeq u
 
 // Gaps detects missing sequence numbers in a range.
 func (s *Store) Gaps(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64) ([]uint64, error) {
-	ids, err := s.zRangeByScoreIDs(ctx, zEventStream+streamID.String(),
+	ids, err := s.zRangeByScoreIDs(ctx, s.key(zEventStream)+streamID.String(),
 		float64(fromSeq), float64(toSeq))
 	if err != nil {
 		return nil, fmt.Errorf("chronicle/redis: gaps query: %w", err)
@@ -54,7 +54,7 @@ func (s *Store) Gaps(ctx context.Context, streamID id.ID, fromSeq, toSeq uint64)
 	existing := make(map[uint64]struct{}, len(ids))
 	for _, eid := range ids {
 		var m eventModel
-		if err := s.getEntity(ctx, entityKey(prefixEvent, eid), &m); err != nil {
+		if err := s.getEntity(ctx, entityKey(s.key(prefixEvent), eid), &m); err != nil {
 			if isNotFound(err) {
 				continue
 			}
