@@ -36,10 +36,11 @@ type EventSummary struct {
 	IP         string `json:"ip,omitempty"`
 	Erased     bool   `json:"erased"`
 
-	// TenantID is empty for an app-level event, and then left off the wire.
-	// An app-wide viewer reads every tenant's events and needs it to tell
-	// them apart.
-	TenantID string `json:"tenantId,omitempty"`
+	// TenantID is empty for an app-level event. An app-wide viewer reads
+	// every tenant's events and needs it to tell them apart. It is sent even
+	// when empty: a server from before this field sends nothing, and a page
+	// that read the missing field as "app level" would be making that up.
+	TenantID string `json:"tenantId"`
 }
 
 // EventDetail adds what the detail page needs: the payload, the chain
@@ -76,7 +77,8 @@ type EventDetail struct {
 	// under, empty when nothing was sealed. It is not covered by the event's
 	// digest, so it is a claim the row makes and nothing verifies it: erasure
 	// derives the keys it destroys from the row's scope, never from this.
-	EncryptionKeyID string `json:"encryptionKeyId,omitempty"`
+	// Sent even when empty, for the same reason as TenantID.
+	EncryptionKeyID string `json:"encryptionKeyId"`
 }
 
 // EventListInput is audit.Query's filter set on the wire. Every filter is

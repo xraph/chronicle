@@ -41,8 +41,9 @@ type ErasureSummary struct {
 	Status            string `json:"status"`
 	LegacyKeyRetained bool   `json:"legacyKeyRetained"`
 	CreatedAt         string `json:"createdAt"`
-	// TenantID is empty for an app-wide erasure, and then left off the wire.
-	TenantID string `json:"tenantId,omitempty"`
+	// TenantID is empty for an app-wide erasure, which covers every tenant in
+	// the app. Sent even when empty; see EventSummary.TenantID.
+	TenantID string `json:"tenantId"`
 }
 
 // ErasureListInput pages through the viewer's own scope's erasure records.

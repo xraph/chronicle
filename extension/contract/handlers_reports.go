@@ -106,8 +106,9 @@ type ReportSummary struct {
 	Format      string       `json:"format"`
 	CreatedAt   string       `json:"createdAt"`
 	Stats       *ReportStats `json:"stats,omitempty"`
-	// TenantID is empty for an app-level report, and then left off the wire.
-	TenantID string `json:"tenantId,omitempty"`
+	// TenantID is empty for an app-level report. Sent even when empty; see
+	// EventSummary.TenantID.
+	TenantID string `json:"tenantId"`
 }
 
 // ReportSection is one section of a report with its evidence.

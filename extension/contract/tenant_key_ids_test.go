@@ -30,10 +30,10 @@ func TestRecordsCarryTheirTenant(t *testing.T) {
 	}
 }
 
-// An app-level record has no tenant. The field is left off the wire rather
-// than sent as "", so the page can tell "app level" from a tenant whose name
-// is empty, which no tenant has.
-func TestAnAppLevelRecordSendsNoTenant(t *testing.T) {
+// An app-level record has no tenant, and says so with an empty tenantId. The
+// field is never left off: a server from before it existed sends nothing, and
+// the page must be able to tell that apart from "app level".
+func TestAnAppLevelRecordSendsAnEmptyTenant(t *testing.T) {
 	for name, v := range map[string]any{
 		"event":   projectEventDetail(&audit.Event{ID: id.NewAuditID(), AppID: "app-1"}),
 		"erasure": projectErasureSummary(&erasure.Erasure{ID: id.NewErasureID(), AppID: "app-1"}),
@@ -43,14 +43,15 @@ func TestAnAppLevelRecordSendsNoTenant(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: marshal: %v", name, err)
 		}
-		if strings.Contains(string(b), `"tenantId"`) {
-			t.Errorf("%s: an app-level record sent a tenantId: %s", name, b)
+		if !strings.Contains(string(b), `"tenantId":""`) {
+			t.Errorf("%s: an app-level record did not send an empty tenantId: %s", name, b)
 		}
 	}
 }
 
-// The encryption key ID is on the detail only. It is not covered by the
-// event's digest, which the page has to say, and a list has no room to.
+// The encryption key ID is on the detail only, and sent empty for an event
+// never sealed. It is not covered by the event's digest, which the page has
+// to say, and a list has no room to.
 func TestEventDetailCarriesTheEncryptionKeyIDAndTheSummaryDoesNot(t *testing.T) {
 	ev := &audit.Event{ID: id.NewAuditID(), AppID: "app-1", SubjectID: "subject-1", EncryptionKeyID: "key-1"}
 	d := projectEventDetail(ev)
@@ -68,7 +69,7 @@ func TestEventDetailCarriesTheEncryptionKeyIDAndTheSummaryDoesNot(t *testing.T) 
 	if err != nil {
 		t.Fatalf("marshal detail: %v", err)
 	}
-	if strings.Contains(string(b), "encryptionKeyId") {
-		t.Errorf("an event never sealed sent an encryptionKeyId: %s", b)
+	if !strings.Contains(string(b), `"encryptionKeyId":""`) {
+		t.Errorf("an event never sealed did not send an empty encryptionKeyId: %s", b)
 	}
 }
