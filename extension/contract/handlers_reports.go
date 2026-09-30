@@ -106,6 +106,9 @@ type ReportSummary struct {
 	Format      string       `json:"format"`
 	CreatedAt   string       `json:"createdAt"`
 	Stats       *ReportStats `json:"stats,omitempty"`
+	// TenantID is empty for an app-level report. Sent even when empty; see
+	// EventSummary.TenantID.
+	TenantID string `json:"tenantId"`
 }
 
 // ReportSection is one section of a report with its evidence.
@@ -293,6 +296,7 @@ func projectReportSummary(r *compliance.Report) ReportSummary {
 		Format:      string(r.Format),
 		CreatedAt:   formatTime(r.CreatedAt),
 		Stats:       projectReportStats(r.Stats),
+		TenantID:    r.TenantID,
 	}
 }
 

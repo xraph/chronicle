@@ -35,6 +35,12 @@ type EventSummary struct {
 	UserID     string `json:"userId,omitempty"`
 	IP         string `json:"ip,omitempty"`
 	Erased     bool   `json:"erased"`
+
+	// TenantID is empty for an app-level event. An app-wide viewer reads
+	// every tenant's events and needs it to tell them apart. It is sent even
+	// when empty: a server from before this field sends nothing, and a page
+	// that read the missing field as "app level" would be making that up.
+	TenantID string `json:"tenantId"`
 }
 
 // EventDetail adds what the detail page needs: the payload, the chain
@@ -66,6 +72,13 @@ type EventDetail struct {
 	Metadata   map[string]any `json:"metadata,omitempty"`
 	ErasedAt   string         `json:"erasedAt,omitempty"`
 	ErasureID  string         `json:"erasureId,omitempty"`
+
+	// EncryptionKeyID names the key the event's sealed fields were encrypted
+	// under, empty when nothing was sealed. It is not covered by the event's
+	// digest, so it is a claim the row makes and nothing verifies it: erasure
+	// derives the keys it destroys from the row's scope, never from this.
+	// Sent even when empty, for the same reason as TenantID.
+	EncryptionKeyID string `json:"encryptionKeyId"`
 }
 
 // EventListInput is audit.Query's filter set on the wire. Every filter is
@@ -179,6 +192,7 @@ func projectEventSummary(e *audit.Event) EventSummary {
 		UserID:     e.UserID,
 		IP:         e.IP,
 		Erased:     e.Erased,
+		TenantID:   e.TenantID,
 	}
 }
 
@@ -199,6 +213,8 @@ func projectEventDetail(e *audit.Event) EventDetail {
 		SessionID:    e.SessionID,
 		Metadata:     e.Metadata,
 		ErasureID:    e.ErasureID,
+
+		EncryptionKeyID: e.EncryptionKeyID,
 	}
 	if e.ErasedAt != nil {
 		out.ErasedAt = formatTime(*e.ErasedAt)
