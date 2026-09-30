@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	dashboard "github.com/xraph/forge/extensions/dashboard"
 	dashauth "github.com/xraph/forge/extensions/dashboard/auth"
 	fcontract "github.com/xraph/forge/extensions/dashboard/contract"
 	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
@@ -66,8 +67,7 @@ func registerContract(t *testing.T, ext *extension.Extension) *dispatcher.Dispat
 // a field the extension forgot to pass. The one that matters most is
 // Deps.HashChain: with it missing the verifier is unkeyed and reports every
 // keyed event as tampered or downgraded, while everything else in the
-// package stays green. That is the same hole
-// TestHMACDeploymentVerifiesThroughTheDashboard closes for the templ path.
+// package stays green.
 func TestContractContributorServesAnHMACDeployment(t *testing.T) {
 	ext, _ := setupHMACExtension(t)
 	ctx := context.Background()
@@ -295,5 +295,79 @@ func TestContractContributorServesACheckpointedDeployment(t *testing.T) {
 
 	if _, err := dispatchIntent(d, fcontract.KindCommand, "retention.enforce", nil, scoped); err != nil {
 		t.Fatalf("retention.enforce: %v", err)
+	}
+}
+
+// TestContractContributorIsFoundWithoutDashboardAware pins how the dashboard
+// discovers chronicle. Forge asserts ContractContributorAware on its own,
+// separately from DashboardAware, so an extension that offers no legacy
+// contributor is still wired in. If this ever needed DashboardAware again,
+// removing DashboardContributor would drop the whole React plugin's backend
+// with nothing logged.
+func TestContractContributorIsFoundWithoutDashboardAware(t *testing.T) {
+	ext, _ := setupHMACExtension(t)
+
+	if _, ok := any(ext).(dashboard.DashboardAware); ok {
+		t.Fatal("the extension still implements dashboard.DashboardAware, so the templ contributor is not gone")
+	}
+	cca, ok := any(ext).(dashboard.ContractContributorAware)
+	if !ok {
+		t.Fatal("the extension does not implement dashboard.ContractContributorAware, so the dashboard cannot find it")
+	}
+
+	d := dispatcher.New(dispatcher.NoopMetricsEmitter{})
+	reg := fcontract.NewRegistry()
+	if err := cca.RegisterContractContributor(d, reg, fcontract.NewWardenRegistry()); err != nil {
+		t.Fatalf("RegisterContractContributor: %v", err)
+	}
+	if _, ok := reg.Contributor("chronicle"); !ok {
+		t.Fatal("the chronicle contributor was not registered through the interface the dashboard asserts")
+	}
+}
+
+// TestContractVerifyReportsARewriteOfCheckpointedEvents is the dashboard-path
+// counterpart of TestVerifyAPIReportsARewriteOfCheckpointedEvents. The two
+// answer the same question through different wiring, and a verifier built
+// without the checkpoint store or signer would pass every clean-chain test
+// while missing exactly this attack.
+func TestContractVerifyReportsARewriteOfCheckpointedEvents(t *testing.T) {
+	ext, h, mem, streamID := setupCheckpointedExtension(t)
+	d := registerContract(t, ext)
+	scoped := contractPrincipal(map[string]any{"app_id": checkpointE2EAppID})
+
+	takeCheckpointThroughTheAPI(t, h, streamID)
+	rewriteEventAndRelink(t, mem, streamID, 3, "attacker-was-not-here")
+
+	data, err := dispatchQuery(d, "verify.run", scoped)
+	if err != nil {
+		t.Fatalf("verify.run: %v", err)
+	}
+	var run struct {
+		Report struct {
+			Valid              bool     `json:"valid"`
+			CheckpointsChecked bool     `json:"checkpointsChecked"`
+			Tampered           []uint64 `json:"tampered"`
+			Checkpoints        []struct {
+				SignatureValid bool `json:"signatureValid"`
+				HashChecked    bool `json:"hashChecked"`
+				HashMatch      bool `json:"hashMatch"`
+			} `json:"checkpoints"`
+		} `json:"report"`
+	}
+	if err := json.Unmarshal(data, &run); err != nil {
+		t.Fatalf("decode %s: %v", data, err)
+	}
+	if run.Report.Valid {
+		t.Fatalf("a rewrite of checkpointed events verified as valid through verify.run: %s", data)
+	}
+	if len(run.Report.Tampered) != 0 {
+		t.Fatalf("the chain itself flagged the rewrite, so this no longer proves the checkpoint caught it: %s", data)
+	}
+	if len(run.Report.Checkpoints) != 1 {
+		t.Fatalf("got %d checkpoint results, want the one covering the stream: %s", len(run.Report.Checkpoints), data)
+	}
+	cp := run.Report.Checkpoints[0]
+	if !cp.SignatureValid || !cp.HashChecked || cp.HashMatch {
+		t.Fatalf("checkpoint = %+v, want a valid signature, a hash that was checked, and no match: %s", cp, data)
 	}
 }

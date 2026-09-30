@@ -303,18 +303,31 @@ auth registry's middleware and uses those options for documentation only.
 
 ### Dashboard
 
-The Forge dashboard pages are read-only by default. Chronicle cannot authenticate
-the dashboard route (Forge's dashboard extension owns it), so creating and
-deleting retention policies, running enforcement, and generating reports are
-disabled until you assert that the route is already protected:
+Chronicle's pages in the Forge dashboard come from a React plugin,
+`@forge-go/dashboard-plugin-chronicle`, which lives in the forge-dashboard repo.
+Add it to the plugins list in your dashboard shell and that side is done. The Go
+side needs nothing from you: the extension registers its contract with forge's
+dashboard when it starts. If you're coming from the server-rendered pages,
+[MIGRATION.md](MIGRATION.md) has the snippet and a line for everything they did.
 
-```yaml
-chronicle:
-  dashboard_mutations: true
-```
+Reads need a signed-in user with a resolvable app. Writes depend on the scopes
+that user holds, matched as the bare names `chronicle.write` and
+`chronicle.admin`:
 
-Dashboard reads are always tenant-scoped, and dashboard enforcement only runs the
-viewing tenant's own policies.
+| Needs | What it covers |
+|---|---|
+| Any signed-in user | every page: lists, details, verify, preview, export, settings |
+| `chronicle.write` or `chronicle.admin` | taking a checkpoint, generating a report |
+| `chronicle.admin` | saving, deleting and enforcing retention policies, requesting an erasure |
+
+A session with no scope sees every page and can change nothing. Enforcement
+purges audit events, which is why it sits with the admin scope and not the write
+one.
+
+The old `dashboard_mutations` key and `WithDashboardMutations()` do nothing now.
+The key still loads and the option still compiles, so nothing breaks, but both
+are deprecated and will go in a later release. Delete them from your config when
+you get a chance.
 
 Each dashboard session is scoped by the `app_id` claim, and by `tenant_id` or
 `org_id` for a tenant, on the signed-in user. A session with no app is refused,

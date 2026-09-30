@@ -65,13 +65,12 @@ type Config struct {
 	// arrives with no app or tenant claims. See [DashboardConfig].
 	Dashboard DashboardConfig `json:"dashboard" mapstructure:"dashboard" yaml:"dashboard"`
 
-	// DashboardMutations permits the dashboard's write actions: creating and
-	// deleting retention policies, running enforcement, and generating reports.
+	// DashboardMutations has no effect.
 	//
-	// Defaults to false, leaving the dashboard read-only. Chronicle cannot
-	// authenticate the dashboard — Forge's dashboard extension owns that route —
-	// so enabling this asserts that the route is already protected. Dashboard
-	// enforcement purges audit events.
+	// Deprecated: dashboard writes are governed by the scopes the contract
+	// declares on each command, chronicle.write and chronicle.admin, held by
+	// the signed-in user. The field stays so a config file that still sets
+	// dashboard_mutations loads. It will be removed in a later release.
 	DashboardMutations bool `json:"dashboard_mutations" mapstructure:"dashboard_mutations" yaml:"dashboard_mutations"`
 
 	// RequireConfig requires config to be present in YAML files.

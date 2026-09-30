@@ -92,15 +92,14 @@ func WithUnauthenticatedAPI() Option {
 	return func(e *Extension) { e.config.Auth.AllowUnauthenticated = true }
 }
 
-// WithDashboardMutations allows the dashboard's write actions: creating and
-// deleting retention policies, running enforcement, and generating reports.
+// WithDashboardMutations has no effect.
 //
-// The dashboard is read-only by default. Chronicle cannot authenticate the
-// dashboard route (Forge's dashboard extension owns it), so enabling this
-// asserts that something else already protects it. Dashboard enforcement purges
-// audit events.
+// Deprecated: dashboard writes are governed by the scopes the contract
+// declares on each command, chronicle.write and chronicle.admin, held by the
+// signed-in user. This option stays so existing callers still compile. It will
+// be removed in a later release.
 func WithDashboardMutations() Option {
-	return func(e *Extension) { e.config.DashboardMutations = true }
+	return func(*Extension) {}
 }
 
 // WithRetentionInterval sets how often retention policies are enforced.

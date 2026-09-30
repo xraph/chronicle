@@ -18,7 +18,6 @@ import (
 	dashboard "github.com/xraph/forge/extensions/dashboard"
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
-	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/kv"
 	"github.com/xraph/vessel"
@@ -27,7 +26,6 @@ import (
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/crypto"
-	chronicledash "github.com/xraph/chronicle/dashboard"
 	"github.com/xraph/chronicle/erasure"
 	"github.com/xraph/chronicle/extension/contract"
 	"github.com/xraph/chronicle/handler"
@@ -53,13 +51,12 @@ const (
 	ExtensionVersion     = "0.1.0"
 )
 
-// Ensure Extension implements forge.Extension, dashboard.DashboardAware and
+// Ensure Extension implements forge.Extension and
 // dashboard.ContractContributorAware at compile time. The dashboard finds the
 // contract contributor by type assertion, so a signature drift in forge would
 // otherwise drop it with nothing logged and nothing rendered.
 var (
 	_ forge.Extension                    = (*Extension)(nil)
-	_ dashboard.DashboardAware           = (*Extension)(nil)
 	_ dashboard.ContractContributorAware = (*Extension)(nil)
 )
 
@@ -503,33 +500,10 @@ func (e *Extension) API() *handler.API {
 	return e.api
 }
 
-// DashboardContributor implements dashboard.DashboardAware. It returns a
-// LocalContributor that renders chronicle pages, widgets, and settings in the
-// Forge dashboard using templ + ForgeUI.
-func (e *Extension) DashboardContributor() contributor.LocalContributor {
-	return chronicledash.New(
-		chronicledash.NewManifest(),
-		e.store,
-		e.engine,
-		e.enforcer,
-		chronicledash.Config{
-			BatchSize:           e.config.BatchSize,
-			FlushInterval:       e.config.FlushInterval,
-			RetentionInterval:   e.config.RetentionInterval,
-			EnableCryptoErasure: e.config.EnableCryptoErasure,
-			BasePath:            e.config.BasePath,
-			AllowMutations:      e.config.DashboardMutations,
-			HashChain:           e.hashChain,
-			CheckpointStore:     e.checkpointStore(),
-			CheckpointSigner:    e.checkpointSigner,
-		},
-	)
-}
-
 // RegisterContractContributor implements dashboard.ContractContributorAware.
 // It registers the chronicle contract contributor against the dashboard's own
-// dispatcher and registries, alongside the templ contributor from
-// DashboardContributor. Both stay registered until the templ one is retired.
+// dispatcher and registries. The dashboard discovers it by asserting this
+// interface alone, so the extension needs no other dashboard interface.
 //
 // An extension that has not been through Register has no store to serve from.
 // That is logged and skipped rather than returned, so one unstarted extension
@@ -571,8 +545,8 @@ func (e *Extension) RegisterContractContributor(
 
 		// Verification recomputes digests under this chain. Leaving it out
 		// gives an unkeyed verifier, which reports every event of an HMAC
-		// deployment as tampered or downgraded; the templ dashboard once
-		// dropped the same field with every other test staying green.
+		// deployment as tampered or downgraded, and a Deps built by hand
+		// in the contract package's tests cannot notice the field missing.
 		HashChain: e.hashChain,
 
 		// The configured default scope. Without these the contract path
@@ -926,9 +900,6 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	}
 	if programmaticConfig.EnableCryptoErasure {
 		yamlConfig.EnableCryptoErasure = true
-	}
-	if programmaticConfig.DashboardMutations {
-		yamlConfig.DashboardMutations = true
 	}
 	if programmaticConfig.Auth.AllowUnauthenticated {
 		yamlConfig.Auth.AllowUnauthenticated = true
