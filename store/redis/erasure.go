@@ -96,7 +96,7 @@ func (s *Store) RecordErasure(ctx context.Context, e *erasure.Erasure) error {
 // The read and write are not atomic. Only the erasure service writes a record
 // after creating it, once, so there is no competing writer to lose.
 func (s *Store) CompleteErasure(ctx context.Context, erasureID id.ID, o erasure.Outcome) error {
-	key := entityKey(prefixErasure, erasureID.String())
+	key := entityKey(s.key(prefixErasure), erasureID.String())
 	var m erasureModel
 	if err := s.getEntity(ctx, key, &m); err != nil {
 		if isNotFound(err) {
