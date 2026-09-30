@@ -154,6 +154,14 @@ type RetentionPreviewResponse struct {
 
 // EnforceResponse is the outcome of one retention.enforce pass.
 //
+// Retained is always 0 today. It is copied from retention.EnforceResult,
+// whose Retained counter the enforcer adds up across policies but no policy
+// ever sets, so nothing counts events a policy chose to keep. The field stays
+// so the wire does not change when the enforcer starts counting. Do not read
+// it as "events kept by policy": that number is not measured. Purges that
+// were recorded in the chain show up on verify.run as retained ranges, which
+// is a different thing.
+//
 // MoreRemain is true when eligible events are still there after the pass.
 // One pass loads at most retention.DefaultPurgeBatchSize events per policy,
 // so a large backlog takes several, and the library's own result has no way

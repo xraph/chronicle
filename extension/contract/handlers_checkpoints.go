@@ -52,6 +52,11 @@ type TakeCheckpointInput struct {
 // every call to this intent. HasMore is computed instead, by asking the
 // store for one row past the requested page and trimming it off below: that
 // costs nothing beyond what the page already reads, unlike a count.
+//
+// Checkpoints is never null on the wire. Every answer carries an array,
+// empty when there is nothing to list, so a client can iterate it without a
+// null check. That holds for the unsupported answers too, which is why
+// Supported, not the array, says why it is empty.
 type CheckpointListResponse struct {
 	Checkpoints []CheckpointSummary `json:"checkpoints"`
 	HasMore     bool                `json:"hasMore"`
@@ -125,7 +130,7 @@ func checkpointsListHandler(deps Deps) func(context.Context, CheckpointListInput
 		// answers Supported:false with no store call at all, the same as
 		// TestCheckpointsListWithNoStoreConfigured requires.
 		if !checkpointsAvailable(deps) {
-			return CheckpointListResponse{}, nil
+			return CheckpointListResponse{Checkpoints: []CheckpointSummary{}}, nil
 		}
 
 		// A scope with no chain yet has no stream ID to list checkpoints
@@ -152,7 +157,7 @@ func checkpointsListHandler(deps Deps) func(context.Context, CheckpointListInput
 		})
 		if err != nil {
 			if errors.Is(err, checkpoint.ErrUnsupported) {
-				return CheckpointListResponse{}, nil
+				return CheckpointListResponse{Checkpoints: []CheckpointSummary{}}, nil
 			}
 			return CheckpointListResponse{}, deps.mapStoreError("checkpoints.list", err)
 		}

@@ -1034,3 +1034,136 @@ func TestVerifyRunWithNoChainDoesNotCountPolicies(t *testing.T) {
 		t.Fatalf("noChain = %v, ListPolicies calls = %d; want true and 0", out.NoChain, spy.lists)
 	}
 }
+
+// ──────────────────────────────────────────────────
+// verify.run: retained
+// ──────────────────────────────────────────────────
+
+// Every field of a retained range has to cross to the page, and a report with
+// none must not carry a "retained" key at all, the same as gaps.
+func TestProjectReportCopiesEveryRetainedRange(t *testing.T) {
+	in := &verify.Report{
+		Valid: true,
+		Retained: []verify.RetainedRange{
+			{FromSeq: 2, ToSeq: 4, RecordSeq: 7, PolicyID: "pol_01"},
+			{FromSeq: 9, ToSeq: 9, RecordSeq: 11, Backfill: "archive-2026-01"},
+		},
+	}
+	got := projectReport(in)
+
+	want := []RetainedRangeDTO{
+		{FromSeq: 2, ToSeq: 4, RecordSeq: 7, PolicyID: "pol_01"},
+		{FromSeq: 9, ToSeq: 9, RecordSeq: 11, Backfill: "archive-2026-01"},
+	}
+	if !reflect.DeepEqual(got.Retained, want) {
+		t.Fatalf("Retained = %+v, want %+v", got.Retained, want)
+	}
+
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire struct {
+		Retained []map[string]any `json:"retained"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(wire.Retained) != 2 {
+		t.Fatalf("wire retained = %v, want two ranges", wire.Retained)
+	}
+	first, second := wire.Retained[0], wire.Retained[1]
+	if first["fromSeq"] != float64(2) || first["toSeq"] != float64(4) || first["recordSeq"] != float64(7) || first["policyId"] != "pol_01" {
+		t.Fatalf("first range on the wire = %v", first)
+	}
+	if _, has := first["backfill"]; has {
+		t.Fatalf("an empty backfill must be omitted: %v", first)
+	}
+	if second["fromSeq"] != float64(9) || second["toSeq"] != float64(9) || second["recordSeq"] != float64(11) || second["backfill"] != "archive-2026-01" {
+		t.Fatalf("second range on the wire = %v", second)
+	}
+	if _, has := second["policyId"]; has {
+		t.Fatalf("an empty policyId must be omitted: %v", second)
+	}
+}
+
+func TestProjectReportWithNoRetainedRangesOmitsTheKey(t *testing.T) {
+	raw, err := json.Marshal(projectReport(&verify.Report{Valid: true}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), `"retained"`) {
+		t.Fatalf("a report with no retained ranges carried the key: %s", raw)
+	}
+}
+
+// A purge the enforcer recorded in the chain is not a gap. This runs the real
+// enforcer with a real Chronicle as its chain recorder over sqlite, then
+// verifies through the contract: the chain is valid, the purged sequences are
+// retained and not gaps, and the policy count still says one policy exists.
+func TestVerifyRunReportsARecordedPurgeAsRetainedEndToEndOnSQLite(t *testing.T) {
+	ctx := context.Background()
+	s := newSQLiteStore(t)
+	c, err := chronicle.New(chronicle.WithStore(store.NewAdapter(s)))
+	if err != nil {
+		t.Fatalf("chronicle.New: %v", err)
+	}
+
+	// Alternating auth and billing, all old: a policy on auth alone removes
+	// sequences 1, 3 and 5 from the middle of the chain.
+	for i := 0; i < 6; i++ {
+		cat := "auth"
+		if i%2 == 1 {
+			cat = "billing"
+		}
+		e := &audit.Event{
+			AppID: "app-1", TenantID: "tenant-a", Action: "test.action", Resource: "res",
+			Category: cat, Timestamp: time.Now().Add(-90 * 24 * time.Hour).UTC(),
+		}
+		if err := c.Record(ctx, e); err != nil {
+			t.Fatalf("record event %d: %v", i, err)
+		}
+	}
+	verifySavePolicy(t, s, "app-1", "tenant-a", "auth")
+
+	enforcer := retention.NewEnforcer(s, nil, nil, retention.WithChainRecorder(c))
+	res, err := enforcer.EnforceScope(ctx, retention.Scope{AppID: "app-1", TenantID: "tenant-a"})
+	if err != nil {
+		t.Fatalf("enforce: %v", err)
+	}
+	if res.Purged != 3 {
+		t.Fatalf("purged = %d, want 3", res.Purged)
+	}
+
+	viewer := principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"})
+	out, err := verifyRunHandler(Deps{Store: s, Chronicle: c})(ctx, VerifyInput{}, viewer)
+	if err != nil {
+		t.Fatalf("verify.run: %v", err)
+	}
+	r := out.Report
+	if r == nil {
+		t.Fatal("no report")
+	}
+	if !r.Valid {
+		t.Fatalf("a recorded purge made the chain invalid: %+v", r)
+	}
+	if len(r.Gaps) != 0 || len(r.Tampered) != 0 {
+		t.Fatalf("gaps = %v, tampered = %v, want none: the purge was recorded", r.Gaps, r.Tampered)
+	}
+
+	var retained []uint64
+	for _, rg := range r.Retained {
+		if rg.RecordSeq == 0 || rg.PolicyID == "" {
+			t.Fatalf("range %+v carries no record sequence or policy", rg)
+		}
+		for seq := rg.FromSeq; seq <= rg.ToSeq; seq++ {
+			retained = append(retained, seq)
+		}
+	}
+	if !reflect.DeepEqual(retained, []uint64{1, 3, 5}) {
+		t.Fatalf("retained sequences = %v, want [1 3 5]; ranges %+v", retained, r.Retained)
+	}
+	if r.RetentionPolicies != 1 {
+		t.Fatalf("retentionPolicies = %d, want 1", r.RetentionPolicies)
+	}
+}

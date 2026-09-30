@@ -3,7 +3,9 @@ package contract
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	fcontract "github.com/xraph/forge/extensions/dashboard/contract"
@@ -490,5 +492,37 @@ func TestCheckpointsTakeListAndDetailEndToEndOnSQLite(t *testing.T) {
 	}
 	if !again.UpToDate || again.Checkpoint != nil {
 		t.Fatalf("repeat checkpoints.take = %+v, want UpToDate true with no checkpoint", again)
+	}
+}
+
+// A client iterates checkpoints, so no answer may carry null for the list:
+// not for a backend that refuses every call, and not for a deployment that
+// takes no checkpoints at all. Supported says why it is empty.
+func TestCheckpointsListNeverAnswersNullForTheList(t *testing.T) {
+	cases := map[string]Deps{
+		"unsupported backend": {
+			Store:            newStubStore(),
+			CheckpointStore:  storeRefusingCheckpoints(checkpoint.ErrUnsupported),
+			CheckpointSigner: stubSigner{},
+		},
+		"no store configured": {Store: newStubStore()},
+	}
+	for name, deps := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := checkpointsListHandler(deps)(context.Background(), CheckpointListInput{}, principalWith(map[string]any{"app_id": "app-1"}))
+			if err != nil {
+				t.Fatalf("checkpoints.list: %v", err)
+			}
+			raw, err := json.Marshal(out)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !strings.Contains(string(raw), `"checkpoints":[]`) {
+				t.Fatalf("checkpoints was not an empty array: %s", raw)
+			}
+			if out.Supported {
+				t.Fatalf("Supported must stay false: %s", raw)
+			}
+		})
 	}
 }

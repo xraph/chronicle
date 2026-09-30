@@ -46,6 +46,36 @@ type CoverageSpan struct {
 	Note    string `json:"note,omitempty"`
 }
 
+// RetainedRangeDTO is verify.RetainedRange on the wire: a run of sequences a
+// retention policy removed, which an authentic retention record in the chain
+// accounts for. The page shows it as an authorised, recorded purge, not as a
+// deletion.
+//
+// A retained range asserts linkage, never content. The record vouches that
+// these sequences existed and gives the hashes either side of them, so the
+// chain still links across the hole. It says nothing about what the removed
+// events contained, and the events themselves are gone from the store.
+type RetainedRangeDTO struct {
+	// FromSeq and ToSeq bound the run of removed sequences, both inclusive.
+	FromSeq uint64 `json:"fromSeq"`
+	ToSeq   uint64 `json:"toSeq"`
+
+	// RecordSeq is the sequence of the retention record that lists the run.
+	// It is an ordinary event in the chain, so the page can link to it.
+	RecordSeq uint64 `json:"recordSeq"`
+
+	// PolicyID is the retention policy the record says it acted under. It is
+	// the record's own claim, and it names a policy that may since have been
+	// deleted. Empty when the record names none.
+	PolicyID string `json:"policyId,omitempty"`
+
+	// Backfill names the archive the record was recovered from, when it was
+	// written afterwards for a purge that predates retention records. Empty
+	// for a record the enforcer wrote at purge time, which is the ordinary
+	// case.
+	Backfill string `json:"backfill,omitempty"`
+}
+
 // CheckpointResult mirrors verify.CheckpointResult field for field. Each
 // *Checked flag travels with its value because false alone cannot say
 // whether the check ran.
@@ -90,15 +120,22 @@ type VerifyReport struct {
 	CheckpointHeadOK      bool `json:"checkpointHeadOk"`
 	CheckpointHeadChecked bool `json:"checkpointHeadChecked"`
 
+	// Retained lists the missing sequences that a retention policy removed
+	// and an authentic retention record accounts for, as ranges. They are not
+	// in Gaps and do not make the chain invalid. Absent when there are none.
+	Retained []RetainedRangeDTO `json:"retained,omitempty"`
+
 	Coverage    []CoverageSpan     `json:"coverage,omitempty"`
 	Checkpoints []CheckpointResult `json:"checkpoints,omitempty"`
 
 	// RetentionPolicies is how many retention policies can purge the chain
-	// this report verified. A non-zero value means gaps and tampered
-	// sequences in this report may be authorised retention purges, which
-	// Chronicle cannot currently distinguish from deletion: a purge removes
-	// events from the middle of the chain, so the purged sequences read as
-	// gaps and the events after them as tampered.
+	// this report verified. Purges those policies recorded in the chain are
+	// reported in Retained and are not gaps. A non-zero value therefore means
+	// only this: Gaps may still include purges that happened before
+	// retention records existed and were never backfilled, which Chronicle
+	// cannot tell from deletion. A purge removes events from the middle of
+	// the chain, so such purged sequences read as gaps and the events after
+	// them as tampered.
 	//
 	// A chain is one (app, tenant). A policy purges it when the policy's
 	// app is the chain's app and the policy's tenant is either empty (the
@@ -212,10 +249,13 @@ func newVerifier(deps Deps) *verify.Verifier {
 	return verify.NewVerifierWithCheckpoints(deps.Store, chain, deps.CheckpointStore, deps.CheckpointSigner)
 }
 
-// projectReport copies every field of a verify.Report onto its wire type
-// unchanged. It is written as a field-for-field copy on purpose, not a loop
-// over reflected fields: a report field added later without a matching line
-// here is a compile-time reminder, not a silent drop.
+// projectReport copies every field of a verify.Report onto its wire type.
+// The scalar and slice fields are copied as they are, and the coverage,
+// retained and checkpoint entries are converted one by one into their wire
+// types. RetentionPolicies is not part of a verify.Report, so it is left at
+// zero here and filled in by the handler. It is written out field by field
+// on purpose, not as a loop over reflected fields: a report field added later
+// without a matching line here is easy to spot, not a silent drop.
 func projectReport(r *verify.Report) *VerifyReport {
 	if r == nil {
 		return nil
@@ -241,6 +281,15 @@ func projectReport(r *verify.Report) *VerifyReport {
 		CheckpointHeadChecked: r.CheckpointHeadChecked,
 	}
 
+	for _, rg := range r.Retained {
+		out.Retained = append(out.Retained, RetainedRangeDTO{
+			FromSeq:   rg.FromSeq,
+			ToSeq:     rg.ToSeq,
+			RecordSeq: rg.RecordSeq,
+			PolicyID:  rg.PolicyID,
+			Backfill:  rg.Backfill,
+		})
+	}
 	for _, c := range r.Coverage {
 		out.Coverage = append(out.Coverage, CoverageSpan{
 			FromSeq: c.FromSeq,
