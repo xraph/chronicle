@@ -43,6 +43,10 @@ type Erasure struct {
 	LegacyKeyRetained bool `json:"legacy_key_retained"`
 }
 
+// Pending reports whether the erasure did not finish. A record with no
+// status predates statuses and is completed.
+func (e *Erasure) Pending() bool { return e.Status == StatusPending }
+
 // Outcome is what an erasure achieved, written by Store.CompleteErasure.
 type Outcome struct {
 	EventsAffected    int64

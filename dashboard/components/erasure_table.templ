@@ -17,7 +17,8 @@ templ ErasureTable(erasures []*erasure.Erasure, basePath string) {
 				@table.Head() { Reason }
 				@table.Head() { Requested By }
 				@table.Head() { Events Affected }
-				@table.Head() { Key Destroyed }
+				@table.Head() { Status }
+				@table.Head() { Key }
 			}
 		}
 		@table.Body() {
@@ -45,7 +46,10 @@ templ ErasureTable(erasures []*erasure.Erasure, basePath string) {
 						<span class="text-sm">{ strconv.FormatInt(e.EventsAffected, 10) }</span>
 					}
 					@table.Cell() {
-						@KeyDestroyedBadge(e.KeyDestroyed)
+						@ErasureStatusBadge(e)
+					}
+					@table.Cell() {
+						@ErasureKeyBadge(e)
 					}
 				</tr>
 			}
