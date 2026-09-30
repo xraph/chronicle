@@ -21,14 +21,26 @@ const (
 
 // ErasureSummary is one erasure record as the dashboard reads it: the
 // evidence that a data subject's right to erasure was honoured.
+//
+// Status is "pending" or "completed". A pending erasure did not finish: its
+// events may be marked and some of its keys may be gone, but KeyDestroyed is
+// false because not every key is confirmed destroyed. The page should say so
+// and point the operator at running the erasure again, which finishes it
+// under a new record. Records from before erasures had a status read as
+// completed.
+//
+// LegacyKeyRetained means the same as on ErasureResult. Both fields are
+// always on the wire, false and "completed" included, for the same reason.
 type ErasureSummary struct {
-	ID             string `json:"id"`
-	SubjectID      string `json:"subjectId"`
-	Reason         string `json:"reason"`
-	RequestedBy    string `json:"requestedBy"`
-	EventsAffected int64  `json:"eventsAffected"`
-	KeyDestroyed   bool   `json:"keyDestroyed"`
-	CreatedAt      string `json:"createdAt"`
+	ID                string `json:"id"`
+	SubjectID         string `json:"subjectId"`
+	Reason            string `json:"reason"`
+	RequestedBy       string `json:"requestedBy"`
+	EventsAffected    int64  `json:"eventsAffected"`
+	KeyDestroyed      bool   `json:"keyDestroyed"`
+	Status            string `json:"status"`
+	LegacyKeyRetained bool   `json:"legacyKeyRetained"`
+	CreatedAt         string `json:"createdAt"`
 }
 
 // ErasureListInput pages through the viewer's own scope's erasure records.
@@ -129,14 +141,20 @@ func erasuresRegistrations() []registration {
 
 // projectErasureSummary turns a stored erasure record into its wire summary.
 func projectErasureSummary(e *erasure.Erasure) ErasureSummary {
+	status := erasure.StatusCompleted
+	if e.Pending() {
+		status = erasure.StatusPending
+	}
 	return ErasureSummary{
-		ID:             e.ID.String(),
-		SubjectID:      e.SubjectID,
-		Reason:         e.Reason,
-		RequestedBy:    e.RequestedBy,
-		EventsAffected: e.EventsAffected,
-		KeyDestroyed:   e.KeyDestroyed,
-		CreatedAt:      formatTime(e.CreatedAt),
+		ID:                e.ID.String(),
+		SubjectID:         e.SubjectID,
+		Reason:            e.Reason,
+		RequestedBy:       e.RequestedBy,
+		EventsAffected:    e.EventsAffected,
+		KeyDestroyed:      e.KeyDestroyed,
+		Status:            string(status),
+		LegacyKeyRetained: e.LegacyKeyRetained,
+		CreatedAt:         formatTime(e.CreatedAt),
 	}
 }
 

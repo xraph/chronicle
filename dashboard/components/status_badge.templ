@@ -1,6 +1,9 @@
 package components
 
-import "github.com/xraph/forgeui/components/badge"
+import (
+	"github.com/xraph/chronicle/erasure"
+	"github.com/xraph/forgeui/components/badge"
+)
 
 // OutcomeBadge renders a badge coloured by event outcome.
 templ OutcomeBadge(outcome string) {
@@ -90,16 +93,40 @@ templ ReportTypeBadge(reportType string) {
 	}
 }
 
-// KeyDestroyedBadge renders a badge for whether an encryption key was destroyed.
-templ KeyDestroyedBadge(destroyed bool) {
-	if destroyed {
-		@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
-			Key Destroyed
+// ErasureStatusBadge renders whether an erasure finished.
+templ ErasureStatusBadge(e *erasure.Erasure) {
+	if e.Pending() {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			Pending
 		}
 	} else {
 		@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
-			Key Intact
+			Completed
 		}
+	}
+}
+
+// ErasureKeyBadge renders what an erasure did with the keys its events were
+// sealed under. A pending erasure may have destroyed some of them, so it
+// claims nothing either way.
+templ ErasureKeyBadge(e *erasure.Erasure) {
+	switch {
+		case e.Pending():
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+				Not Confirmed
+			}
+		case e.KeyDestroyed:
+			@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+				Key Destroyed
+			}
+		case e.LegacyKeyRetained:
+			@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+				Legacy Key Retained
+			}
+		default:
+			@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+				Key Intact
+			}
 	}
 }
 

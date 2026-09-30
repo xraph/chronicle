@@ -703,3 +703,46 @@ func TestErasureRequestDoesNotChangeWhatVerificationSees(t *testing.T) {
 		t.Errorf("verification changed across an erasure: before %+v, after %+v", before, after)
 	}
 }
+
+// The detail and list pages read status and legacyKeyRetained from the stored
+// record. A pending erasure says pending, a retained legacy key says so, and a
+// record from before erasures had a status reads as completed. Both fields are
+// on the wire every time, so a page never has to guess what a missing one means.
+func TestErasureSummaryProjectsStatusAndLegacyKey(t *testing.T) {
+	cases := []struct {
+		name       string
+		rec        erasure.Erasure
+		wantStatus string
+		wantLegacy bool
+	}{
+		{"pending", erasure.Erasure{Status: erasure.StatusPending}, "pending", false},
+		{"legacy key retained", erasure.Erasure{Status: erasure.StatusCompleted, LegacyKeyRetained: true}, "completed", true},
+		{"before statuses", erasure.Erasure{KeyDestroyed: true}, "completed", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := tc.rec
+			rec.ID = id.NewErasureID()
+			rec.AppID = "app-1"
+			rec.SubjectID = "user-42"
+			h := erasuresDetailHandler(Deps{Store: storeWithErasure(&rec)})
+			out, err := h(context.Background(), GetErasureInput{ID: rec.ID.String()},
+				principalWith(map[string]any{"app_id": "app-1"}))
+			if err != nil {
+				t.Fatalf("erasures.detail: %v", err)
+			}
+
+			raw, err := json.Marshal(out)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var wire map[string]any
+			if err := json.Unmarshal(raw, &wire); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if wire["status"] != tc.wantStatus || wire["legacyKeyRetained"] != tc.wantLegacy {
+				t.Errorf("wire = %s, want status %q and legacyKeyRetained %v", raw, tc.wantStatus, tc.wantLegacy)
+			}
+		})
+	}
+}
