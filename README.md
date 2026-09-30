@@ -306,8 +306,8 @@ auth registry's middleware and uses those options for documentation only.
 Chronicle's pages in the Forge dashboard come from a React plugin,
 `@forge-go/dashboard-plugin-chronicle`, which lives in the forge-dashboard repo.
 Add it to the plugins list in your dashboard shell and that side is done. The Go
-side needs nothing from you: the extension registers its contract with forge's
-dashboard when it starts. If you're coming from the server-rendered pages,
+side needs nothing from you: forge's dashboard picks up the extension's contract
+automatically when both extensions are registered. If you're coming from the server-rendered pages,
 [MIGRATION.md](MIGRATION.md) has the snippet and a line for everything they did.
 
 Reads need a signed-in user with a resolvable app. Writes depend on the scopes
@@ -320,7 +320,7 @@ that user holds, matched as the bare names `chronicle.write` and
 | `chronicle.write` or `chronicle.admin` | taking a checkpoint, generating a report |
 | `chronicle.admin` | saving, deleting and enforcing retention policies, requesting an erasure |
 
-A session with no scope sees every page and can change nothing. Enforcement
+A tenant session with no scope sees every page and can change nothing. Enforcement
 purges audit events, which is why it sits with the admin scope and not the write
 one.
 

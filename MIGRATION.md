@@ -20,7 +20,7 @@ const plugins = [
 ]
 ```
 
-Order in the array is the order in the nav. The Go side needs nothing from you: the chronicle extension registers its contract (29 intents, contributor name `chronicle`) with forge's dashboard on start. forge v1.11.1 is the version this was built and tested against, not a stated minimum. You do not call anything.
+Order in the array is the order in the nav. The Go side needs nothing from you: forge's dashboard picks up the chronicle extension's contract (29 intents, contributor name `chronicle`) automatically when both extensions are registered. forge v1.11.1 is the version this was built and tested against, not a stated minimum. You do not call anything.
 
 ### Three things that changed under you
 
@@ -34,7 +34,7 @@ Writes are governed by scopes on the signed-in user, matched as the bare names `
 | `chronicle.write` or `chronicle.admin` | `checkpoints.take`, `reports.generate`, `reports.generateCustom` |
 | `chronicle.admin` | `retention.savePolicy`, `retention.deletePolicy`, `retention.enforce`, `erasures.request` |
 
-Before, one switch covered creating policies, deleting them, enforcing and generating reports. Now the three retention commands (and the erasure request) each need `chronicle.admin` on its own. Nobody is an admin because they hold some other admin role, and a session with no scope sees every page and can change nothing. `erasures.request` also answers "unavailable" unless crypto-erasure is on.
+Before, one switch covered creating policies, deleting them, enforcing and generating reports. Now the three retention commands (and the erasure request) each need `chronicle.admin` on its own. Nobody is an admin because they hold some other admin role, and a tenant session with no scope sees every page and can change nothing. `erasures.request` also answers "unavailable" unless crypto-erasure is on.
 
 The dashboard's app and tenant come from session claims, and never from the request. `app_id` gives the app. `tenant_id`, or `org_id` if there is no `tenant_id`, gives the tenant. A session with no app is refused, where templ treated no scope at all as "show everything". Two more rules bite people:
 
@@ -542,9 +542,7 @@ Route names are plugin routes. Anything not listed here has no equivalent.
 
 ## Dropped
 
-Everything the tables mark Dropped falls into one of these groups.
-
-Dropped on purpose, with a reason:
+Everything the tables mark Dropped was left out on purpose. Each item gives its reason:
 
 - `Config.AllowMutations`, now `DashboardMutations` in the extension config and `WithDashboardMutations()`. Both stay as deprecated no-ops for one release, so existing config loads and code compiles, and go in a later release. The flag existed because templ pages rendered through a route chronicle cannot authenticate. The contract has a Principal and scope checks, so the flag goes when templ does.
 - The settings panel. `RenderSettings("chronicle-config")` and `RenderPage("/settings")` returned the identical component, so one of them was never a feature.
@@ -603,7 +601,7 @@ The templ dashboard had these. They are fixed by the move, so nobody should read
 
 ## Numbers that mean something different now
 
-- Templ counted critical events, and failed or denied events, over the last 30 days. The React overview counts them across the whole scope (all time), and the Activity page shows volume over time, by day or hour. Each count on Activity says "All time" where the templ tile said "Last 30 days".
+- Templ counted critical events, and failed or denied events, over the last 30 days. The Activity page counts them across the whole scope (all time), says so in a hint on each tile, and shows volume over time, by day or hour. The "Last 30 days" labels are gone.
 - "Failed" on the old overview meant failure plus denied. The contract's `failedEvents` is failure only, and `deniedEvents` is separate. Activity adds them for its "Failed or denied" tile and shows both parts beside it.
 - Verifying with no range used to check the whole chain. The page now defaults to the latest 10,000 sequences and says plainly that the result does not speak for the rest.
 - A result is never "Valid". It is a sentence that names the range, the method and what that method cannot see.
