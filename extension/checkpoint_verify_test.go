@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/xraph/forge"
-	"github.com/xraph/forge/extensions/dashboard/contributor"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
@@ -18,7 +17,6 @@ import (
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/keys"
-	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store/memory"
 	"github.com/xraph/chronicle/verify"
 )
@@ -280,39 +278,6 @@ func TestVerifyAPIReportsARewriteOfCheckpointedEvents(t *testing.T) {
 	}
 	if result.HashMatch {
 		t.Errorf("the checkpoint reported HashMatch true after the range it covers was rewritten: %+v", result)
-	}
-}
-
-// TestDashboardVerifyPageReportsARewriteOfCheckpointedEvents is the
-// verify-route test's counterpart for the dashboard, which answers the same
-// question through a different set of wiring. The two must not disagree
-// about what evidence they consulted: an operator who reads the page and an
-// auditor who calls the API are looking at one chain.
-func TestDashboardVerifyPageReportsARewriteOfCheckpointedEvents(t *testing.T) {
-	ext, h, mem, streamID := setupCheckpointedExtension(t)
-
-	takeCheckpointThroughTheAPI(t, h, streamID)
-	rewriteEventAndRelink(t, mem, streamID, 3, "attacker-was-not-here")
-
-	dc := ext.DashboardContributor()
-	ctx := scope.WithAppID(context.Background(), checkpointE2EAppID)
-	component, err := dc.RenderPage(ctx, "/verify", contributor.Params{
-		FormData: map[string]string{
-			"action":    "verify",
-			"stream_id": streamID.String(),
-		},
-	})
-	if err != nil {
-		t.Fatalf("RenderPage: %v", err)
-	}
-
-	var buf bytes.Buffer
-	if renderErr := component.Render(ctx, &buf); renderErr != nil {
-		t.Fatalf("Render: %v", renderErr)
-	}
-	if !bytes.Contains(buf.Bytes(), []byte("checkpoint failed")) {
-		t.Fatalf("the verify page never rendered a failed checkpoint, so the dashboard's verifier was "+
-			"built without one. Output:\n%s", buf.String())
 	}
 }
 

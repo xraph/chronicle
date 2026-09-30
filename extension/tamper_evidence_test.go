@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/xraph/forge"
-	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/drivers/sqlitedriver"
 	_ "github.com/xraph/grove/drivers/sqlitedriver/sqlitemigrate" // registers the sqlite migrate executor
@@ -21,7 +20,6 @@ import (
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/keys"
-	"github.com/xraph/chronicle/scope"
 	sqlitestore "github.com/xraph/chronicle/store/sqlite"
 	"github.com/xraph/chronicle/stream"
 	"github.com/xraph/chronicle/verify"
@@ -292,36 +290,5 @@ func TestHMACDeploymentVerifiesThroughTheAdminAPI(t *testing.T) {
 	}
 	if !report.Valid || len(report.Tampered) != 0 {
 		t.Fatalf("report = %+v, want Valid with no Tampered; the admin API never received the configured chain", report)
-	}
-}
-
-// TestHMACDeploymentVerifiesThroughTheDashboard is
-// TestHMACDeploymentVerifiesThroughTheAdminAPI's counterpart for
-// extension.go's "HashChain: e.hashChain," literal in the chronicledash.Config
-// it builds, exercised through the real Register-wired DashboardContributor.
-func TestHMACDeploymentVerifiesThroughTheDashboard(t *testing.T) {
-	ext, streamID := setupHMACExtension(t)
-
-	dc := ext.DashboardContributor()
-	ctx := scope.WithAppID(context.Background(), tamperTestAppID)
-
-	component, err := dc.RenderPage(ctx, "/verify", contributor.Params{
-		FormData: map[string]string{
-			"action":    "verify",
-			"stream_id": streamID,
-			"from_seq":  "1",
-			"to_seq":    "1",
-		},
-	})
-	if err != nil {
-		t.Fatalf("RenderPage: %v", err)
-	}
-
-	var buf bytes.Buffer
-	if renderErr := component.Render(ctx, &buf); renderErr != nil {
-		t.Fatalf("Render: %v", renderErr)
-	}
-	if !bytes.Contains(buf.Bytes(), []byte("Valid")) || bytes.Contains(buf.Bytes(), []byte("Tampered")) {
-		t.Fatalf("rendered page did not report Valid with no Tampered; the dashboard never received the configured chain. Output:\n%s", buf.String())
 	}
 }

@@ -236,10 +236,9 @@ func verifyRegistrations() []registration {
 	}
 }
 
-// newVerifier mirrors dashboard/contributor.go's newVerifier deliberately.
-// The contract path and the templ page answer the same question and must
-// not disagree about what evidence they consulted. Checkpoints and signer
-// travel together or not at all: a checkpoint store without a signer proves
+// newVerifier builds the verifier the same way the admin API does. The two
+// answer the same question and must not disagree about what evidence they
+// consulted. Checkpoints and signer travel together or not at all: a checkpoint store without a signer proves
 // nothing, since whoever could write the row could write a fabricated one.
 func newVerifier(deps Deps) *verify.Verifier {
 	chain := deps.HashChain

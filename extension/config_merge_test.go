@@ -8,15 +8,14 @@ import (
 	"testing"
 
 	"github.com/xraph/forge"
-	"github.com/xraph/forge/extensions/dashboard/contributor"
+	dashauth "github.com/xraph/forge/extensions/dashboard/auth"
+	fcontract "github.com/xraph/forge/extensions/dashboard/contract"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/extension"
 	"github.com/xraph/chronicle/hash"
-	"github.com/xraph/chronicle/retention"
-	"github.com/xraph/chronicle/scope"
 	sqlitestore "github.com/xraph/chronicle/store/sqlite"
 )
 
@@ -206,47 +205,72 @@ func TestYAMLConfigKeepsProgrammaticAuthProvider(t *testing.T) {
 	}
 }
 
-// TestYAMLConfigKeepsDashboardMutations covers the last of the three.
-func TestYAMLConfigKeepsDashboardMutations(t *testing.T) {
-	db := newSQLiteGroveDB(t)
-	app := appWithConfigFile(t, "chronicle:\n  base_path: /audit\n")
+// TestDashboardMutationsIsANoOp covers the deprecated flag in both of its
+// forms. The templ dashboard read it to decide whether its forms could write.
+// That dashboard is gone, and writes now depend only on the scopes the signed-in
+// user holds, so neither WithDashboardMutations() nor a YAML dashboard_mutations
+// key may change what a caller can do. Both still have to load, because dropping
+// them would break the build or the start of every deployment that set them.
+//
+// Each variant is asked the same two questions: can a user with no scope save a
+// retention policy, and can one holding chronicle.admin. The answers must match
+// the deployment that never heard of the flag.
+func TestDashboardMutationsIsANoOp(t *testing.T) {
+	type outcome struct{ unscoped, admin string }
 
-	if err := vessel.Provide(app.Container(), func() (*grove.DB, error) { return db, nil }); err != nil {
-		t.Fatalf("provide grove.DB: %v", err)
+	run := func(t *testing.T, yaml string, opts ...extension.Option) outcome {
+		t.Helper()
+		db := newSQLiteGroveDB(t)
+		app := appWithConfigFile(t, yaml)
+		if err := vessel.Provide(app.Container(), func() (*grove.DB, error) { return db, nil }); err != nil {
+			t.Fatalf("provide grove.DB: %v", err)
+		}
+		ext := extension.New(append([]extension.Option{extension.WithUnauthenticatedAPI()}, opts...)...)
+		if err := ext.Register(app); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		if err := ext.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		d := registerContract(t, ext)
+
+		claims := map[string]any{"app_id": tamperTestAppID}
+		payload := map[string]any{"category": "auth", "duration": "1h"}
+		describe := func(p fcontract.Principal) string {
+			_, err := dispatchIntent(d, fcontract.KindCommand, "retention.savePolicy", payload, p)
+			if err == nil {
+				return "allowed"
+			}
+			return err.Error()
+		}
+		noScope := fcontract.Principal{
+			User:   &dashauth.UserInfo{Subject: "operator-1", Claims: claims},
+			Claims: claims,
+		}
+		return outcome{unscoped: describe(noScope), admin: describe(contractPrincipal(claims))}
 	}
 
-	ext := extension.New(
-		extension.WithUnauthenticatedAPI(),
-		extension.WithDashboardMutations(),
-	)
-	if err := ext.Register(app); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	if err := ext.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
+	base := run(t, "chronicle:\n  base_path: /audit\n")
+	if base.admin != "allowed" || base.unscoped == "allowed" {
+		t.Fatalf("baseline = %+v, want the admin allowed and the unscoped user refused", base)
 	}
 
-	// There is no getter for the flag, so drive the behaviour it gates: a
-	// create-policy submission against the dashboard contributor. With the flag
-	// intact the policy is written; with it dropped the render is a no-op and
-	// the read-only notice goes up instead.
-	ctx := scope.WithTenantID(scope.WithAppID(context.Background(), tamperTestAppID), "")
-	if _, err := ext.DashboardContributor().RenderPage(ctx, "/retention", contributor.Params{
-		FormData: map[string]string{
-			"action":   "create_policy",
-			"category": "auth",
-			"duration": "1h",
-		},
-	}); err != nil {
-		t.Fatalf("RenderPage: %v", err)
-	}
-
-	policies, err := sqlitestore.New(db).ListPolicies(context.Background(), retention.ListPoliciesOpts{})
-	if err != nil {
-		t.Fatalf("ListPolicies: %v", err)
-	}
-	if len(policies) == 0 {
-		t.Error("no policy was created; dashboard mutations were configured programmatically " +
-			"and the YAML merge dropped them")
-	}
+	t.Run("programmatic option", func(t *testing.T) {
+		got := run(t, "chronicle:\n  base_path: /audit\n", extension.WithDashboardMutations())
+		if got != base {
+			t.Errorf("WithDashboardMutations changed the outcome: got %+v, baseline %+v", got, base)
+		}
+	})
+	t.Run("yaml key true", func(t *testing.T) {
+		got := run(t, "chronicle:\n  base_path: /audit\n  dashboard_mutations: true\n")
+		if got != base {
+			t.Errorf("dashboard_mutations: true changed the outcome: got %+v, baseline %+v", got, base)
+		}
+	})
+	t.Run("both", func(t *testing.T) {
+		got := run(t, "chronicle:\n  dashboard_mutations: true\n", extension.WithDashboardMutations())
+		if got != base {
+			t.Errorf("both forms together changed the outcome: got %+v, baseline %+v", got, base)
+		}
+	})
 }
