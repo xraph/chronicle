@@ -15,6 +15,7 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/store"
+	"github.com/xraph/chronicle/store/memory"
 	chroniclepostgres "github.com/xraph/chronicle/store/postgres"
 	"github.com/xraph/chronicle/stream"
 )
@@ -27,6 +28,42 @@ func seedScope(t *testing.T) (appID, tenantID string) {
 	t.Helper()
 	suffix := newRunSuffix(t)
 	return "bucket-app-" + suffix, "bucket-tenant-" + suffix
+}
+
+// bucketBackends is backends(t) plus the in-memory store. The bucket
+// contract is the one place memory has to match production byte for byte:
+// it is what tests and local development see, so a memory store that
+// renders buckets differently teaches callers the wrong shape. It is kept
+// out of backends(t) itself because the scope characterization tests there
+// record what the persistent backends do, not what memory does.
+func bucketBackends(t *testing.T) map[string]func(t *testing.T) (store.Store, func(ctx context.Context, streamID id.ID)) {
+	t.Helper()
+	all := backends(t)
+	all["memory"] = openMemory
+	return all
+}
+
+// openMemory returns a fresh in-memory store. Its cleanup func is nil
+// because the store dies with the test.
+//
+//nolint:unparam // nil cleanup is deliberate, see above.
+func openMemory(t *testing.T) (store.Store, func(context.Context, id.ID)) {
+	t.Helper()
+	return memory.New(), nil
+}
+
+// assertCountDescending checks the order a backend returned its groups in.
+// The SQL backends, mongo and redis all sort by count DESC, so a caller that
+// takes the first group as "the busiest bucket" gets the same answer from
+// each. bucketCountsOf re-sorts by label and so cannot see this.
+func assertCountDescending(t *testing.T, name string, groups []audit.AggregateGroup) {
+	t.Helper()
+	for i := 1; i < len(groups); i++ {
+		if groups[i].Count > groups[i-1].Count {
+			t.Errorf("%s: groups not in count DESC order: %+v", name, groups)
+			return
+		}
+	}
 }
 
 // seedEventsAt creates one fresh stream scoped to appID/tenantID and appends
@@ -132,9 +169,9 @@ func assertBucketsAgree(t *testing.T, got map[string][]bucketCount) {
 	}
 }
 
-// All four backends must render a bucket as the identical string, because the
+// Every backend must render a bucket as the identical string, because the
 // dashboard contract carries it to the browser with no per-backend branch. A
-// test per backend could pass four times while the four disagreed; this one
+// test per backend could pass once for each while they disagreed; this one
 // runs them side by side and compares them to each other as well as to the
 // expected value.
 func TestAggregateBucketsAgreeAcrossBackends(t *testing.T) {
@@ -142,7 +179,7 @@ func TestAggregateBucketsAgreeAcrossBackends(t *testing.T) {
 	day3 := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
 
 	got := map[string][]bucketCount{} // backend -> ordered (bucket, count) pairs
-	for name, open := range backends(t) {
+	for name, open := range bucketBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			s, cleanupStream := open(t)
 			appID, tenantID := seedScope(t)
@@ -163,6 +200,7 @@ func TestAggregateBucketsAgreeAcrossBackends(t *testing.T) {
 				t.Fatalf("%s: %d groups, want 2 (the empty day must be absent, not zero): %+v",
 					name, len(res.Groups), res.Groups)
 			}
+			assertCountDescending(t, name, res.Groups)
 			buckets := bucketCountsOf(res.Groups)
 			// Two events landed on day1, one on day3: the count is part of
 			// what the chart draws, not just the label.
@@ -185,7 +223,7 @@ func TestAggregateHourBucketsAgreeAcrossBackends(t *testing.T) {
 	hour3 := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC) // two hours later, nothing between
 
 	got := map[string][]bucketCount{}
-	for name, open := range backends(t) {
+	for name, open := range bucketBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			s, cleanupStream := open(t)
 			appID, tenantID := seedScope(t)
@@ -204,6 +242,7 @@ func TestAggregateHourBucketsAgreeAcrossBackends(t *testing.T) {
 				t.Fatalf("%s: %d groups, want 2 (the empty hour must be absent, not zero): %+v",
 					name, len(res.Groups), res.Groups)
 			}
+			assertCountDescending(t, name, res.Groups)
 			buckets := bucketCountsOf(res.Groups)
 			// Two events landed in hour1, one in hour3.
 			want := []bucketCount{{"2026-09-20T10:00:00Z", 2}, {"2026-09-20T12:00:00Z", 1}}
@@ -222,14 +261,14 @@ func TestAggregateHourBucketsAgreeAcrossBackends(t *testing.T) {
 // exact second and otherwise emits up to nine digits. An hour bucket that
 // only reads the Y/m/d/H fields must land the same whether the source
 // timestamp carries a fraction or not, on every backend -- the point here is
-// that all four agree, not just that sqlite happens to survive its own
+// that they all agree, not just that sqlite happens to survive its own
 // storage format.
 func TestAggregateHourBucketHandlesFractionalSeconds(t *testing.T) {
 	onTheSecond := time.Date(2026, 9, 20, 14, 0, 3, 0, time.UTC)
 	withFraction := time.Date(2026, 9, 20, 14, 0, 3, 123456789, time.UTC)
 
 	got := map[string][]bucketCount{}
-	for name, open := range backends(t) {
+	for name, open := range bucketBackends(t) {
 		t.Run(name, func(t *testing.T) {
 			s, cleanupStream := open(t)
 			appID, tenantID := seedScope(t)
@@ -259,6 +298,57 @@ func TestAggregateHourBucketHandlesFractionalSeconds(t *testing.T) {
 	}
 
 	assertBucketsAgree(t, got)
+}
+
+// An event recorded with a non-UTC location must land in the bucket of its
+// UTC instant, not of its wall clock. 2026-09-19T22:30 in New York is
+// 2026-09-20T02:30Z: by wall clock that is the 19th, hour 22; by UTC it is
+// the 20th, hour 02. A backend that formats the time.Time it was handed
+// without calling UTC() first gets both wrong. The persistent backends
+// normalize on write, so this mostly guards memory, which keeps the caller's
+// time.Time exactly as given.
+func TestAggregateBucketsUseUTCForNonUTCInput(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load America/New_York: %v", err)
+	}
+	ts := time.Date(2026, 9, 19, 22, 30, 0, 0, ny)
+
+	for _, tc := range []struct {
+		field string
+		want  string
+	}{
+		{"day", "2026-09-20"},
+		{"hour", "2026-09-20T02:00:00Z"},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			got := map[string][]bucketCount{}
+			for name, open := range bucketBackends(t) {
+				t.Run(name, func(t *testing.T) {
+					s, cleanupStream := open(t)
+					appID, tenantID := seedScope(t)
+					streamID := seedEventsAt(t, s, appID, tenantID, ts)
+					registerStreamCleanup(t, cleanupStream, streamID)
+
+					res, err := s.Aggregate(context.Background(), &audit.AggregateQuery{
+						After: ts.Add(-time.Hour), Before: ts.Add(time.Hour),
+						AppID: appID, GroupBy: []string{tc.field},
+					})
+					if err != nil {
+						t.Fatalf("Aggregate: %v", err)
+					}
+					buckets := bucketCountsOf(res.Groups)
+					want := []bucketCount{{tc.want, 1}}
+					if !reflect.DeepEqual(buckets, want) {
+						t.Errorf("%s: buckets %+v, want %+v (the UTC instant, not the New York wall clock)",
+							name, buckets, want)
+					}
+					got[name] = buckets
+				})
+			}
+			assertBucketsAgree(t, got)
+		})
+	}
 }
 
 // openPostgresNonUTCSession opens an independent postgres store against

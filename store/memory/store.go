@@ -224,9 +224,23 @@ func (s *Store) Aggregate(_ context.Context, q *audit.AggregateQuery) (*audit.Ag
 		g.Count++
 	}
 
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	// Count DESC, the order every other backend returns. The SQL backends
+	// leave ties unordered; breaking them on the group key here just keeps
+	// map iteration order from leaking into results.
+	sort.Slice(keys, func(i, j int) bool {
+		if ci, cj := groups[keys[i]].Count, groups[keys[j]].Count; ci != cj {
+			return ci > cj
+		}
+		return keys[i] < keys[j]
+	})
+
 	result := make([]audit.AggregateGroup, 0, len(groups))
-	for _, g := range groups {
-		result = append(result, *g)
+	for _, key := range keys {
+		result = append(result, *groups[key])
 	}
 
 	return &audit.AggregateResult{
@@ -1110,6 +1124,10 @@ func aggregateFieldValue(e *audit.Event, field string) string {
 		return e.Severity
 	case "resource":
 		return e.Resource
+	case "day":
+		return e.Timestamp.UTC().Format("2006-01-02")
+	case "hour":
+		return e.Timestamp.UTC().Format("2006-01-02T15:00:00Z")
 	default:
 		return ""
 	}
