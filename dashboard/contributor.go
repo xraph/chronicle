@@ -431,6 +431,9 @@ func (c *Contributor) renderErasureDetail(ctx context.Context, params contributo
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: resolve erasure: %w", err)
 	}
+	if !inScope(ctx, e.AppID, e.TenantID) {
+		return nil, contributor.ErrPageNotFound
+	}
 
 	return pages.ErasureDetailPage(e), nil
 }
