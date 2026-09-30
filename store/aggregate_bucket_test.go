@@ -14,6 +14,7 @@ import (
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/pgtest"
 	"github.com/xraph/chronicle/store"
 	chroniclepostgres "github.com/xraph/chronicle/store/postgres"
 	"github.com/xraph/chronicle/stream"
@@ -279,6 +280,10 @@ func TestAggregateHourBucketHandlesFractionalSeconds(t *testing.T) {
 // passing as a no-op, so a change in that behaviour is visible instead of
 // quietly making the caller's test meaningless.
 //
+// Like openPostgres, it confines the store to a schema of its own (see
+// internal/pgtest), so another package migrating the same database at the
+// same time cannot deadlock it.
+//
 // Returns the store, the raw driver (so the caller can issue its own
 // cleanup DELETEs the same way scope_behaviour_test.go's openPostgres
 // does), and the session time zone the server actually reports.
@@ -290,7 +295,7 @@ func openPostgresNonUTCSession(t *testing.T) (*chroniclepostgres.Store, *pgdrive
 		t.Skip("CHRONICLE_TEST_POSTGRES_DSN not set, skipping postgres time zone test")
 	}
 
-	u, err := url.Parse(dsn)
+	u, err := url.Parse(pgtest.Schema(t, dsn))
 	if err != nil {
 		t.Fatalf("parse CHRONICLE_TEST_POSTGRES_DSN: %v", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/pgtest"
 	"github.com/xraph/chronicle/internal/redistest"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/scope"
@@ -133,8 +134,12 @@ func runProbe(t *testing.T, s store.Store, app string) {
 	}
 }
 
+// openPostgres opens a store confined to a schema of its own, so the store
+// package's tests migrating the same database at the same time cannot
+// deadlock this one.
 func openPostgres(t *testing.T, dsn string) store.Store {
 	t.Helper()
+	dsn = pgtest.Schema(t, dsn)
 	drv := pgdriver.New()
 	if err := drv.Open(context.Background(), dsn); err != nil {
 		t.Fatalf("open postgres: %v", err)
