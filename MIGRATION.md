@@ -20,7 +20,7 @@ const plugins = [
 ]
 ```
 
-Order in the array is the order in the nav. The Go side needs nothing from you: the chronicle extension registers its contract (29 intents, contributor name `chronicle`) with forge's dashboard on start, against forge v1.11.1. You do not call anything.
+Order in the array is the order in the nav. The Go side needs nothing from you: the chronicle extension registers its contract (29 intents, contributor name `chronicle`) with forge's dashboard on start. forge v1.11.1 is the version this was built and tested against, not a stated minimum. You do not call anything.
 
 ### Three things that changed under you
 
@@ -34,7 +34,7 @@ Writes are governed by scopes on the signed-in user, matched as the bare names `
 | `chronicle.write` or `chronicle.admin` | `checkpoints.take`, `reports.generate`, `reports.generateCustom` |
 | `chronicle.admin` | `retention.savePolicy`, `retention.deletePolicy`, `retention.enforce`, `erasures.request` |
 
-Before, one switch covered creating policies, deleting them, enforcing and generating reports. Now the three that destroy audit history (and the erasure request) each need `chronicle.admin` on its own. Nobody is an admin because they hold some other admin role, and a session with no scope sees every page and can change nothing. `erasures.request` also answers "unavailable" unless crypto-erasure is on.
+Before, one switch covered creating policies, deleting them, enforcing and generating reports. Now the three retention commands (and the erasure request) each need `chronicle.admin` on its own. Nobody is an admin because they hold some other admin role, and a session with no scope sees every page and can change nothing. `erasures.request` also answers "unavailable" unless crypto-erasure is on.
 
 The dashboard's app and tenant come from session claims, and never from the request. `app_id` gives the app. `tenant_id`, or `org_id` if there is no `tenant_id`, gives the tenant. A session with no app is refused, where templ treated no scope at all as "show everything". Two more rules bite people:
 
@@ -52,7 +52,7 @@ The README's Dashboard section has the full rules for when the configured values
 
 ### If you import the package
 
-`github.com/xraph/chronicle/dashboard` (and its `pages`, `components` and `widgets` subpackages) no longer exist. The extension's `DashboardContributor()` went with it. Drop the import. Nothing else in the module depended on it.
+`github.com/xraph/chronicle/dashboard` (and its `pages`, `components` and `widgets` subpackages) no longer exist. The extension's `DashboardContributor()` went with it. Drop the import. Nothing else in the module depended on it. The package is removed in the first chronicle release after v1.6.4.
 
 ### Old links
 
@@ -60,11 +60,12 @@ Templ routes do not carry over, and neither do their query strings (`?severity=c
 
 ## How to read the tables
 
-Every templ item has an ID made from its file, so the rows can be checked against the files on the `main` history before this change. Status is one of three words:
+Every templ item has an ID made from its file, so the rows can be checked against the files on the `main` history before this change. Status is one of four phrases:
 
 - Migrated: the React plugin does it. The last column names the page or component and route, and says so when the behaviour changed.
-- Dropped: deliberately not carried over, or not carried over with nothing replacing it. The last column says which.
+- Dropped: deliberately left out. The last column gives the reason.
 - Blocked: it needs Go work first. The last column says what.
+- Not carried over yet: the templ page did it, the plugin doesn't, and nobody chose that. It needs plugin work only, no Go change. These get their own list below.
 
 Routes below are plugin routes, under the `chronicle` namespace. Intent names (`events.list`) are the contract's.
 
@@ -80,8 +81,8 @@ The landing page at `/`. React has no overview page. Its counts moved to Activit
 |---|---|---|---|
 | OV-1 | Page title "Overview", subtitle "Monitor your immutable audit trail at a glance.", and being the landing page | Dropped | The landing page is Chain (`/`, `/chain`), because this library's job is to prove a record was not altered and that comes first. Nothing replaces the title. |
 | OV-2 | Tile "Total Events", "All recorded events" | Migrated | Activity (`/activity`), tile "Total events", from `overview.stats`. |
-| OV-3 | Tile "Critical Events", "Last 30 days" | Migrated | Activity, tile "Critical". Changed: it counts every critical event, not the last 30 days. See "Numbers that mean something different". |
-| OV-4 | Tile "Failed / Denied", "Last 30 days" | Migrated | Activity, tile "Failed or denied", with a hint splitting the two. Changed: all time, not 30 days. The page adds `failedEvents` (failure only) to `deniedEvents`. |
+| OV-3 | Tile "Critical Events", "Last 30 days" | Migrated | Activity, tile "Critical". Changed: it counts every critical event in your scope (all time), not the last 30 days. Volume over time is on the same page. See "Numbers that mean something different". |
+| OV-4 | Tile "Failed / Denied", "Last 30 days" | Migrated | Activity, tile "Failed or denied", with a hint splitting the two. Changed: all time (your whole scope), not 30 days. The page adds `failedEvents` (failure only) to `deniedEvents`. |
 | OV-5 | Tile "Erasures", "GDPR erasure requests" | Migrated | Activity, tile "Erasures". |
 | OV-6 | Card "Recent Events", "The last 10 audit events recorded." | Migrated | Events (`/events`), newest first. Changed: no fixed 10-row card, it is the whole log at 50 a page. |
 | OV-7 | Empty state "No events yet" / "Audit events will appear here once they are recorded." | Migrated | Events: "This chain holds no events yet." |
@@ -112,7 +113,7 @@ Route `/events/:id`. The page loads lazily, because the JSON viewer is CodeMirro
 | ID | Templ item | Status | Now |
 |---|---|---|---|
 | ED-1 | Title "Event Detail" and the event ID in a code tag | Migrated | Title "Event", ID in the "Event" row. |
-| ED-2 | "Back" button to the list | Dropped | There is no in-page back link on an event. Use the browser's back button or the nav. |
+| ED-2 | "Back" button to the list | Not carried over yet | There is no in-page back link on an event. Use the browser's back button or the nav. The report, erasure and policy pages all have one. |
 | ED-3 | Card title "{Action} on {Resource}", description "Recorded {time ago}" | Migrated | "Action", "Resource" and "Time" rows. The time is the kit's timestamp component. |
 | ED-4 | Fields Action, Resource, Category | Migrated | Same rows. |
 | ED-5 | Resource ID, shown only when set | Migrated | Beside Resource. |
@@ -128,11 +129,11 @@ Route `/events/:id`. The page loads lazily, because the JSON viewer is CodeMirro
 | ED-15 | Hash Chain card "Hash Chain" / "Immutable hash chain linking for tamper detection." and its Stream ID | Migrated | Side column, "Chain" row. |
 | ED-16 | Hash, in a select-all code block | Migrated | "Hash" row, monospace, full value. |
 | ED-17 | Previous Hash | Migrated | "Previous hash" row. |
-| ED-18 | Text "Genesis event (no previous hash)" on the first event | Dropped | Not carried over. The row is just empty for a first event. |
+| ED-18 | Text "Genesis event (no previous hash)" on the first event | Not carried over yet | The "Previous hash" row is just empty for a first event. |
 | ED-19 | GDPR Status card, shown when the event has a subject or was erased | Migrated | Changed: the "Subject" row is always there ("None" when empty), and the erasure details sit in the side column when the event is erased. |
 | ED-20 | GDPR: Subject ID | Migrated | "Subject" row. |
 | ED-21 | GDPR: Encryption Key ID | Blocked | Not shown. Needs `encryptionKeyId` added to `EventDetail`. (The "Key id" row in React is the digest key, a different thing.) |
-| ED-22 | GDPR: Status badge, "Erased" or "Active" | Migrated | Changed: an "Erased" badge appears on erased events and nothing appears otherwise. There is no "Active" badge. |
+| ED-22 | GDPR: Status badge, "Erased" or "Active" | Migrated | Changed: the "Erased" badge, Erased At and the erasure link show only when the event is erased and names an erasure. Templ showed them for any erased event. Nothing appears otherwise, and there is no "Active" badge. |
 | ED-23 | GDPR: Erased At | Migrated | Side column, under the badge. |
 | ED-24 | GDPR: Erasure ID | Migrated | "Erased by" link to `/erasures/:id`. |
 | ED-25 | Metadata card "Metadata" / "Custom fields attached to this event.", pretty-printed JSON | Migrated | "Metadata" heading and a folding, searchable JSON viewer. |
@@ -165,15 +166,17 @@ The templ page is called Verification and sits at `/verify`. The React page is C
 | VF-18 | "Sequence Gaps" list | Migrated | "What was found", rows titled "Sequences 40 to 42 missing", consecutive runs merged. |
 | VF-19 | "Removed by Retention" list with its explanation | Migrated | "Removed by retention" section, plus a verdict sentence saying the chain links across the range and what the events said is gone. Retained ranges are never counted as breaks. |
 | VF-20 | Backfilled range label, "1 (record 7, backfilled from s3://...)" (added on main in e5df302) | Migrated | "recorded at sequence 7 under {policy}, recovered from {archive}", and the verdict says the record was recovered afterwards. |
-| VF-21 | "Scheme Downgrades" panel and its advice to investigate who can write the events table | Migrated | Rows titled "Sequence N relabelled", explained as a weaker scheme than the chain required. Changed: the advice about who holds write access is not repeated. |
-| VF-22 | "Truncated Tail" panel, shown when a signed checkpoint reaches past the head | Migrated | A break titled "A signed checkpoint contradicts the head", and the verdict says so. |
+| VF-21 | "Scheme Downgrades" panel and its advice to investigate who can write the events table | Migrated | Rows titled "Sequence N relabelled", explained as a weaker scheme than the chain required. The advice about who holds write access is not repeated. See VF-30. |
+| VF-22 | "Truncated Tail" panel, shown when a signed checkpoint reaches past the head | Migrated | A break titled "A signed checkpoint contradicts the head", and the verdict says so. The advice that went with it is VF-30. |
 | VF-23 | "Tampered Events" list | Migrated | Rows titled "Sequence N altered". |
-| VF-24 | "Resolved Tolerantly" panel, with the sequence numbers | Migrated | Changed: a verdict sentence gives the count ("3 events recorded no digest scheme"). The individual sequence numbers are no longer listed. |
+| VF-24 | "Resolved Tolerantly" panel, with the sequence numbers | Not carried over yet | A verdict sentence gives the count ("3 events recorded no digest scheme"). The individual sequence numbers are not listed, though the report carries them. |
 | VF-25 | "Coverage" list, `from-to: level` and its note | Migrated | "Coverage" section (level badge, range, note) and the coloured bands on the "Where" ribbon. |
-| VF-26 | Checkpoints: a failed checkpoint in a red box, with its note | Migrated | Per checkpoint, Signature, Hash and Continuity rows, a failed one in a destructive badge. Changed: the checkpoint's note shows only beside a hash check that did not run. |
+| VF-26 | Checkpoints: a failed checkpoint in a red box, with its note | Not carried over yet | The failed check itself is there: per checkpoint, Signature, Hash and Continuity rows, a failed one in a destructive badge. The checkpoint's note shows only beside a hash check that did not run, so a failed checkpoint loses its note. |
 | VF-27 | Checkpoints: "not fully checked" in a grey box, with its note | Migrated | The unchecked row is plain muted text, "Not checked", with the note appended. |
 | VF-28 | Checkpoints: "signed and intact" | Migrated | Held rows in an outline badge. |
 | VF-29 | Nothing rendered until you submitted the form | Migrated | The chain's posture (head, hash, scheme, latest checkpoint, the best level it can reach) shows on load. Nothing is verified until you ask. |
+| VF-30 | The advice on the "Truncated Tail" panel ("find out who holds write access to the events and streams tables") and on "Scheme Downgrades" ("treat it as tampering and investigate who has write access to the events table") | Not carried over yet | Checked in `src/verification/breaks.ts`: the plugin explains what each break is and says nothing about who to go and ask. |
+| VF-31 | Placeholders in the sequence fields, "1" and "100" | Dropped | The From and To fields start filled with the default window, the latest 10,000 sequences, so there is nothing to hint at. |
 
 ### reports.templ (RP)
 
@@ -265,6 +268,7 @@ Route `/erasures/:id`.
 | RT-16 | Delete, fired from `?action=delete&id=` on this page | Migrated | Moved to the policy page. See RDT-8. |
 | RT-17 | Enforcement confined to the viewer's own policies | Migrated | `retention.enforce` runs the viewer's scope only. |
 | RT-18 | The enforce link was a bare query-param GET with no preview | Migrated | Closed bug. See "Closed bugs". |
+| RT-19 | "Create Policy" card description, "Define a new retention policy for a category of events." | Migrated | The New policy page's description: "Events in the category are removed once they are older than the duration." |
 
 ### retention_detail.templ (RDT)
 
@@ -320,7 +324,7 @@ Shared page helpers. They count as the thirteenth page file.
 |---|---|---|---|
 | HP-1 | `fieldRow`, a label and value pair in a definition list | Migrated | The kit's `DescriptionList`. |
 | HP-2 | `codeBlock`, preformatted text | Migrated | `JsonView` for structured data, monospace spans for values. |
-| HP-3 | `credentialField`, a select-all monospace field | Migrated | Monospace, break-all spans. Click-to-select-all is not carried over. |
+| HP-3 | `credentialField`, a select-all monospace field | Not carried over yet | The value carries over as a monospace, break-all span. Click to select all does not. |
 | HP-4 | `formatTimeAgo` ("just now", "5m ago", "3h ago", "2d ago", "1mo ago", "1y ago") | Migrated | The kit's timestamp component. |
 | HP-5 | `formatJSON`, pretty-printed JSON | Migrated | `prettyJSON` in `components/json-view.tsx`. |
 | HP-6 | `truncateString`, shorten with "..." | Dropped | The plugin shows full IDs. |
@@ -435,7 +439,7 @@ Colour is `default` (filled), `secondary`, `outline` or `destructive`. React cho
 |---|---|---|---|
 | SB-1 | Outcome badge. Success (filled), Failed (destructive), Denied (destructive), anything else as its own text (secondary) | Migrated | Changed: it shows the raw value (`success`, `failure`, `denied`). `failure` and `denied` are destructive, everything else is outline. |
 | SB-2 | Severity badge. Critical (destructive), Warning (secondary), everything else "Info" (outline) | Migrated | Shows the raw value. Critical destructive, warning secondary, everything else outline. Changed: an unknown severity used to be labelled "Info". It now shows its own text. |
-| SB-3 | Erased badge. "Erased" (destructive) or "Active" (filled) | Migrated | "Erased" in `secondary`, shown only on erased events. An erasure is a lawful action, not a fault. There is no "Active". |
+| SB-3 | Erased badge. "Erased" (destructive) or "Active" (filled) | Migrated | "Erased" in `secondary`, shown only when the event is erased and names an erasure (templ showed it for any erased event). An erasure is a lawful action, not a fault. There is no "Active". |
 | SB-4 | Verification badge. "Valid" (filled) or "Tampered" (destructive) | Migrated | There is no badge. The verdict sentence says it, and a chain break is never a badge. Individual checks use "held" (outline), "failed" (destructive), or plain muted "Not checked" text. |
 | SB-5 | Report type badge. SOC2, HIPAA, EU AI Act (filled), anything else "Custom" (secondary) | Migrated | Plain text: SOC 2, HIPAA, EU AI Act, Custom. A type the plugin does not know is shown as sent. |
 | SB-6 | Erasure status badge. "Pending" (filled), "Completed" (secondary) | Migrated | "Pending" is `destructive` and "Completed" is `outline`. A record with no status reads as completed. |
@@ -466,6 +470,8 @@ Colour is `default` (filled), `secondary`, `outline` or `destructive`. React cho
 | MF-14 | Nav "Settings" (`/settings`, group Configuration) | Migrated | "Settings", group Settings. |
 | MF-15 | Widget descriptors `chronicle-stats` and `chronicle-recent-events` | Dropped | See Widgets. |
 | MF-16 | Settings descriptor `chronicle-config` | Dropped | A duplicate of the Settings page. See "Dropped". |
+| MF-17 | The settings descriptor's title "Chronicle Configuration", description "Audit trail engine settings", group "Chronicle" and icon `scroll-text` | Dropped | They named the duplicate panel. The Settings page has its own title and description. |
+| MF-18 | Nav icon names: `layout-dashboard` (Overview), `activity` (Events), `shield-check` (Verification), `file-check` (Reports), `eraser` (Erasures), `clock` (Retention), `archive` (Archives), `settings` (Settings) | Migrated | The plugin picks its own icons: shield (Chain), milestone (Checkpoints), scroll text (Events), column chart (Activity), file text (Reports), eraser (Erasures), timer reset (Policies), archive (Archives), settings (Settings). The Overview icon goes with the Overview page. No icon carries a check mark, because that would be a pass shown permanently. |
 
 ### contributor.go (CT)
 
@@ -496,6 +502,7 @@ Colour is `default` (filled), `secondary`, `outline` or `destructive`. React cho
 | CT-23 | Every fetch error swallowed into an empty list | Migrated | Closed quirk. Pages show the error. |
 | CT-24 | Report generation window fixed at 90 days, generated by "dashboard" | Migrated | See RP-3 and RP-6. |
 | CT-25 | Verification checked the stream belonged to the viewer, then verified with the stream's pin, head sequence and head hash | Migrated | `verify.run`, which also selects the chain by ownership and caps the span at 100,000. |
+| CT-26 | Delete errors "Policy not found" (not found, or not yours) and "Failed to delete policy: ..." | Migrated | `retention.deletePolicy` answers not-found for a policy that is not yours. The confirm dialog shows "Could not delete the policy" with the code and message. |
 
 ### data.go (DT)
 
@@ -540,13 +547,12 @@ Everything the tables mark Dropped falls into one of these groups.
 
 Dropped on purpose, with a reason:
 
-- `Config.AllowMutations`, now `DashboardMutations` in the extension config and `WithDashboardMutations()`. Both stay for one release as deprecated no-ops so existing config loads and code compiles. The flag existed because templ pages rendered through a route chronicle cannot authenticate. The contract has a Principal and scope checks, so the flag goes when templ does.
+- `Config.AllowMutations`, now `DashboardMutations` in the extension config and `WithDashboardMutations()`. Both stay as deprecated no-ops for one release, so existing config loads and code compiles, and go in a later release. The flag existed because templ pages rendered through a route chronicle cannot authenticate. The contract has a Principal and scope checks, so the flag goes when templ does.
 - The settings panel. `RenderSettings("chronicle-config")` and `RenderPage("/settings")` returned the identical component, so one of them was never a feature.
 - `UpdateStreamScheme`. It has no intent. A stream's digest pin moves by itself when an event is written (`reconcileStreamPin`). Offering it as an operator action would let somebody move a pin without writing an event, which is the shape of the downgrade attack verification exists to catch.
 - `compliance.ReportStore.DeleteReport`. Neither the REST API nor the templ dashboard ever offered it. Deleting compliance evidence should not be one click in a dashboard, so this is a choice and not an oversight.
 - The "read-only" message, the fixed "Security Features" strings on Settings, and the single "Issues" count on the verify page. Each is replaced by something that says more (scopes, live posture, the per-kind verdict).
 - Widgets, the top bar's title, accent, search and "API Docs" link, and the Overview page as a landing page. The shell owns or has no place for them.
-- The list of individual "Resolved Tolerantly" sequence numbers, the "Genesis event" line on the first event, and the note on a failed checkpoint. They are not replaced, and the gaps are in the React plugin, not the contract.
 - Everything the templ pages cut off: the 16, 20, 30 and 40 character shortening, the fixed 50-row lists, and the `?severity=` style query strings.
 
 ## Blocked
@@ -557,6 +563,17 @@ Needs Go work before it can exist.
 - External anchoring. `LevelAnchored` is in the coverage enum and nothing emits it. The coverage ladder shows it as a level not reached, and the verdict says nothing anchors the chain outside the deployment.
 - Tenant ID on event, erasure and report detail (ED-12, ERD-10, RD-6). The contract's `EventDetail`, `ErasureSummary` and `ReportSummary` do not carry `tenantId`. An app-wide operator who reads several tenants' records cannot tell them apart. Add the field to those three types in `extension/contract`, then to the plugin's `types.ts` and the detail pages.
 - Encryption Key ID on an event (ED-21). Add `encryptionKeyId` to `EventDetail`.
+
+## Not carried over yet (plugin work)
+
+The templ page did these, the plugin doesn't, and nobody decided that. None of it needs a Go change: the contract already sends what's needed. The work is in `packages/plugin-chronicle` in forge-dashboard.
+
+- A back link on the event page (ED-2).
+- The "Genesis event (no previous hash)" line for a first event (ED-18).
+- The individual sequence numbers of events resolved tolerantly, which the verify report carries and the page turns into a count (VF-24).
+- The note on a failed checkpoint (VF-26).
+- The advice on a truncated tail and on scheme downgrades, about who holds write access (VF-30).
+- Click to select all on a hash or ID (HP-3).
 
 ## New, not migrated
 
@@ -587,7 +604,7 @@ The templ dashboard had these. They are fixed by the move, so nobody should read
 
 ## Numbers that mean something different now
 
-- Critical events and failed or denied events were counted over the last 30 days. Activity counts all time. The labels no longer say "Last 30 days". This looks like a side effect of moving the counts onto one aggregation, and not a decision.
+- Templ counted critical events, and failed or denied events, over the last 30 days. The React overview counts them across the whole scope (all time), and the Activity page shows volume over time, by day or hour. The "Last 30 days" labels are gone.
 - "Failed" on the old overview meant failure plus denied. The contract's `failedEvents` is failure only, and `deniedEvents` is separate. Activity adds them for its "Failed or denied" tile and shows both parts beside it.
 - Verifying with no range used to check the whole chain. The page now defaults to the latest 10,000 sequences and says plainly that the result does not speak for the rest.
 - A result is never "Valid". It is a sentence that names the range, the method and what that method cannot see.
