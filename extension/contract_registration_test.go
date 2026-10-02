@@ -298,18 +298,15 @@ func TestContractContributorServesACheckpointedDeployment(t *testing.T) {
 	}
 }
 
-// TestContractContributorIsFoundWithoutDashboardAware pins how the dashboard
-// discovers chronicle. Forge asserts ContractContributorAware on its own,
-// separately from DashboardAware, so an extension that offers no legacy
-// contributor is still wired in. If this ever needed DashboardAware again,
-// removing DashboardContributor would drop the whole React plugin's backend
-// with nothing logged.
-func TestContractContributorIsFoundWithoutDashboardAware(t *testing.T) {
+// TestContractContributorIsFoundThroughContractContributorAware pins how the
+// dashboard discovers chronicle. Since forge v1.12.0 removed DashboardAware,
+// ContractContributorAware is the only interface the dashboard asserts. An
+// extension that stops implementing it drops the whole React plugin's backend
+// with nothing logged, because a missing contributor is what an uninstalled
+// extension looks like.
+func TestContractContributorIsFoundThroughContractContributorAware(t *testing.T) {
 	ext, _ := setupHMACExtension(t)
 
-	if _, ok := any(ext).(dashboard.DashboardAware); ok {
-		t.Fatal("the extension still implements dashboard.DashboardAware, so the templ contributor is not gone")
-	}
 	cca, ok := any(ext).(dashboard.ContractContributorAware)
 	if !ok {
 		t.Fatal("the extension does not implement dashboard.ContractContributorAware, so the dashboard cannot find it")

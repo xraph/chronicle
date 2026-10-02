@@ -20,7 +20,7 @@ const plugins = [
 ]
 ```
 
-Order in the array is the order in the nav. The Go side needs nothing from you: forge's dashboard picks up the chronicle extension's contract (29 intents, contributor name `chronicle`) automatically when both extensions are registered. forge v1.11.1 is the version this was built and tested against, not a stated minimum. You do not call anything.
+Order in the array is the order in the nav. The Go side needs nothing from you: forge's dashboard picks up the chronicle extension's contract (29 intents, contributor name `chronicle`) automatically when both extensions are registered. forge v1.12.0 and grove v1.7.0 are the versions this was built and tested against, not stated minimums. You do not call anything.
 
 ### Three things that changed under you
 
