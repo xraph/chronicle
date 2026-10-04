@@ -278,6 +278,6 @@ func TestDashboardMutationsIsANoOp(t *testing.T) {
 
 // Config.DashboardMutations has to stay for one release so that existing code
 // and YAML still compile and load. Removing the field breaks this line.
-func TestDashboardMutationsFieldStillCompiles(t *testing.T) {
+func TestDashboardMutationsFieldStillCompiles(_ *testing.T) {
 	_ = extension.Config{DashboardMutations: true}
 }
