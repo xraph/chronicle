@@ -2,12 +2,8 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/xraph/grove"
 
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/id"
@@ -22,26 +18,6 @@ import (
 // typed sentinels, so isBusy already treats them the same way.
 func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
-}
-
-// notFoundOnNoRows maps a no-rows Scan result to checkpoint.ErrNotFound.
-//
-// groveError (store.go) does not apply here: its string-literal branch checks
-// for "no rows in result set", but this driver's sql.ErrNoRows carries a
-// "sql: " prefix that literal never matches. That bug is tracked and fixed
-// separately (see groveError's doc comment). This checks both sentinels that
-// can actually come back from a single-row Scan on this backend directly,
-// rather than inheriting the broken string comparison: sql.ErrNoRows is what
-// the driver returns today (traced through SelectQuery.Scan ->
-// sqliteRow.Scan -> *sql.Row.Scan, unwrapped), and grove.ErrNoRows is grove's
-// own sentinel for the same condition, which some other code path or a later
-// grove version could return instead. Checking only one leaves the other
-// arriving as a raw, unclassified driver error.
-func notFoundOnNoRows(err error) error {
-	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, grove.ErrNoRows) {
-		return checkpoint.ErrNotFound
-	}
-	return err
 }
 
 // AppendCheckpoint persists a checkpoint. Checkpoints are append-only: there
@@ -78,7 +54,7 @@ func (s *Store) LatestCheckpoint(ctx context.Context, streamID id.ID) (*checkpoi
 		Limit(1).
 		Scan(ctx)
 	if err != nil {
-		return nil, notFoundOnNoRows(err)
+		return nil, groveError(err, checkpoint.ErrNotFound)
 	}
 
 	out, err := toCheckpoint(m)
@@ -117,7 +93,7 @@ func (s *Store) GetCheckpoint(ctx context.Context, checkpointID id.ID) (*checkpo
 	m := new(CheckpointModel)
 	err := s.sdb.NewSelect(m).Where("id = ?", checkpointID.String()).Scan(ctx)
 	if err != nil {
-		return nil, notFoundOnNoRows(err)
+		return nil, groveError(err, checkpoint.ErrNotFound)
 	}
 
 	out, err := toCheckpoint(m)

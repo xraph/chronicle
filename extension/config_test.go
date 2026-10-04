@@ -317,7 +317,6 @@ func TestWithStoreInjectsTheChainWhenTheStoreCanReceiveIt(t *testing.T) {
 	if err := ext.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMACV5)
 
 	event := &audit.Event{
 		AppID:    tamperTestAppID,

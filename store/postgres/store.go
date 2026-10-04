@@ -141,19 +141,28 @@ func (s *Store) Close() error {
 
 // groveError maps a missing row onto the sentinel a caller can test for.
 //
-// Three checks, because the wording belongs to whichever driver grove is
-// sitting on. grove's own sentinel comes first. database/sql says "sql: no rows
-// in result set" and pgx says "no rows in result set", and matching only the
-// second is how every sqlite miss used to reach callers as a raw driver error
-// rather than ErrEventNotFound: errors.Is against the sentinel returned false,
-// so an ordinary absent row looked like an internal failure. The string check
-// stays as a last resort for a driver that wraps neither.
+// Two checks, one per shape a miss arrives in. grove raises its own ErrNoRows
+// when it already knows the query found nothing. Otherwise the driver's error
+// comes up untouched, and on this backend that is pgx's ErrNoRows, which pgx
+// v5 defines as a proxy wrapping database/sql's. So errors.Is against
+// sql.ErrNoRows catches it, the same call that catches sqlite's miss over in
+// store/sqlite. TestPgxNoRowsProxiesDatabaseSQL pins that proxy, since it is a
+// property of pgx rather than of anything here.
+//
+// A third check used to sit on the end: strings.Contains for "no rows in
+// result set". It was there because nothing in this tree had ever run against
+// a real PostgreSQL, so the sql.ErrNoRows line above was an inference from
+// reading pgx rather than something a test had seen happen. It was also a
+// loose net. Any error whose text happened to carry that phrase came back as a
+// not-found sentinel no matter what had actually gone wrong, and grove's own
+// ErrNoRows says "grove: no rows in result set", so the string even shadowed
+// the first check. TestMissingRowsReturnTheNotFoundSentinels now runs both
+// backends against a live database, and the fallback is gone.
 func groveError(err, notFoundErr error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, grove.ErrNoRows) || errors.Is(err, sql.ErrNoRows) ||
-		strings.Contains(err.Error(), "no rows in result set") {
+	if errors.Is(err, grove.ErrNoRows) || errors.Is(err, sql.ErrNoRows) {
 		return notFoundErr
 	}
 	return err

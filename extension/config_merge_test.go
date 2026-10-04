@@ -81,7 +81,6 @@ func TestYAMLConfigKeepsTheProgrammaticDigestScheme(t *testing.T) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMACV5)
 
 	ctx := context.Background()
 	event := &audit.Event{
@@ -130,7 +129,6 @@ func TestYAMLTamperEvidenceWins(t *testing.T) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMACV5)
 
 	ctx := context.Background()
 	event := &audit.Event{

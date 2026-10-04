@@ -132,8 +132,14 @@ func TestSQLiteCheckpointsInRangeOverlaps(t *testing.T) {
 }
 
 // A missing checkpoint must map to checkpoint.ErrNotFound, not a raw driver
-// error: notFoundOnNoRows has to recognize whichever no-rows sentinel this
-// backend's single-row Scan actually returns.
+// error: groveError has to recognize whichever no-rows sentinel this backend's
+// single-row Scan actually returns.
+//
+// TestMissingRowsReturnTheNotFoundSentinels covers the same two getters in the
+// table it shares with store/postgres. This one stays because it asks the
+// harder question of LatestCheckpoint: the stream exists and has simply never
+// been checkpointed, which is the miss a checkpointer actually hits on a first
+// run, rather than a stream id that was never written at all.
 func TestSQLiteCheckpointNotFound(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

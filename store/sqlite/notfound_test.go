@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/xraph/chronicle"
+	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/id"
 )
 
@@ -18,6 +19,12 @@ import (
 // single one of these returned the raw driver error instead. A caller asking
 // errors.Is(err, chronicle.ErrEventNotFound) got false and had to treat a
 // perfectly ordinary miss as an internal failure.
+//
+// The two checkpoint getters joined the table when store/sqlite/checkpoint.go
+// stopped keeping its own copy of the mapping. That copy was written to route
+// around the bug above and so was never affected by it, which is exactly why
+// nothing here noticed the bug on the checkpoint path. Now that both packages
+// share one mapper, every caller of it is listed in one place.
 func TestMissingRowsReturnTheNotFoundSentinels(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -29,9 +36,12 @@ func TestMissingRowsReturnTheNotFoundSentinels(t *testing.T) {
 	}{
 		{"Get", func() error { _, err := s.Get(ctx, id.NewAuditID()); return err }, chronicle.ErrEventNotFound},
 		{"GetStream", func() error { _, err := s.GetStream(ctx, id.NewStreamID()); return err }, chronicle.ErrStreamNotFound},
+		{"GetStreamByScope", func() error { _, err := s.GetStreamByScope(ctx, "no-such-app", ""); return err }, chronicle.ErrStreamNotFound},
 		{"GetPolicy", func() error { _, err := s.GetPolicy(ctx, id.NewPolicyID()); return err }, chronicle.ErrPolicyNotFound},
 		{"GetReport", func() error { _, err := s.GetReport(ctx, id.NewReportID()); return err }, chronicle.ErrReportNotFound},
 		{"GetErasure", func() error { _, err := s.GetErasure(ctx, id.NewErasureID()); return err }, chronicle.ErrErasureNotFound},
+		{"LatestCheckpoint", func() error { _, err := s.LatestCheckpoint(ctx, id.NewStreamID()); return err }, checkpoint.ErrNotFound},
+		{"GetCheckpoint", func() error { _, err := s.GetCheckpoint(ctx, id.NewCheckpointID()); return err }, checkpoint.ErrNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.call()

@@ -11,7 +11,6 @@ import (
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/extension"
-	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/retention"
 	sqlitestore "github.com/xraph/chronicle/store/sqlite"
@@ -45,7 +44,6 @@ func TestExtensionRetentionKeepsTheChainVerifiable(t *testing.T) {
 	if err := ext.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMACV5)
 
 	old := time.Now().Add(-90 * 24 * time.Hour).UTC()
 	for i := range 6 {

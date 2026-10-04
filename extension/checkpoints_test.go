@@ -23,7 +23,6 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/extension"
-	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/keys"
 	redisstore "github.com/xraph/chronicle/store/redis"
@@ -183,7 +182,6 @@ func TestCheckpointsReachTheCheckpointerThroughYAML(t *testing.T) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemePlainV4)
 
 	ctx := context.Background()
 	event := &audit.Event{
@@ -363,7 +361,6 @@ func TestCheckpointSignerPathOverridesInheritedKeyProvider(t *testing.T) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMACV5)
 
 	ctx := context.Background()
 	event := &audit.Event{AppID: tamperTestAppID, Action: "login", Resource: "session", Category: "auth"}
@@ -445,7 +442,6 @@ func TestEveryEventsCheckpointsBeforeEveryIntervalElapses(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ext.Stop(context.Background()) })
 
-	seedStream(t, db, hash.SchemePlainV4)
 	ctx := context.Background()
 	recordEvent := func() {
 		t.Helper()

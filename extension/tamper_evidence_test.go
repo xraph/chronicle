@@ -18,10 +18,8 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/extension"
 	"github.com/xraph/chronicle/hash"
-	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/keys"
 	sqlitestore "github.com/xraph/chronicle/store/sqlite"
-	"github.com/xraph/chronicle/stream"
 	"github.com/xraph/chronicle/verify"
 )
 
@@ -68,32 +66,6 @@ func newSQLiteGroveDB(t *testing.T) *grove.DB {
 	return db
 }
 
-// seedStream pre-creates the chronicle_streams row Chronicle.Record would
-// otherwise create itself on the first event for a new app scope.
-//
-// store/sqlite/store.go's groveError maps a query miss to
-// chronicle.ErrStreamNotFound by checking errors.Is against grove.ErrNoRows or
-// the literal string "no rows in result set"; on this grove version,
-// GetStreamByScope's miss surfaces as the stdlib database/sql.ErrNoRows
-// instead ("sql: no rows in result set"), which matches neither check. That
-// leaves Chronicle.resolveStream's "create it if missing" branch unreachable
-// through the sqlite backend -- a pre-existing bug independent of tamper
-// evidence, filed separately; this works around it so the HMAC-reaches-the-
-// store assertion below is not blocked by an unrelated defect.
-func seedStream(t *testing.T, db *grove.DB, scheme hash.Scheme) {
-	t.Helper()
-
-	st := &stream.Stream{
-		ID:          id.NewStreamID(),
-		AppID:       tamperTestAppID,
-		Scheme:      string(scheme),
-		SchemeSince: 1,
-	}
-	if err := sqlitestore.New(db).CreateStream(context.Background(), st); err != nil {
-		t.Fatalf("seed stream: %v", err)
-	}
-}
-
 // TestHMACConfigReachesTheStore is the end-to-end proof Part B exists for.
 //
 // Chronicle.Record computes a digest, but the SQL backend's Append recomputes
@@ -131,7 +103,6 @@ func TestHMACConfigReachesTheStore(t *testing.T) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMACV5)
 
 	ctx := context.Background()
 	event := &audit.Event{
@@ -184,7 +155,6 @@ func TestPlainConfigReachesTheStore(t *testing.T) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemePlainV4)
 
 	ctx := context.Background()
 	event := &audit.Event{
@@ -213,8 +183,9 @@ func TestPlainConfigReachesTheStore(t *testing.T) {
 }
 
 // setupHMACExtension builds, registers, and starts an extension configured
-// for tamper_evidence.digest: hmac over a fresh sqlite grove.DB, seeds its
-// stream, and records one genuine HMAC event. Returns the extension and the
+// for tamper_evidence.digest: hmac over a fresh sqlite grove.DB, and records
+// one genuine HMAC event. Recording it is what creates the stream, so the
+// lookup below is reading back what Record made. Returns the extension and the
 // stream's ID (as a string, for the verify request/form).
 func setupHMACExtension(t *testing.T) (*extension.Extension, string) {
 	t.Helper()
@@ -236,7 +207,6 @@ func setupHMACExtension(t *testing.T) (*extension.Extension, string) {
 	if err := ext.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	seedStream(t, db, hash.SchemeHMACV5)
 
 	event := &audit.Event{
 		AppID:    tamperTestAppID,
