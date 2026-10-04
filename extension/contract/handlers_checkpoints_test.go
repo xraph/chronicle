@@ -542,8 +542,8 @@ func checkpointsTwoTenantFixture(t *testing.T) (deps Deps, own, foreign *Checkpo
 	for _, tenant := range []string{"tenant-a", "tenant-b"} {
 		for i := 0; i < 3; i++ {
 			e := &audit.Event{AppID: "app-1", TenantID: tenant, Action: "action", Resource: "res", Category: "cat"}
-			if err := c.Record(ctx, e); err != nil {
-				t.Fatalf("record %s event %d: %v", tenant, i, err)
+			if recErr := c.Record(ctx, e); recErr != nil {
+				t.Fatalf("record %s event %d: %v", tenant, i, recErr)
 			}
 		}
 	}
