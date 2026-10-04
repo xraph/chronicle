@@ -38,7 +38,9 @@ intents:
   # One chain's signed checkpoints (the viewer's own, or the chain named by
   # streamId). checkpoints.list carries no total -- see
   # CheckpointListResponse's doc in handlers_checkpoints.go -- only hasMore,
-  # computed by fetching one row past the requested page.
+  # computed by fetching one row past the requested page. Every checkpoint
+  # these intents return (and streams' latestCheckpoint) carries the streamId
+  # of the chain it was taken over, read off the record.
   - { name: checkpoints.list,   kind: query, version: 1, capability: read }
   - { name: checkpoints.detail, kind: query, version: 1, capability: read }
   # Write, not admin: taking a checkpoint creates a record and destroys
