@@ -50,8 +50,8 @@ func TestMetadataRoundTripsThroughBSON(t *testing.T) {
 		t.Fatalf("bson.Marshal: %v", err)
 	}
 	var decoded EventModel
-	if err := bson.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("bson.Unmarshal: %v", err)
+	if unmarshalErr := bson.Unmarshal(raw, &decoded); unmarshalErr != nil {
+		t.Fatalf("bson.Unmarshal: %v", unmarshalErr)
 	}
 
 	got := normalizeMetadata(decoded.Metadata)
@@ -172,14 +172,14 @@ func TestMetadataUint64AboveInt64IsRefused(t *testing.T) {
 		}
 	}
 
-	if err := c.Record(recCtx, event(map[string]any{"n": uint64(math.MaxInt64)})); err != nil {
-		t.Fatalf("Record MaxInt64 as uint64: %v", err)
+	if recordErr := c.Record(recCtx, event(map[string]any{"n": uint64(math.MaxInt64)})); recordErr != nil {
+		t.Fatalf("Record MaxInt64 as uint64: %v", recordErr)
 	}
-	if err := c.Record(recCtx, event(map[string]any{"n": uint64(math.MaxUint64)})); err == nil {
+	if recordErr := c.Record(recCtx, event(map[string]any{"n": uint64(math.MaxUint64)})); recordErr == nil {
 		t.Fatal("Record MaxUint64: want an error, BSON cannot hold it")
 	}
-	if err := c.Record(recCtx, event(map[string]any{"n": 1})); err != nil {
-		t.Fatalf("Record after the refused event: %v", err)
+	if recordErr := c.Record(recCtx, event(map[string]any{"n": 1})); recordErr != nil {
+		t.Fatalf("Record after the refused event: %v", recordErr)
 	}
 
 	report, err := c.VerifyChain(ctx, &verify.Input{AppID: app})

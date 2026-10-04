@@ -92,8 +92,8 @@ func recordChain(t *testing.T, scheme hash.Scheme, provider keys.Provider, n int
 		b := c.Info(recCtx, "login", "session", fmt.Sprintf("session-%d", i)).
 			Category("auth").
 			UserID(fmt.Sprintf("user-%d", i))
-		if err := b.Record(); err != nil {
-			t.Fatalf("Record %d: %v", i, err)
+		if recordErr := b.Record(); recordErr != nil {
+			t.Fatalf("Record %d: %v", i, recordErr)
 		}
 		streamID = b.Event().StreamID
 	}

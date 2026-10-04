@@ -397,8 +397,8 @@ func TestCheckpointsTakeTreatsALostRaceAsUpToDate(t *testing.T) {
 		t.Fatalf("chronicle.New: %v", err)
 	}
 	event := &audit.Event{AppID: "app-1", Action: "a", Resource: "r", Category: "c"}
-	if err := c.Record(ctx, event); err != nil {
-		t.Fatalf("record: %v", err)
+	if recordErr := c.Record(ctx, event); recordErr != nil {
+		t.Fatalf("record: %v", recordErr)
 	}
 
 	_, priv, err := ed25519.GenerateKey(nil)
@@ -433,8 +433,8 @@ func TestCheckpointsTakeListAndDetailEndToEndOnSQLite(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		e := &audit.Event{AppID: "app-1", TenantID: "tenant-a", Action: "action", Resource: "res", Category: "cat"}
-		if err := c.Record(ctx, e); err != nil {
-			t.Fatalf("record event %d: %v", i, err)
+		if recordErr := c.Record(ctx, e); recordErr != nil {
+			t.Fatalf("record event %d: %v", i, recordErr)
 		}
 	}
 
@@ -480,8 +480,8 @@ func TestCheckpointsTakeListAndDetailEndToEndOnSQLite(t *testing.T) {
 
 	// A sibling tenant must see none of this.
 	other := principalWith(map[string]any{"app_id": "app-1", "tenant_id": "tenant-z"})
-	if _, err := checkpointsDetailHandler(deps)(ctx, GetCheckpointInput{ID: takeOut.Checkpoint.ID}, other); !errors.Is(err, fcontract.ErrNotFound) {
-		t.Fatalf("another tenant fetched this checkpoint by ID: err = %v, want NOT_FOUND", err)
+	if _, detailErr := checkpointsDetailHandler(deps)(ctx, GetCheckpointInput{ID: takeOut.Checkpoint.ID}, other); !errors.Is(detailErr, fcontract.ErrNotFound) {
+		t.Fatalf("another tenant fetched this checkpoint by ID: err = %v, want NOT_FOUND", detailErr)
 	}
 
 	// Taking again with nothing new recorded is a no-op, not an

@@ -98,36 +98,38 @@ func resultRows(v *verify.Report, s *VerificationScope) []verificationRow {
 		valid = "valid"
 	}
 
-	rows := []verificationRow{
-		{Check: "Result", Result: valid},
-		rangeRow(v, s),
-		{
+	// Twelve fixed rows, then one per coverage span and one per checkpoint.
+	rows := make([]verificationRow, 0, 12+len(v.Coverage)+len(v.Checkpoints))
+	rows = append(rows,
+		verificationRow{Check: "Result", Result: valid},
+		rangeRow(s),
+		verificationRow{
 			Check:  "Events verified",
 			Result: strconv.FormatInt(v.Verified, 10),
 			Detail: eventSpan(v),
 		},
-		{Check: "Partial", Result: yesNo(v.Partial), Detail: partialDetail(v)},
+		verificationRow{Check: "Partial", Result: yesNo(v.Partial), Detail: partialDetail(v)},
 		seqListRow("Gaps", v.Gaps, "missing sequences nothing accounts for"),
 		seqListRow("Tampered", v.Tampered, "digest or chain link does not match"),
 		seqListRow("Downgrades", v.Downgrades, "claim a weaker digest scheme than the stream pins"),
 		retainedRow(v.Retained),
 		seqListRow("Tolerant", v.Tolerant, "resolved through the pre-migration fallback, scheme guessed"),
-		{
+		verificationRow{
 			Check:  "Head check",
 			Result: threeState(v.HeadChecked, v.HeadMatch),
 			Detail: fmt.Sprintf("last verified event against the stream head at sequence %d", v.HeadSeq),
 		},
-		{
+		verificationRow{
 			Check:  "Checkpoint store",
 			Result: consulted(v.CheckpointsChecked),
 			Detail: fmt.Sprintf("%d covering checkpoints", len(v.Checkpoints)),
 		},
-		{
+		verificationRow{
 			Check:  "Checkpoint head check",
 			Result: threeState(v.CheckpointHeadChecked, v.CheckpointHeadOK),
 			Detail: "latest signed checkpoint against the stream head",
 		},
-	}
+	)
 
 	for _, c := range v.Coverage {
 		rows = append(rows, verificationRow{
@@ -142,7 +144,7 @@ func resultRows(v *verify.Report, s *VerificationScope) []verificationRow {
 	return rows
 }
 
-func rangeRow(v *verify.Report, s *VerificationScope) verificationRow {
+func rangeRow(s *VerificationScope) verificationRow {
 	row := verificationRow{Check: "Range checked"}
 	if s == nil {
 		row.Result = "unknown"

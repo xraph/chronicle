@@ -244,8 +244,8 @@ func TestContractContributorServesACheckpointedDeployment(t *testing.T) {
 			ToSeq uint64 `json:"toSeq"`
 		} `json:"checkpoint"`
 	}
-	if err := json.Unmarshal(data, &taken); err != nil || taken.Checkpoint == nil {
-		t.Fatalf("checkpoints.take = %s (%v), want a checkpoint", data, err)
+	if unmarshalErr := json.Unmarshal(data, &taken); unmarshalErr != nil || taken.Checkpoint == nil {
+		t.Fatalf("checkpoints.take = %s (%v), want a checkpoint", data, unmarshalErr)
 	}
 
 	data, err = dispatchQuery(d, "streams.mine", scoped)
@@ -258,8 +258,8 @@ func TestContractContributorServesACheckpointedDeployment(t *testing.T) {
 			CheckpointingConfigured bool   `json:"checkpointingConfigured"`
 		} `json:"stream"`
 	}
-	if err := json.Unmarshal(data, &mine); err != nil {
-		t.Fatalf("decode %s: %v", data, err)
+	if unmarshalErr := json.Unmarshal(data, &mine); unmarshalErr != nil {
+		t.Fatalf("decode %s: %v", data, unmarshalErr)
 	}
 	if mine.Stream.CoverageCeiling != "signed" || !mine.Stream.CheckpointingConfigured {
 		t.Fatalf("streams.mine = %s, want a signed ceiling with checkpointing configured", data)
@@ -275,8 +275,8 @@ func TestContractContributorServesACheckpointedDeployment(t *testing.T) {
 			CheckpointsChecked bool `json:"checkpointsChecked"`
 		} `json:"report"`
 	}
-	if err := json.Unmarshal(data, &run); err != nil {
-		t.Fatalf("decode %s: %v", data, err)
+	if unmarshalErr := json.Unmarshal(data, &run); unmarshalErr != nil {
+		t.Fatalf("decode %s: %v", data, unmarshalErr)
 	}
 	if !run.Report.Valid || !run.Report.CheckpointsChecked {
 		t.Fatalf("verify.run = %s, want valid with checkpoints checked", data)

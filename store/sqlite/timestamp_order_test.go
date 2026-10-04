@@ -93,7 +93,7 @@ func windowMatches(t *testing.T, s *Store, after, before time.Time) map[string][
 	if err != nil {
 		t.Fatalf("Aggregate: %v", err)
 	}
-	var agg []string
+	agg := make([]string, 0, len(ar.Groups))
 	for _, g := range ar.Groups {
 		agg = append(agg, g.Category)
 	}
@@ -251,9 +251,9 @@ func TestOrderByMixesFractionalAndWholeSeconds(t *testing.T) {
 	// inside one second must not skip or repeat an event.
 	var paged []string
 	for offset := 0; offset < len(asc); offset += 2 {
-		page, err := s.Query(ctx, &audit.Query{AppID: "app-ts", TenantID: "t1", Order: "asc", Limit: 2, Offset: offset})
-		if err != nil {
-			t.Fatalf("Query page at %d: %v", offset, err)
+		page, queryErr := s.Query(ctx, &audit.Query{AppID: "app-ts", TenantID: "t1", Order: "asc", Limit: 2, Offset: offset})
+		if queryErr != nil {
+			t.Fatalf("Query page at %d: %v", offset, queryErr)
 		}
 		paged = append(paged, labelsOf(page.Events)...)
 	}

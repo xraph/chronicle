@@ -381,11 +381,11 @@ func erasuresRequestHandler(deps Deps) func(context.Context, RequestErasureInput
 			}
 		}
 
-		if err := checkErasureSubjectID(in.SubjectID); err != nil {
-			return ErasureResult{}, err
+		if subjectErr := checkErasureSubjectID(in.SubjectID); subjectErr != nil {
+			return ErasureResult{}, subjectErr
 		}
-		if err := checkErasureReason(in.Reason); err != nil {
-			return ErasureResult{}, err
+		if reasonErr := checkErasureReason(in.Reason); reasonErr != nil {
+			return ErasureResult{}, reasonErr
 		}
 
 		appID, tenantID, err := erasureScope(v)

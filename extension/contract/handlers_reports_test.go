@@ -228,9 +228,9 @@ func reportsConfinementFlow(
 
 	// Every format renders, and the JSON one names only app-1 in every event.
 	for _, format := range []string{"json", "csv", "markdown", "html"} {
-		out, err := reportsExportHandler(deps)(ctx, ExportReportInput{ID: gen.ID, Format: format}, app1)
-		if err != nil {
-			t.Fatalf("export %s: %v", format, err)
+		out, exportErr := reportsExportHandler(deps)(ctx, ExportReportInput{ID: gen.ID, Format: format}, app1)
+		if exportErr != nil {
+			t.Fatalf("export %s: %v", format, exportErr)
 		}
 		if out.Content == "" || out.ContentType == "" || !strings.HasPrefix(out.Filename, "report-"+gen.ID+".") {
 			t.Errorf("export %s = %+v", format, out)
@@ -241,8 +241,8 @@ func reportsConfinementFlow(
 	}
 	jsonOut, _ := reportsExportHandler(deps)(ctx, ExportReportInput{ID: gen.ID, Format: "json"}, app1)
 	var exported compliance.Report
-	if err := json.Unmarshal([]byte(jsonOut.Content), &exported); err != nil {
-		t.Fatalf("exported JSON does not parse: %v", err)
+	if unmarshalErr := json.Unmarshal([]byte(jsonOut.Content), &exported); unmarshalErr != nil {
+		t.Fatalf("exported JSON does not parse: %v", unmarshalErr)
 	}
 	if exported.AppID != "app-1" {
 		t.Errorf("exported report app_id = %q", exported.AppID)

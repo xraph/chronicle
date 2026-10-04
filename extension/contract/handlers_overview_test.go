@@ -42,18 +42,18 @@ func (s *overviewScopeSpy) CountErasures(_ context.Context, sc erasure.Scope) (i
 	return 0, nil
 }
 
-// overviewSeedEvent appends one event carrying the given category, outcome
-// and severity, so a test can build a scope with a deliberate mix of both.
+// overviewSeedEvent appends one app-level event carrying the given category,
+// outcome and severity, so a test can build a scope with a deliberate mix of
+// both.
 func overviewSeedEvent(
-	t *testing.T, s store.Store, streamID id.ID, appID, tenantID, category, outcome, severity string, ts time.Time,
-) *audit.Event {
+	t *testing.T, s store.Store, streamID id.ID, appID, category, outcome, severity string, ts time.Time,
+) {
 	t.Helper()
 	ev := &audit.Event{
 		ID:        id.NewAuditID(),
 		StreamID:  streamID,
 		Hash:      "hash-" + appID + "-" + ts.Format(time.RFC3339Nano),
 		AppID:     appID,
-		TenantID:  tenantID,
 		UserID:    "user-1",
 		Action:    "test.action",
 		Resource:  "test",
@@ -65,7 +65,6 @@ func overviewSeedEvent(
 	if err := s.Append(context.Background(), ev); err != nil {
 		t.Fatalf("append event: %v", err)
 	}
-	return ev
 }
 
 // overviewSeedErasure records one erasure for the given app/tenant.
@@ -230,21 +229,21 @@ func TestOverviewStatsCountsOnlyTheViewersAppOnSQLite(t *testing.T) {
 	// app-1: 8 events, a deliberate mix of severities and outcomes.
 	//   severity: info x3, warning x2, critical x3
 	//   outcome:  success x4, denied x2, failure x2
-	overviewSeedEvent(t, s, streamOne, "app-1", "", "auth", audit.OutcomeSuccess, audit.SeverityInfo, base)
-	overviewSeedEvent(t, s, streamOne, "app-1", "", "auth", audit.OutcomeSuccess, audit.SeverityInfo, base.Add(time.Minute))
-	overviewSeedEvent(t, s, streamOne, "app-1", "", "auth", audit.OutcomeFailure, audit.SeverityCritical, base.Add(2*time.Minute))
-	overviewSeedEvent(t, s, streamOne, "app-1", "", "billing", audit.OutcomeDenied, audit.SeverityCritical, base.Add(3*time.Minute))
-	overviewSeedEvent(t, s, streamOne, "app-1", "", "billing", audit.OutcomeDenied, audit.SeverityInfo, base.Add(4*time.Minute))
-	overviewSeedEvent(t, s, streamOne, "app-1", "", "billing", audit.OutcomeSuccess, audit.SeverityWarning, base.Add(5*time.Minute))
-	overviewSeedEvent(t, s, streamOne, "app-1", "", "auth", audit.OutcomeFailure, audit.SeverityWarning, base.Add(6*time.Minute))
-	overviewSeedEvent(t, s, streamOne, "app-1", "", "billing", audit.OutcomeSuccess, audit.SeverityCritical, base.Add(7*time.Minute))
+	overviewSeedEvent(t, s, streamOne, "app-1", "auth", audit.OutcomeSuccess, audit.SeverityInfo, base)
+	overviewSeedEvent(t, s, streamOne, "app-1", "auth", audit.OutcomeSuccess, audit.SeverityInfo, base.Add(time.Minute))
+	overviewSeedEvent(t, s, streamOne, "app-1", "auth", audit.OutcomeFailure, audit.SeverityCritical, base.Add(2*time.Minute))
+	overviewSeedEvent(t, s, streamOne, "app-1", "billing", audit.OutcomeDenied, audit.SeverityCritical, base.Add(3*time.Minute))
+	overviewSeedEvent(t, s, streamOne, "app-1", "billing", audit.OutcomeDenied, audit.SeverityInfo, base.Add(4*time.Minute))
+	overviewSeedEvent(t, s, streamOne, "app-1", "billing", audit.OutcomeSuccess, audit.SeverityWarning, base.Add(5*time.Minute))
+	overviewSeedEvent(t, s, streamOne, "app-1", "auth", audit.OutcomeFailure, audit.SeverityWarning, base.Add(6*time.Minute))
+	overviewSeedEvent(t, s, streamOne, "app-1", "billing", audit.OutcomeSuccess, audit.SeverityCritical, base.Add(7*time.Minute))
 	overviewSeedErasure(t, s, "app-1", "")
 	overviewSeedErasure(t, s, "app-1", "")
 
 	// app-2: events and an erasure that must never be counted for app-1.
-	overviewSeedEvent(t, s, streamTwo, "app-2", "", "auth", audit.OutcomeFailure, audit.SeverityCritical, base)
-	overviewSeedEvent(t, s, streamTwo, "app-2", "", "auth", audit.OutcomeDenied, audit.SeverityCritical, base.Add(time.Minute))
-	overviewSeedEvent(t, s, streamTwo, "app-2", "", "auth", audit.OutcomeDenied, audit.SeverityCritical, base.Add(2*time.Minute))
+	overviewSeedEvent(t, s, streamTwo, "app-2", "auth", audit.OutcomeFailure, audit.SeverityCritical, base)
+	overviewSeedEvent(t, s, streamTwo, "app-2", "auth", audit.OutcomeDenied, audit.SeverityCritical, base.Add(time.Minute))
+	overviewSeedEvent(t, s, streamTwo, "app-2", "auth", audit.OutcomeDenied, audit.SeverityCritical, base.Add(2*time.Minute))
 	overviewSeedErasure(t, s, "app-2", "")
 
 	h := overviewStatsHandler(Deps{Store: s})
