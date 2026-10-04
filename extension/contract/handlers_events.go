@@ -373,8 +373,8 @@ func eventsAggregateHandler(deps Deps) func(context.Context, AggregateInput, fco
 			return AggregateResponse{}, err
 		}
 
-		if _, err := audit.ResolveGroupBy(in.GroupBy); err != nil {
-			return AggregateResponse{}, badGroupByError(err)
+		if _, groupErr := audit.ResolveGroupBy(in.GroupBy); groupErr != nil {
+			return AggregateResponse{}, badGroupByError(groupErr)
 		}
 
 		after, err := parseEventTimeBound("after", in.After)

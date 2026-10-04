@@ -93,7 +93,7 @@ func seedEventsAt(t *testing.T, s store.Store, appID, tenantID string, timestamp
 		event := &audit.Event{
 			ID:        id.NewAuditID(),
 			StreamID:  streamID,
-			Sequence:  uint64(i + 1), //nolint:gosec // i is a small, bounded test loop index
+			Sequence:  uint64(i + 1),
 			Hash:      "seed",
 			Timestamp: ts,
 			AppID:     appID,
@@ -399,8 +399,8 @@ func openPostgresNonUTCSession(t *testing.T) (*chroniclepostgres.Store, *pgdrive
 	defer cancel()
 
 	drv := pgdriver.New()
-	if err := drv.Open(dialCtx, tzDSN); err != nil {
-		t.Fatalf("open postgres with a non-UTC session time zone: %v", err)
+	if openErr := drv.Open(dialCtx, tzDSN); openErr != nil {
+		t.Fatalf("open postgres with a non-UTC session time zone: %v", openErr)
 	}
 	db, err := grove.Open(drv)
 	if err != nil {

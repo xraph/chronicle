@@ -78,8 +78,8 @@ func TestContractContributorServesErasuresRequestWhenCryptoErasureIsOn(t *testin
 		KeyDestroyed      bool  `json:"keyDestroyed"`
 		LegacyKeyRetained bool  `json:"legacyKeyRetained"`
 	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("decode %s: %v", data, err)
+	if unmarshalErr := json.Unmarshal(data, &out); unmarshalErr != nil {
+		t.Fatalf("decode %s: %v", data, unmarshalErr)
 	}
 	if out.EventsAffected != 2 || !out.KeyDestroyed || out.LegacyKeyRetained {
 		t.Fatalf("result = %s, want 2 events erased with the key destroyed", data)

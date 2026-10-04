@@ -15,7 +15,7 @@ import (
 // The default and the maximum are parameters because they differ by list:
 // streams and checkpoints cap at 200, the rest at 1000. What is the same
 // everywhere is how a bad number is treated.
-func pageBounds(limit, offset, defaultLimit, maxLimit int) (int, int, error) {
+func pageBounds(limit, offset, defaultLimit, maxLimit int) (pageLimit, pageOffset int, err error) {
 	if limit < 0 || offset < 0 {
 		return 0, 0, &fcontract.Error{Code: fcontract.CodeBadRequest, Message: "limit and offset cannot be negative"}
 	}

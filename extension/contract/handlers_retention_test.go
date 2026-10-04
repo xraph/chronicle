@@ -963,8 +963,8 @@ func TestRetentionTenantViewerSeesTheAppLevelPolicyThatGovernsIt(t *testing.T) {
 	if got := retentionErrCode(t, err); got != fcontract.CodeNotFound {
 		t.Fatalf("tenant deletePolicy on an app-level policy: code = %s, want %s", got, fcontract.CodeNotFound)
 	}
-	if _, err := s.GetPolicy(ctx, appLevel.ID); err != nil {
-		t.Fatalf("the app-level policy was changed or removed by a tenant viewer: %v", err)
+	if _, policyErr := s.GetPolicy(ctx, appLevel.ID); policyErr != nil {
+		t.Fatalf("the app-level policy was changed or removed by a tenant viewer: %v", policyErr)
 	}
 
 	// An app-wide viewer owns that policy: it is in its own preview, and there

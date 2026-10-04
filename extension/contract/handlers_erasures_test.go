@@ -120,7 +120,7 @@ func erasuresSeedErasure(t *testing.T, s store.Store, appID, tenantID, subjectID
 // erasuresSeedEvent appends one event carrying a subject ID, so
 // CountBySubject has something to count. streamID must already exist (see
 // eventsSeedStream), the same FK requirement events.list's own tests carry.
-func erasuresSeedEvent(t *testing.T, s store.Store, streamID id.ID, appID, tenantID, subjectID string, ts time.Time) *audit.Event {
+func erasuresSeedEvent(t *testing.T, s store.Store, streamID id.ID, appID, tenantID, subjectID string, ts time.Time) {
 	t.Helper()
 	ev := &audit.Event{
 		ID:        id.NewAuditID(),
@@ -140,7 +140,6 @@ func erasuresSeedEvent(t *testing.T, s store.Store, streamID id.ID, appID, tenan
 	if err := s.Append(context.Background(), ev); err != nil {
 		t.Fatalf("append event: %v", err)
 	}
-	return ev
 }
 
 // ──────────────────────────────────────────────────

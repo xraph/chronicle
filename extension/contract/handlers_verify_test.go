@@ -527,8 +527,8 @@ func TestVerifyEventRefusesAnotherTenantsEvent(t *testing.T) {
 
 	ctx := context.Background()
 	other := &audit.Event{AppID: "app-1", TenantID: "tenant-b", Action: "a", Resource: "r", Category: "c"}
-	if err := c.Record(ctx, other); err != nil {
-		t.Fatalf("seed another tenant's event: %v", err)
+	if recordErr := c.Record(ctx, other); recordErr != nil {
+		t.Fatalf("seed another tenant's event: %v", recordErr)
 	}
 
 	// Reset counters: seeding above already touched both through Record's own
@@ -695,8 +695,8 @@ func TestVerifyEventKeyedFollowsTheEventsScheme(t *testing.T) {
 			t.Fatalf("chronicle.New: %v", err)
 		}
 		event := &audit.Event{AppID: "app-1", Action: "a", Resource: "r", Category: "c"}
-		if err := c.Record(ctx, event); err != nil {
-			t.Fatalf("record: %v", err)
+		if recordErr := c.Record(ctx, event); recordErr != nil {
+			t.Fatalf("record: %v", recordErr)
 		}
 
 		out, err := verifyEventHandler(Deps{Store: s, Chronicle: c})(ctx, VerifyEventInput{EventID: event.ID.String()}, viewer)
@@ -731,8 +731,8 @@ func TestVerifyEventKeyedFollowsTheEventsScheme(t *testing.T) {
 			t.Fatalf("chronicle.New: %v", err)
 		}
 		event := &audit.Event{AppID: "app-1", Action: "a", Resource: "r", Category: "c"}
-		if err := c.Record(ctx, event); err != nil {
-			t.Fatalf("record: %v", err)
+		if recordErr := c.Record(ctx, event); recordErr != nil {
+			t.Fatalf("record: %v", recordErr)
 		}
 
 		deps := Deps{Store: s, Chronicle: c, HashChain: nil}
@@ -763,8 +763,8 @@ func TestVerifyRunAndVerifyEventEndToEndOnSQLite(t *testing.T) {
 	var last *audit.Event
 	for i := 0; i < 5; i++ {
 		e := &audit.Event{AppID: "app-1", TenantID: "tenant-a", Action: "test.action", Resource: "res", Category: "cat"}
-		if err := c.Record(ctx, e); err != nil {
-			t.Fatalf("record event %d: %v", i, err)
+		if recordErr := c.Record(ctx, e); recordErr != nil {
+			t.Fatalf("record event %d: %v", i, recordErr)
 		}
 		last = e
 	}
@@ -851,17 +851,17 @@ func TestVerifyDetectsARealChainTamperOnSQLite(t *testing.T) {
 	events := make([]*audit.Event, 0, 5)
 	for i := 0; i < 5; i++ {
 		e := &audit.Event{AppID: "app-1", TenantID: "tenant-a", Action: "action", Resource: "res", Category: "cat"}
-		if err := c.Record(ctx, e); err != nil {
-			t.Fatalf("record event %d: %v", i, err)
+		if recordErr := c.Record(ctx, e); recordErr != nil {
+			t.Fatalf("record event %d: %v", i, recordErr)
 		}
 		events = append(events, e)
 	}
 	tampered := events[2]  // sequence 3
 	untouched := events[0] // sequence 1, left alone
 
-	if _, err := drv.Exec(ctx, "UPDATE chronicle_events SET action = ? WHERE id = ?",
-		"attacker-rewrote-this", tampered.ID.String()); err != nil {
-		t.Fatalf("rewrite stored row: %v", err)
+	if _, execErr := drv.Exec(ctx, "UPDATE chronicle_events SET action = ? WHERE id = ?",
+		"attacker-rewrote-this", tampered.ID.String()); execErr != nil {
+		t.Fatalf("rewrite stored row: %v", execErr)
 	}
 
 	deps := Deps{Store: s, Chronicle: c}
@@ -1120,8 +1120,8 @@ func TestVerifyRunReportsARecordedPurgeAsRetainedEndToEndOnSQLite(t *testing.T) 
 			AppID: "app-1", TenantID: "tenant-a", Action: "test.action", Resource: "res",
 			Category: cat, Timestamp: time.Now().Add(-90 * 24 * time.Hour).UTC(),
 		}
-		if err := c.Record(ctx, e); err != nil {
-			t.Fatalf("record event %d: %v", i, err)
+		if recordErr := c.Record(ctx, e); recordErr != nil {
+			t.Fatalf("record event %d: %v", i, recordErr)
 		}
 	}
 	verifySavePolicy(t, s, "app-1", "tenant-a", "auth")

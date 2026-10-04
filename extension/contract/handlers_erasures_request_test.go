@@ -382,8 +382,8 @@ func TestErasureRequestReportsARetainedLegacyKey(t *testing.T) {
 	if out.EventsAffected != 2 || out.SubjectID != "user-42" {
 		t.Errorf("result = %+v, want 2 events for user-42", out)
 	}
-	if _, err := id.ParseErasureID(out.ID); err != nil {
-		t.Errorf("ID %q is not an erasure ID: %v", out.ID, err)
+	if _, parseErr := id.ParseErasureID(out.ID); parseErr != nil {
+		t.Errorf("ID %q is not an erasure ID: %v", out.ID, parseErr)
 	}
 
 	raw, err := json.Marshal(out)
@@ -487,9 +487,10 @@ func newErasureSealed(t *testing.T) erasureSealed {
 	}
 }
 
-// record writes one event for subjectID in app and tenant, with a reason and
-// metadata the sealer encrypts.
-func (e erasureSealed) record(t *testing.T, app, tenant, subjectID, reason string) {
+// record writes one event for user-42, the subject every erasure in these
+// tests names, in app and tenant, with a reason and metadata the sealer
+// encrypts.
+func (e erasureSealed) record(t *testing.T, app, tenant, reason string) {
 	t.Helper()
 	ctx := scope.WithAppID(context.Background(), app)
 	if tenant != "" {
@@ -499,7 +500,7 @@ func (e erasureSealed) record(t *testing.T, app, tenant, subjectID, reason strin
 		Action:    "export",
 		Resource:  "user",
 		Category:  "data",
-		SubjectID: subjectID,
+		SubjectID: "user-42",
 		Reason:    reason,
 		IP:        "203.0.113.9",
 		Metadata:  map[string]any{"email": reason + "@example.com"},
@@ -542,11 +543,12 @@ func assertReadable(t *testing.T, label string, events []*audit.Event, wantReaso
 	}
 }
 
-// assertErased fails unless every event is flagged erased and shows nothing.
-func assertErased(t *testing.T, label string, events []*audit.Event, n int) {
+// assertErased fails unless the scope holds exactly one event, flagged erased
+// and showing nothing.
+func assertErased(t *testing.T, label string, events []*audit.Event) {
 	t.Helper()
-	if len(events) != n {
-		t.Fatalf("%s: %d events, want %d", label, len(events), n)
+	if len(events) != 1 {
+		t.Fatalf("%s: %d events, want 1", label, len(events))
 	}
 	for _, ev := range events {
 		if !ev.Erased {
@@ -577,8 +579,8 @@ func (e erasureSealed) listErasures(t *testing.T, p fcontract.Principal) Erasure
 // erasure record in its own scope to explain it.
 func TestErasureRequestLeavesAnotherAppsEventsAlone(t *testing.T) {
 	e := newErasureSealed(t)
-	e.record(t, "app-1", "", "user-42", "mine")
-	e.record(t, "app-2", "", "user-42", "theirs")
+	e.record(t, "app-1", "", "mine")
+	e.record(t, "app-2", "", "theirs")
 
 	app1 := erasureAdmin(map[string]any{"app_id": "app-1"})
 	app2 := erasureAdmin(map[string]any{"app_id": "app-2"})
@@ -591,7 +593,7 @@ func TestErasureRequestLeavesAnotherAppsEventsAlone(t *testing.T) {
 		t.Fatalf("result = %+v, want 1 event, key destroyed, nothing retained", out)
 	}
 
-	assertErased(t, "app-1", e.read(t, "app-1", ""), 1)
+	assertErased(t, "app-1", e.read(t, "app-1", ""))
 	assertReadable(t, "app-2", e.read(t, "app-2", ""), "theirs")
 
 	if got := e.listErasures(t, app2); got.Total != 0 || len(got.Erasures) != 0 {
@@ -613,9 +615,9 @@ func TestErasureRequestLeavesAnotherAppsEventsAlone(t *testing.T) {
 // covered tenant "" would destroy the app-level key along the way.
 func TestErasureRequestLeavesASiblingTenantsEventsAlone(t *testing.T) {
 	e := newErasureSealed(t)
-	e.record(t, "app-1", "tenant-a", "user-42", "a-event")
-	e.record(t, "app-1", "tenant-b", "user-42", "b-event")
-	e.record(t, "app-1", "", "user-42", "app-level-event")
+	e.record(t, "app-1", "tenant-a", "a-event")
+	e.record(t, "app-1", "tenant-b", "b-event")
+	e.record(t, "app-1", "", "app-level-event")
 
 	tenantA := erasureAdmin(map[string]any{"app_id": "app-1", "tenant_id": "tenant-a"})
 	tenantB := erasureAdmin(map[string]any{"app_id": "app-1", "tenant_id": "tenant-b"})
@@ -628,7 +630,7 @@ func TestErasureRequestLeavesASiblingTenantsEventsAlone(t *testing.T) {
 		t.Fatalf("result = %+v, want 1 event and the key destroyed", out)
 	}
 
-	assertErased(t, "tenant-a", e.read(t, "app-1", "tenant-a"), 1)
+	assertErased(t, "tenant-a", e.read(t, "app-1", "tenant-a"))
 	assertReadable(t, "tenant-b", e.read(t, "app-1", "tenant-b"), "b-event")
 
 	// Reading app-1 with no tenant returns every tenant's events, so keep the
@@ -653,9 +655,9 @@ func TestErasureRequestLeavesASiblingTenantsEventsAlone(t *testing.T) {
 // what app-wide means, and still stops at the app boundary.
 func TestErasureRequestByAnAppWideViewerCoversItsTenantsAndNoOtherApp(t *testing.T) {
 	e := newErasureSealed(t)
-	e.record(t, "app-1", "tenant-a", "user-42", "a-event")
-	e.record(t, "app-1", "tenant-b", "user-42", "b-event")
-	e.record(t, "app-2", "tenant-a", "user-42", "other-app-event")
+	e.record(t, "app-1", "tenant-a", "a-event")
+	e.record(t, "app-1", "tenant-b", "b-event")
+	e.record(t, "app-2", "tenant-a", "other-app-event")
 
 	out, err := erasuresRequestHandler(e.deps)(context.Background(), erasureRequestIn("user-42", "gdpr article 17"),
 		erasureAdmin(map[string]any{"app_id": "app-1"}))
@@ -666,8 +668,8 @@ func TestErasureRequestByAnAppWideViewerCoversItsTenantsAndNoOtherApp(t *testing
 		t.Fatalf("result = %+v, want 2 events and the key destroyed", out)
 	}
 
-	assertErased(t, "app-1 tenant-a", e.read(t, "app-1", "tenant-a"), 1)
-	assertErased(t, "app-1 tenant-b", e.read(t, "app-1", "tenant-b"), 1)
+	assertErased(t, "app-1 tenant-a", e.read(t, "app-1", "tenant-a"))
+	assertErased(t, "app-1 tenant-b", e.read(t, "app-1", "tenant-b"))
 	assertReadable(t, "app-2 tenant-a", e.read(t, "app-2", "tenant-a"), "other-app-event")
 }
 
@@ -675,8 +677,8 @@ func TestErasureRequestByAnAppWideViewerCoversItsTenantsAndNoOtherApp(t *testing
 // verifies after. This is why the manifest lists no verify intent.
 func TestErasureRequestDoesNotChangeWhatVerificationSees(t *testing.T) {
 	e := newErasureSealed(t)
-	e.record(t, "app-1", "", "user-42", "mine")
-	e.record(t, "app-1", "", "user-42", "mine-too")
+	e.record(t, "app-1", "", "mine")
+	e.record(t, "app-1", "", "mine-too")
 
 	app1 := erasureAdmin(map[string]any{"app_id": "app-1"})
 	run := func() *VerifyReport {

@@ -43,8 +43,8 @@ func newSelectorFixture(t *testing.T) selectorFixture {
 		t.Helper()
 		for i := 0; i < n; i++ {
 			e := &audit.Event{AppID: appID, TenantID: tenantID, Action: "act", Resource: "res", Category: "cat"}
-			if err := c.Record(ctx, e); err != nil {
-				t.Fatalf("record %s/%s: %v", appID, tenantID, err)
+			if recordErr := c.Record(ctx, e); recordErr != nil {
+				t.Fatalf("record %s/%s: %v", appID, tenantID, recordErr)
 			}
 		}
 	}
@@ -54,9 +54,9 @@ func newSelectorFixture(t *testing.T) selectorFixture {
 
 	chain := func(appID, tenantID string) *stream.Stream {
 		t.Helper()
-		st, err := s.GetStreamByScope(ctx, appID, tenantID)
-		if err != nil {
-			t.Fatalf("stream %s/%s: %v", appID, tenantID, err)
+		st, streamErr := s.GetStreamByScope(ctx, appID, tenantID)
+		if streamErr != nil {
+			t.Fatalf("stream %s/%s: %v", appID, tenantID, streamErr)
 		}
 		return st
 	}
@@ -171,8 +171,8 @@ func TestAppWideViewerReachesATenantChainByStreamID(t *testing.T) {
 	if err != nil || len(ownCps.Checkpoints) != 0 {
 		t.Fatalf("checkpoints.list with no streamId = %+v, %v; want none", ownCps, err)
 	}
-	if _, err := checkpointsTakeHandler(f.deps)(ctx, TakeCheckpointInput{}, f.appWide); !errors.Is(err, fcontract.ErrNotFound) {
-		t.Fatalf("checkpoints.take with no streamId and no app-level chain: err = %v, want NOT_FOUND", err)
+	if _, takeErr := checkpointsTakeHandler(f.deps)(ctx, TakeCheckpointInput{}, f.appWide); !errors.Is(takeErr, fcontract.ErrNotFound) {
+		t.Fatalf("checkpoints.take with no streamId and no app-level chain: err = %v, want NOT_FOUND", takeErr)
 	}
 
 	detail, err := checkpointsDetailHandler(f.deps)(ctx, GetCheckpointInput{ID: take.Checkpoint.ID}, f.appWide)

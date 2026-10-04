@@ -379,7 +379,7 @@ func errPolicyNotFound() error {
 // ownedPolicy and the detail handler share the parse and the miss handling
 // and differ only in whom they let through. Neither may return what this
 // returns without checking it against the viewer.
-func fetchPolicy(ctx context.Context, deps Deps, op string, rawID string) (*retention.Policy, error) {
+func fetchPolicy(ctx context.Context, deps Deps, op, rawID string) (*retention.Policy, error) {
 	policyID, err := id.ParsePolicyID(rawID)
 	if err != nil {
 		// An ID that does not parse cannot name a real policy, and the
@@ -664,9 +664,9 @@ func retentionPreviewHandler(deps Deps) func(context.Context, struct{}, fcontrac
 			}
 
 			// One row past the cap is how the preview knows it was capped.
-			events, err := deps.Store.EventsOlderThan(ctx, purgeQueryFor(pol, previewCap+1))
-			if err != nil {
-				return RetentionPreviewResponse{}, deps.mapStoreError("retention.preview", err)
+			events, readErr := deps.Store.EventsOlderThan(ctx, purgeQueryFor(pol, previewCap+1))
+			if readErr != nil {
+				return RetentionPreviewResponse{}, deps.mapStoreError("retention.preview", readErr)
 			}
 
 			capped := len(events) > previewCap

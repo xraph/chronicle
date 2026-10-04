@@ -54,7 +54,10 @@ type keysetEntry struct {
 // Validation happens here rather than at first use so a malformed keyset stops
 // the process at startup instead of at the first audit event.
 func NewFileProvider(path string) (*FileProvider, error) {
-	data, err := os.ReadFile(path)
+	// The path is the operator's own keyset location from configuration, never
+	// request input, so reading wherever it points is the point.
+	data, err := os.ReadFile(path) // #nosec G304 -- operator-configured keyset path
+
 	if err != nil {
 		return nil, fmt.Errorf("keys: read keyset %q: %w", path, err)
 	}
