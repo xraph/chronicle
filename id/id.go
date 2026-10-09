@@ -9,6 +9,7 @@ import (
 	"database/sql/driver"
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	"go.jetify.com/typeid/v2"
 )
@@ -262,10 +263,13 @@ func (i ID) MarshalBSONValue() (bsonType byte, data []byte, err error) {
 	}
 
 	s := i.inner.String()
-	l := len(s) + 1 // length includes null terminator
+	l := len(s) + 1 // length includes the null terminator
+	if l <= 0 || l > math.MaxInt32 {
+		return 0, nil, fmt.Errorf("id: BSON string is too long")
+	}
 
 	buf := make([]byte, 4+len(s)+1)
-	binary.LittleEndian.PutUint32(buf, uint32(l)) //nolint:gosec // TypeID strings are <64 bytes; no overflow
+	binary.LittleEndian.PutUint32(buf, uint32(l))
 	copy(buf[4:], s)
 	// trailing 0x00 is already zero from make
 

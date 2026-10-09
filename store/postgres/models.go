@@ -181,7 +181,7 @@ func fromEvent(e *audit.Event) *EventModel {
 // wrong instant.
 func splitTimestamp(t time.Time) (floor time.Time, subUs int32) {
 	floor = t.Truncate(time.Microsecond)
-	return floor, int32(t.Sub(floor)) //nolint:gosec // always in [0, 1000)
+	return floor, int32(t.Nanosecond() % 1000)
 }
 
 // joinTimestamp reverses splitTimestamp.

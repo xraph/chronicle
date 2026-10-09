@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -129,6 +130,10 @@ func (c *Checkpointer) CheckpointStream(ctx context.Context, st StreamHead) (*Ch
 		return nil, ErrNothingToCheckpoint
 	}
 
+	span := st.HeadSeq - fromSeq
+	if span >= math.MaxInt64 {
+		return nil, fmt.Errorf("checkpoint: event span exceeds int64")
+	}
 	cp := &Checkpoint{
 		ID:       id.NewCheckpointID(),
 		StreamID: st.ID,
@@ -138,10 +143,8 @@ func (c *Checkpointer) CheckpointStream(ctx context.Context, st StreamHead) (*Ch
 		ToSeq:    st.HeadSeq,
 		FromHash: fromHash,
 		ToHash:   st.HeadHash,
-		// The span, not a verified count -- see EventCount's doc. Sequence
-		// numbers realistically never approach 1<<63, so this cannot
-		// overflow int64 in practice.
-		EventCount:     int64(st.HeadSeq-fromSeq) + 1, //nolint:gosec // G115: span, not raw seq; no realistic overflow
+		// The bounded span, not a verified count. See EventCount's doc.
+		EventCount:     int64(span) + 1,
 		PrevCheckpoint: prev,
 
 		// Truncated to millisecond, not left at time.Now's nanosecond

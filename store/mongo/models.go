@@ -160,7 +160,7 @@ func fromEvent(e *audit.Event) *EventModel {
 // two halves are guaranteed to add back up to the original.
 func splitTimestamp(t time.Time) (date time.Time, subMs int32) {
 	date = t.Truncate(time.Millisecond)
-	return date, int32(t.Sub(date)) //nolint:gosec // always in [0, 1e6)
+	return date, int32(t.Nanosecond() % 1000000)
 }
 
 // joinTimestamp reverses splitTimestamp.

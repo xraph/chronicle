@@ -3,6 +3,7 @@ package checkpoint_test
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -394,4 +395,13 @@ func mustSigner(t *testing.T) checkpoint.Signer {
 	t.Helper()
 	signer, _ := newSigner(t, false) // from signer_test.go, same package
 	return signer
+}
+
+func TestCheckpointRejectsOverflowingSpan(t *testing.T) {
+	f := &fakeStores{}
+	signer, _ := newSigner(t, false)
+	result, err := checkpoint.NewCheckpointer(f, signer, nil).CheckpointStream(context.Background(), checkpoint.StreamHead{ID: id.NewStreamID(), HeadSeq: math.MaxUint64, HeadHash: "head"})
+	if err == nil || result != nil || len(f.cps) != 0 {
+		t.Fatalf("overflowing checkpoint: %+v %v", result, err)
+	}
 }
