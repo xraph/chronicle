@@ -27,6 +27,21 @@ import (
 // Decode parses a JSON object into metadata. Empty input and JSON null both
 // decode to a nil map.
 func Decode(data []byte) (map[string]any, error) {
+	m, err := DecodeExact(data)
+	if err != nil {
+		return nil, err
+	}
+
+	for k, v := range m {
+		m[k] = normalize(v)
+	}
+	return m, nil
+}
+
+// DecodeExact retains every JSON number without floating point conversion.
+// Reliable ingestion normalizes number spelling before hashing; encrypted
+// payloads and archive restores keep that exact representation.
+func DecodeExact(data []byte) (map[string]any, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil, nil
 	}
@@ -43,9 +58,6 @@ func Decode(data []byte) (map[string]any, error) {
 		return nil, errors.New("metajson: unexpected data after metadata object")
 	}
 
-	for k, v := range m {
-		m[k] = normalize(v)
-	}
 	return m, nil
 }
 

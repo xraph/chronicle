@@ -4,7 +4,9 @@ import (
 	"context"
 
 	"github.com/xraph/chronicle"
+	"github.com/xraph/chronicle/acceptance"
 	"github.com/xraph/chronicle/audit"
+	chash "github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/stream"
 )
@@ -74,4 +76,21 @@ func (a *Adapter) GetStored(ctx context.Context, eventID id.ID) (*audit.Event, e
 		return sr.GetStored(ctx, eventID)
 	}
 	return a.Get(ctx, eventID)
+}
+
+// Accept preserves the backend receipt-first acceptance capability.
+func (a *Adapter) Accept(ctx context.Context, r acceptance.Request, h *chash.Chain, prepare func(*audit.Event) error) (*acceptance.Receipt, error) {
+	backend, ok := a.Store.(acceptance.Store)
+	if !ok {
+		return nil, acceptance.ErrUnsupported
+	}
+	return backend.Accept(ctx, r, h, prepare)
+}
+
+// AppendWithChain preserves the configured chain for mixed legacy writers.
+func (a *Adapter) AppendWithChain(ctx context.Context, event *audit.Event, h *chash.Chain) error {
+	if backend, ok := a.Store.(acceptance.Appender); ok {
+		return backend.AppendWithChain(ctx, event, h)
+	}
+	return a.Append(ctx, event)
 }

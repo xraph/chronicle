@@ -8,7 +8,9 @@ import (
 	"github.com/xraph/grove/drivers/pgdriver"
 
 	"github.com/xraph/chronicle"
+	"github.com/xraph/chronicle/acceptance"
 	"github.com/xraph/chronicle/audit"
+	chash "github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 )
 
@@ -26,72 +28,19 @@ import (
 // head and the actual MAX(sequence) while holding a row lock on the stream, and
 // advance the head in the same transaction so it can never lag again.
 func (s *Store) Append(ctx context.Context, event *audit.Event) error {
+	return s.AppendWithChain(ctx, event, s.hasher)
+}
+
+// AppendWithChain uses the caller's configured hasher under the stream lock.
+func (s *Store) AppendWithChain(ctx context.Context, event *audit.Event, h *chash.Chain) error {
 	tx, err := s.pg.BeginTxQuery(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	streamID := event.StreamID.String()
-
-	// Lock the stream row so concurrent appends to the same stream serialize.
-	var headSeq int64
-	var headHash string
-	if err := tx.NewRaw(
-		"SELECT head_seq, head_hash FROM chronicle_streams WHERE id = $1 FOR UPDATE", streamID,
-	).Scan(ctx, &headSeq, &headHash); err != nil {
-		return fmt.Errorf("lock stream %s: %w", streamID, err)
-	}
-
-	// Reconcile against the authoritative max in case the head desynced.
-	var maxSeq int64
-	if err := tx.NewRaw(
-		"SELECT COALESCE(MAX(sequence), 0) FROM chronicle_events WHERE stream_id = $1", streamID,
-	).Scan(ctx, &maxSeq); err != nil {
-		return fmt.Errorf("max sequence for stream %s: %w", streamID, err)
-	}
-
-	next := headSeq
-	if maxSeq > next {
-		next = maxSeq
-	}
-	next++
-
-	event.Sequence = safeUint64(next)
-
-	// Re-link the chain under the row lock.
-	//
-	// Chronicle.Record derives PrevHash and Hash from the head it read before
-	// calling Append. With several replicas writing to one database, two of them
-	// can read the same head and produce two events claiming the same
-	// predecessor. Deriving both here, while the lock is held, is what keeps the
-	// chain linked across processes.
-	//
-	// This is also required for correctness rather than just concurrency: the
-	// sequence is part of the hashed content, and it is allocated above, so the
-	// hash has to be computed after it is known.
-	event.PrevHash = headHash
-	digest, keyID, hErr := s.hasher.Compute(ctx, event.PrevHash, event)
-	if hErr != nil {
-		return fmt.Errorf("compute hash for event %s: %w", event.ID, hErr)
-	}
-	event.Hash = digest
-	event.HashScheme = string(s.hasher.Scheme())
-	event.HashKeyID = keyID
-
-	m := fromEvent(event)
-	if _, err := tx.NewInsert(m).Exec(ctx); err != nil {
-		return fmt.Errorf("insert event %s: %w", event.ID, err)
-	}
-
-	// Advance the stream head in the same transaction so head_seq never lags
-	// the events it points at again. Record also calls UpdateStreamHead after
-	// Append; that becomes an idempotent no-op on the same value.
-	if _, err := tx.NewRaw(
-		"UPDATE chronicle_streams SET head_seq = $1, head_hash = $2, updated_at = NOW() WHERE id = $3",
-		next, event.Hash, streamID,
-	).Exec(ctx); err != nil {
-		return fmt.Errorf("update stream head %s: %w", streamID, err)
+	if err := s.appendInTx(ctx, tx, event, h); err != nil {
+		return err
 	}
 
 	return tx.Commit()
@@ -451,4 +400,87 @@ func toEventSlice(models []EventModel) ([]*audit.Event, error) {
 		events = append(events, event)
 	}
 	return events, nil
+}
+
+func (s *Store) appendInTx(ctx context.Context, tx *pgdriver.PgTx, event *audit.Event, h *chash.Chain) error {
+	streamID := event.StreamID.String()
+
+	// Lock the stream row so concurrent appends to the same stream serialize.
+	var headSeq int64
+	var headHash, scheme string
+	if err := tx.NewRaw(
+		"SELECT head_seq, head_hash, scheme FROM chronicle_streams WHERE id = $1 FOR UPDATE", streamID,
+	).Scan(ctx, &headSeq, &headHash, &scheme); err != nil {
+		return fmt.Errorf("lock stream %s: %w", streamID, err)
+	}
+
+	// Reconcile against the authoritative max in case the head desynced.
+	var maxSeq int64
+	if err := tx.NewRaw(
+		"SELECT COALESCE(MAX(sequence), 0) FROM chronicle_events WHERE stream_id = $1", streamID,
+	).Scan(ctx, &maxSeq); err != nil {
+		return fmt.Errorf("max sequence for stream %s: %w", streamID, err)
+	}
+
+	next := headSeq
+	if maxSeq > next {
+		next = maxSeq
+	}
+	next++
+
+	if scheme != "" && scheme != string(chash.SchemeLegacy) && chash.Rank(chash.Scheme(scheme)) == 0 {
+		return acceptance.ErrInvalid
+	}
+	if chash.Rank(h.Scheme()) < chash.Rank(chash.Scheme(scheme)) {
+		return chronicle.ErrSchemeWeakeningRefused
+	}
+	if scheme != string(h.Scheme()) {
+		if _, err := tx.NewRaw("UPDATE chronicle_streams SET scheme=$1, scheme_since=$2 WHERE id=$3", string(h.Scheme()), next, streamID).Exec(ctx); err != nil {
+			return err
+		}
+	}
+	if maxSeq > headSeq {
+		if err := tx.NewRaw("SELECT hash FROM chronicle_events WHERE stream_id=$1 AND sequence=$2", streamID, maxSeq).Scan(ctx, &headHash); err != nil {
+			return err
+		}
+	}
+
+	event.Sequence = safeUint64(next)
+
+	// Re-link the chain under the row lock.
+	//
+	// Chronicle.Record derives PrevHash and Hash from the head it read before
+	// calling Append. With several replicas writing to one database, two of them
+	// can read the same head and produce two events claiming the same
+	// predecessor. Deriving both here, while the lock is held, is what keeps the
+	// chain linked across processes.
+	//
+	// This is also required for correctness rather than just concurrency: the
+	// sequence is part of the hashed content, and it is allocated above, so the
+	// hash has to be computed after it is known.
+	event.PrevHash = headHash
+	digest, keyID, hErr := h.Compute(ctx, event.PrevHash, event)
+	if hErr != nil {
+		return fmt.Errorf("compute hash for event %s: %w", event.ID, hErr)
+	}
+	event.Hash = digest
+	event.HashScheme = string(h.Scheme())
+	event.HashKeyID = keyID
+
+	m := fromEvent(event)
+	if _, err := tx.NewInsert(m).Exec(ctx); err != nil {
+		return fmt.Errorf("insert event %s: %w", event.ID, err)
+	}
+
+	// Advance the stream head in the same transaction so head_seq never lags
+	// the events it points at again. Record also calls UpdateStreamHead after
+	// Append; that becomes an idempotent no-op on the same value.
+	if _, err := tx.NewRaw(
+		"UPDATE chronicle_streams SET head_seq = $1, head_hash = $2, updated_at = NOW() WHERE id = $3",
+		next, event.Hash, streamID,
+	).Exec(ctx); err != nil {
+		return fmt.Errorf("update stream head %s: %w", streamID, err)
+	}
+
+	return nil
 }

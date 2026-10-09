@@ -13,6 +13,7 @@ import (
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/store"
 	"github.com/xraph/chronicle/store/memory"
+	"github.com/xraph/chronicle/stream"
 	"github.com/xraph/chronicle/verify"
 )
 
@@ -292,24 +293,12 @@ func hasSeq(list []uint64, seq uint64) bool {
 	return false
 }
 
-// schemePinWriter lowers a stream's pin directly, which is how this file builds
-// a stream that a pre-v5 deployment left behind.
-type schemePinWriter interface {
-	UpdateStreamScheme(ctx context.Context, streamID id.ID, scheme string, since uint64) error
-}
-
 // forcePin rewrites a stream's pin behind Chronicle's back, standing in for a
 // database written by an older build of this library.
 func forcePin(t *testing.T, c *chronicle.Chronicle, streamID id.ID, scheme hash.Scheme, since uint64) {
 	t.Helper()
 
-	writer, ok := c.Store().(schemePinWriter)
-	if !ok {
-		t.Fatalf("store %T cannot write the stream pin", c.Store())
-	}
-	if err := writer.UpdateStreamScheme(context.Background(), streamID, string(scheme), since); err != nil {
-		t.Fatalf("UpdateStreamScheme: %v", err)
-	}
+	corruptStream(t, c, streamID, func(st *stream.Stream) { st.Scheme = string(scheme); st.SchemeSince = since })
 }
 
 // TestDroppingTheKeyToGainTheFramingFixIsRefused is the case hash.Rank's

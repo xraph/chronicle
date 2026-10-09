@@ -10,11 +10,16 @@ import (
 	"sync"
 	"time"
 
+	"bytes"
+	"encoding/json"
+
 	"github.com/xraph/chronicle"
+	"github.com/xraph/chronicle/acceptance"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/erasure"
+	chash "github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/stream"
@@ -43,6 +48,7 @@ type Store struct {
 	reports     []*compliance.Report
 	checkpoints []*checkpoint.Checkpoint
 	closed      bool
+	receipts    map[string]*acceptance.Receipt
 }
 
 // New creates a new in-memory store.
@@ -86,11 +92,17 @@ func cloneEvent(e *audit.Event) *audit.Event {
 	clone := *e
 
 	if e.Metadata != nil {
-		clone.Metadata = make(map[string]any, len(e.Metadata))
-		for k, v := range e.Metadata {
-			clone.Metadata[k] = v
+		clone.Metadata = nil
+		raw, err := json.Marshal(e.Metadata)
+		if err == nil {
+			d := json.NewDecoder(bytes.NewReader(raw))
+			d.UseNumber()
+			if err := d.Decode(&clone.Metadata); err != nil {
+				clone.Metadata = nil
+			}
 		}
 	}
+
 	if e.ErasedAt != nil {
 		at := *e.ErasedAt
 		clone.ErasedAt = &at
@@ -358,7 +370,13 @@ func (s *Store) LastHash(_ context.Context, streamID id.ID) (string, error) {
 func (s *Store) CreateStream(_ context.Context, st *stream.Stream) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.streams = append(s.streams, st)
+	for _, existing := range s.streams {
+		if existing.AppID == st.AppID && existing.TenantID == st.TenantID {
+			return acceptance.ErrConflict
+		}
+	}
+	snapshot := *st
+	s.streams = append(s.streams, &snapshot)
 	return nil
 }
 
@@ -370,7 +388,8 @@ func (s *Store) GetStream(_ context.Context, streamID id.ID) (*stream.Stream, er
 	idStr := streamID.String()
 	for _, st := range s.streams {
 		if st.ID.String() == idStr {
-			return st, nil
+			snapshot := *st
+			return &snapshot, nil
 		}
 	}
 	return nil, chronicle.ErrStreamNotFound
@@ -383,7 +402,8 @@ func (s *Store) GetStreamByScope(_ context.Context, appID, tenantID string) (*st
 
 	for _, st := range s.streams {
 		if st.AppID == appID && st.TenantID == tenantID {
-			return st, nil
+			snapshot := *st
+			return &snapshot, nil
 		}
 	}
 	return nil, chronicle.ErrStreamNotFound
@@ -395,7 +415,10 @@ func (s *Store) ListStreams(_ context.Context, opts stream.ListOpts) ([]*stream.
 	defer s.mu.RUnlock()
 
 	result := make([]*stream.Stream, len(s.streams))
-	copy(result, s.streams)
+	for i, st := range s.streams {
+		snapshot := *st
+		result[i] = &snapshot
+	}
 
 	if opts.Offset > 0 && opts.Offset < len(result) {
 		result = result[opts.Offset:]
@@ -413,12 +436,19 @@ func (s *Store) UpdateStreamHead(_ context.Context, streamID id.ID, hash string,
 
 	idStr := streamID.String()
 	for _, st := range s.streams {
-		if st.ID.String() == idStr {
-			st.HeadHash = hash
-			st.HeadSeq = seq
-			st.UpdatedAt = time.Now().UTC()
+		if st.ID.String() != idStr {
+			continue
+		}
+		if seq < st.HeadSeq {
 			return nil
 		}
+		if seq == st.HeadSeq && hash != st.HeadHash {
+			return acceptance.ErrHeadConflict
+		}
+		st.HeadHash = hash
+		st.HeadSeq = seq
+		st.UpdatedAt = time.Now().UTC()
+		return nil
 	}
 	return chronicle.ErrStreamNotFound
 }
@@ -430,12 +460,19 @@ func (s *Store) UpdateStreamScheme(_ context.Context, streamID id.ID, scheme str
 
 	idStr := streamID.String()
 	for _, st := range s.streams {
-		if st.ID.String() == idStr {
-			st.Scheme = scheme
-			st.SchemeSince = since
-			st.UpdatedAt = time.Now().UTC()
+		if st.ID.String() != idStr {
+			continue
+		}
+		if chash.Rank(chash.Scheme(scheme)) < chash.Rank(chash.Scheme(st.Scheme)) {
+			return chronicle.ErrSchemeWeakeningRefused
+		}
+		if st.Scheme == scheme {
 			return nil
 		}
+		st.Scheme = scheme
+		st.SchemeSince = max(since, st.HeadSeq+1)
+		st.UpdatedAt = time.Now().UTC()
+		return nil
 	}
 	return chronicle.ErrStreamNotFound
 }

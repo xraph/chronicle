@@ -9,6 +9,7 @@ import (
 
 	log "github.com/xraph/go-utils/log"
 
+	"github.com/xraph/chronicle/acceptance"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/hash"
@@ -250,7 +251,13 @@ func (c *Chronicle) appendToChain(ctx context.Context, event *audit.Event) error
 	event.HashKeyID = keyID
 
 	// 6. Persist to store.
-	if err := c.store.Append(ctx, event); err != nil {
+	var appendErr error
+	if backend, ok := c.store.(acceptance.Appender); ok {
+		appendErr = backend.AppendWithChain(ctx, event, c.hasher)
+	} else {
+		appendErr = c.store.Append(ctx, event)
+	}
+	if err := appendErr; err != nil {
 		return fmt.Errorf("chronicle: append: %w", err)
 	}
 
@@ -310,7 +317,14 @@ func (c *Chronicle) resolveStream(ctx context.Context, appID, tenantID string) (
 		SchemeSince: 1,
 	}
 	if err := c.store.CreateStreamInfo(ctx, s); err != nil {
-		return nil, err
+		existing, readErr := c.store.GetStreamByScope(ctx, appID, tenantID)
+		if readErr != nil {
+			return nil, err
+		}
+		if pinErr := c.reconcileStreamPin(ctx, existing); pinErr != nil {
+			return nil, pinErr
+		}
+		return existing, nil
 	}
 	return s, nil
 }

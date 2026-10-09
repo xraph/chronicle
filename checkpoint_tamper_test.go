@@ -14,6 +14,7 @@ import (
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/scope"
+	"github.com/xraph/chronicle/stream"
 	"github.com/xraph/chronicle/verify"
 )
 
@@ -216,9 +217,7 @@ func truncateTailBeyondTheLastCheckpoint(t *testing.T, deleteCheckpoint bool) tr
 	if _, purgeErr := purger.PurgeEvents(ctx, truncated); purgeErr != nil {
 		t.Fatalf("PurgeEvents: %v", purgeErr)
 	}
-	if headErr := c.Store().UpdateStreamHead(ctx, streamID, all[9].Hash, all[9].Sequence); headErr != nil {
-		t.Fatalf("UpdateStreamHead: %v", headErr)
-	}
+	corruptStream(t, c, streamID, func(st *stream.Stream) { st.HeadHash = all[9].Hash; st.HeadSeq = all[9].Sequence })
 
 	// The stream head row is no safeguard, because the same attacker who
 	// rewrites events rewrites it too. Read it back through the same

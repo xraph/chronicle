@@ -188,7 +188,11 @@ func (s *Sealer) Open(event *audit.Event) error {
 			return fmt.Errorf("crypto: open metadata: %w", openErr)
 		}
 
-		metadata, decodeErr := metajson.Decode(plaintext)
+		decode := metajson.Decode
+		if event.ExactMetadata {
+			decode = metajson.DecodeExact
+		}
+		metadata, decodeErr := decode(plaintext)
 		if decodeErr != nil {
 			return fmt.Errorf("crypto: unmarshal metadata: %w", decodeErr)
 		}

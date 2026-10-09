@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/xraph/chronicle"
+	"github.com/xraph/chronicle/acceptance"
+	chash "github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/stream"
 )
@@ -78,48 +80,50 @@ func (s *Store) ListStreams(ctx context.Context, opts stream.ListOpts) ([]*strea
 // UpdateStreamScheme moves the stream's digest pin to scheme, applying from
 // sequence since.
 func (s *Store) UpdateStreamScheme(ctx context.Context, streamID id.ID, scheme string, since uint64) error {
-	result, err := s.pg.NewUpdate((*StreamModel)(nil)).
-		Set("scheme = ?", scheme).
-		Set("scheme_since = ?", safeInt64(since)).
-		Set("updated_at = NOW()").
-		Where("id = ?", streamID.String()).
-		Exec(ctx)
+	tx, err := s.pg.BeginTxQuery(ctx, nil)
 	if err != nil {
 		return err
 	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
+	defer func() { _ = tx.Rollback() }()
+	var current string
+	if scanErr := tx.NewRaw("SELECT scheme FROM chronicle_streams WHERE id=$1 FOR UPDATE", streamID.String()).Scan(ctx, &current); scanErr != nil {
+		return groveError(scanErr, chronicle.ErrStreamNotFound)
+	}
+	if chash.Rank(chash.Scheme(scheme)) < chash.Rank(chash.Scheme(current)) {
+		return chronicle.ErrSchemeWeakeningRefused
+	}
+	if current == scheme {
+		return nil
+	}
+	if _, err = tx.NewRaw("UPDATE chronicle_streams SET scheme=$1,scheme_since=GREATEST($2,head_seq+1),updated_at=NOW() WHERE id=$3", scheme, safeInt64(since), streamID.String()).Exec(ctx); err != nil {
 		return err
 	}
-
-	if rows == 0 {
-		return fmt.Errorf("%w: stream %s", chronicle.ErrStreamNotFound, streamID)
-	}
-
-	return nil
+	return tx.Commit()
 }
 
-// UpdateStreamHead updates the stream's head hash and sequence after append.
+// UpdateStreamHead ignores late writers and rejects conflicting equal positions.
 func (s *Store) UpdateStreamHead(ctx context.Context, streamID id.ID, hash string, seq uint64) error {
-	result, err := s.pg.NewUpdate((*StreamModel)(nil)).
-		Set("head_hash = ?", hash).
-		Set("head_seq = ?", safeInt64(seq)).
-		Set("updated_at = NOW()").
-		Where("id = ?", streamID.String()).
-		Exec(ctx)
+	tx, err := s.pg.BeginTxQuery(ctx, nil)
 	if err != nil {
 		return err
 	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
+	defer func() { _ = tx.Rollback() }()
+	var currentSeq int64
+	var currentHash string
+	if scanErr := tx.NewRaw("SELECT head_seq,head_hash FROM chronicle_streams WHERE id=$1 FOR UPDATE", streamID.String()).Scan(ctx, &currentSeq, &currentHash); scanErr != nil {
+		return groveError(scanErr, chronicle.ErrStreamNotFound)
+	}
+	if safeInt64(seq) < currentSeq {
+		return nil
+	}
+	if safeInt64(seq) == currentSeq {
+		if hash != currentHash {
+			return acceptance.ErrHeadConflict
+		}
+		return nil
+	}
+	if _, err = tx.NewRaw("UPDATE chronicle_streams SET head_seq=$1,head_hash=$2,updated_at=NOW() WHERE id=$3", safeInt64(seq), hash, streamID.String()).Exec(ctx); err != nil {
 		return err
 	}
-
-	if rows == 0 {
-		return fmt.Errorf("%w: stream %s", chronicle.ErrStreamNotFound, streamID)
-	}
-
-	return nil
+	return tx.Commit()
 }

@@ -2,6 +2,7 @@
 package postgres
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"time"
@@ -45,36 +46,37 @@ func safeUint64(v int64) uint64 {
 type EventModel struct {
 	grove.BaseModel `grove:"table:chronicle_events,alias:e"`
 
-	ID              string       `grove:"id,pk"`
-	StreamID        string       `grove:"stream_id"`
-	Sequence        int64        `grove:"sequence"`
-	Hash            string       `grove:"hash"`
-	PrevHash        string       `grove:"prev_hash"`
-	AppID           string       `grove:"app_id"`
-	TenantID        string       `grove:"tenant_id"`
-	UserID          string       `grove:"user_id"`
-	IP              string       `grove:"ip"`
-	UserAgent       string       `grove:"user_agent"`
-	RequestID       string       `grove:"request_id"`
-	SessionID       string       `grove:"session_id"`
-	Action          string       `grove:"action"`
-	Resource        string       `grove:"resource"`
-	Category        string       `grove:"category"`
-	ResourceID      string       `grove:"resource_id"`
-	Metadata        metajson.Map `grove:"metadata,type:jsonb"` // decodes without rounding integers past 2^53
-	Outcome         string       `grove:"outcome"`
-	Severity        string       `grove:"severity"`
-	Reason          string       `grove:"reason"`
-	SubjectID       string       `grove:"subject_id"`
-	EncryptionKeyID string       `grove:"encryption_key_id"`
-	Erased          bool         `grove:"erased"`
-	ErasedAt        *time.Time   `grove:"erased_at"`
-	ErasureID       string       `grove:"erasure_id"`
-	Timestamp       time.Time    `grove:"timestamp"`
-	TimestampSubUs  int32        `grove:"timestamp_sub_us"`
-	CreatedAt       time.Time    `grove:"created_at"`
-	HashScheme      string       `grove:"hash_scheme"`
-	HashKeyID       string       `grove:"hash_key_id"`
+	ID               string        `grove:"id,pk"`
+	StreamID         string        `grove:"stream_id"`
+	Sequence         int64         `grove:"sequence"`
+	Hash             string        `grove:"hash"`
+	PrevHash         string        `grove:"prev_hash"`
+	AppID            string        `grove:"app_id"`
+	TenantID         string        `grove:"tenant_id"`
+	UserID           string        `grove:"user_id"`
+	IP               string        `grove:"ip"`
+	UserAgent        string        `grove:"user_agent"`
+	RequestID        string        `grove:"request_id"`
+	SessionID        string        `grove:"session_id"`
+	Action           string        `grove:"action"`
+	Resource         string        `grove:"resource"`
+	Category         string        `grove:"category"`
+	ResourceID       string        `grove:"resource_id"`
+	Metadata         exactMetadata `grove:"metadata,type:jsonb"` // decoded without numeric rounding
+	LosslessMetadata bool          `grove:"lossless_metadata"`
+	Outcome          string        `grove:"outcome"`
+	Severity         string        `grove:"severity"`
+	Reason           string        `grove:"reason"`
+	SubjectID        string        `grove:"subject_id"`
+	EncryptionKeyID  string        `grove:"encryption_key_id"`
+	Erased           bool          `grove:"erased"`
+	ErasedAt         *time.Time    `grove:"erased_at"`
+	ErasureID        string        `grove:"erasure_id"`
+	Timestamp        time.Time     `grove:"timestamp"`
+	TimestampSubUs   int32         `grove:"timestamp_sub_us"`
+	CreatedAt        time.Time     `grove:"created_at"`
+	HashScheme       string        `grove:"hash_scheme"`
+	HashKeyID        string        `grove:"hash_key_id"`
 }
 
 func toEvent(m *EventModel) (*audit.Event, error) {
@@ -86,6 +88,18 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 	streamID, err := id.ParseStreamID(m.StreamID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse stream id %q: %w", m.StreamID, err)
+	}
+
+	metadata := map[string]any(m.Metadata)
+	if !m.LosslessMetadata {
+		raw, encodeErr := json.Marshal(metadata)
+		if encodeErr != nil {
+			return nil, encodeErr
+		}
+		metadata, err = metajson.Decode(raw)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &audit.Event{
@@ -105,7 +119,8 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 		Resource:        m.Resource,
 		Category:        m.Category,
 		ResourceID:      m.ResourceID,
-		Metadata:        m.Metadata,
+		Metadata:        metadata,
+		ExactMetadata:   m.LosslessMetadata,
 		Outcome:         m.Outcome,
 		Severity:        m.Severity,
 		Reason:          m.Reason,
@@ -123,36 +138,37 @@ func toEvent(m *EventModel) (*audit.Event, error) {
 func fromEvent(e *audit.Event) *EventModel {
 	ts, subUs := splitTimestamp(e.Timestamp)
 	return &EventModel{
-		ID:              e.ID.String(),
-		StreamID:        e.StreamID.String(),
-		Sequence:        safeInt64(e.Sequence),
-		Hash:            e.Hash,
-		PrevHash:        e.PrevHash,
-		AppID:           e.AppID,
-		TenantID:        e.TenantID,
-		UserID:          e.UserID,
-		IP:              e.IP,
-		UserAgent:       e.UserAgent,
-		RequestID:       e.RequestID,
-		SessionID:       e.SessionID,
-		Action:          e.Action,
-		Resource:        e.Resource,
-		Category:        e.Category,
-		ResourceID:      e.ResourceID,
-		Metadata:        e.Metadata,
-		Outcome:         e.Outcome,
-		Severity:        e.Severity,
-		Reason:          e.Reason,
-		SubjectID:       e.SubjectID,
-		EncryptionKeyID: e.EncryptionKeyID,
-		Erased:          e.Erased,
-		ErasedAt:        e.ErasedAt,
-		ErasureID:       e.ErasureID,
-		Timestamp:       ts,
-		TimestampSubUs:  subUs,
-		CreatedAt:       time.Now().UTC(),
-		HashScheme:      e.HashScheme,
-		HashKeyID:       e.HashKeyID,
+		ID:               e.ID.String(),
+		StreamID:         e.StreamID.String(),
+		Sequence:         safeInt64(e.Sequence),
+		Hash:             e.Hash,
+		PrevHash:         e.PrevHash,
+		AppID:            e.AppID,
+		TenantID:         e.TenantID,
+		UserID:           e.UserID,
+		IP:               e.IP,
+		UserAgent:        e.UserAgent,
+		RequestID:        e.RequestID,
+		SessionID:        e.SessionID,
+		Action:           e.Action,
+		Resource:         e.Resource,
+		Category:         e.Category,
+		ResourceID:       e.ResourceID,
+		Metadata:         e.Metadata,
+		LosslessMetadata: e.ExactMetadata,
+		Outcome:          e.Outcome,
+		Severity:         e.Severity,
+		Reason:           e.Reason,
+		SubjectID:        e.SubjectID,
+		EncryptionKeyID:  e.EncryptionKeyID,
+		Erased:           e.Erased,
+		ErasedAt:         e.ErasedAt,
+		ErasureID:        e.ErasureID,
+		Timestamp:        ts,
+		TimestampSubUs:   subUs,
+		CreatedAt:        time.Now().UTC(),
+		HashScheme:       e.HashScheme,
+		HashKeyID:        e.HashKeyID,
 	}
 }
 

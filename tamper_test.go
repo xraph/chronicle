@@ -223,26 +223,11 @@ func TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints(t *testing.T) 
 	rewriteAndRelink(t, events, 0, "attacker-was-not-here")
 	persist(t, c, events)
 
-	// Rewrite the stream's own pin, the second half of the attack a SQL shell
-	// can run in the same transaction. There is no exported method for this:
-	// production never updates a stream's scheme after creation, only an
-	// attacker would. The closest available read path is stream.Store's
-	// GetStream, promoted onto store.Adapter; for the memory backend it
-	// returns the live *stream.Stream (see UpdateStreamHead in
-	// store/memory/store.go, which mutates a stream the same way, by finding
-	// it and setting fields directly -- streams are not cloned on read or
-	// write the way events are). Setting fields on it is, for this backend,
-	// the persisted state, which is the closest analogue available to the
-	// UPDATE chronicle_streams a real attacker would run.
-	reader, ok := c.Store().(streamReader)
-	if !ok {
-		t.Fatalf("store %T cannot read the stream row directly", c.Store())
-	}
-	st, err := reader.GetStream(ctx, streamID)
+	corruptStream(t, c, streamID, func(st *stream.Stream) { st.Scheme = string(hash.SchemePlainV4) })
+	st, err := c.Store().(streamReader).GetStream(ctx, streamID)
 	if err != nil {
-		t.Fatalf("GetStream: %v", err)
+		t.Fatal(err)
 	}
-	st.Scheme = string(hash.SchemePlainV4)
 
 	// Derive the pin the way production does, from the stream row, not a
 	// literal, so this test cannot pass just because the test author typed
@@ -267,8 +252,7 @@ func TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints(t *testing.T) 
 // streamReader is satisfied by the store this suite always builds: its
 // embedded store.Store interface promotes stream.Store's GetStream.
 // TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints uses it to
-// read, and for the memory backend mutate through the same pointer, the
-// stream row that carries the pin.
+// read the stream row that carries the pin.
 type streamReader interface {
 	GetStream(ctx context.Context, streamID id.ID) (*stream.Stream, error)
 }

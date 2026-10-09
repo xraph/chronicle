@@ -18,6 +18,7 @@ import (
 	"github.com/xraph/chronicle/id"
 	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/store/memory"
+	"github.com/xraph/chronicle/stream"
 	"github.com/xraph/chronicle/verify"
 )
 
@@ -39,7 +40,7 @@ const checkpointE2EAppID = "app-checkpoint-e2e"
 // backends deliberately refuse: they re-derive sequence and prev_hash inside
 // Append. memory persists exactly what it is handed, which is what a SQL
 // shell against a real deployment does.
-func setupCheckpointedExtension(t *testing.T) (*extension.Extension, http.Handler, *memory.Store, id.ID) {
+func setupCheckpointedExtension(t *testing.T) (*extension.Extension, http.Handler, *checkpointMemoryStore, id.ID) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -48,7 +49,7 @@ func setupCheckpointedExtension(t *testing.T) (*extension.Extension, http.Handle
 		t.Fatalf("GenerateKey: %v", err)
 	}
 
-	mem := memory.New()
+	mem := &checkpointMemoryStore{Store: memory.New()}
 	ext := extension.New(
 		extension.WithStore(mem),
 		extension.WithUnauthenticatedAPI(),
@@ -157,7 +158,7 @@ func callAPI(t *testing.T, h http.Handler, path string, body any) *httptest.Resp
 // TestPlainChainDoesNotDetectARewrite pins as undetectable without a
 // checkpoint. The signed checkpoint is the one thing here the attacker
 // cannot restate.
-func rewriteEventAndRelink(t *testing.T, mem *memory.Store, streamID id.ID, seq uint64, newUserID string) {
+func rewriteEventAndRelink(t *testing.T, mem *checkpointMemoryStore, streamID id.ID, seq uint64, newUserID string) {
 	t.Helper()
 	ctx := context.Background()
 	var plain hash.Chain
@@ -198,9 +199,13 @@ func rewriteEventAndRelink(t *testing.T, mem *memory.Store, streamID id.ID, seq 
 	// is caught by head anchoring alone, and this test is about what
 	// happens when they do not.
 	last := events[len(events)-1]
-	if headErr := mem.UpdateStreamHead(ctx, streamID, last.Hash, last.Sequence); headErr != nil {
-		t.Fatalf("UpdateStreamHead: %v", headErr)
+	st, err := mem.Store.GetStream(ctx, streamID)
+	if err != nil {
+		t.Fatal(err)
 	}
+	st.HeadHash = last.Hash
+	st.HeadSeq = last.Sequence
+	mem.corruptHead = st
 }
 
 // TestVerifyAPIReportsARewriteOfCheckpointedEvents is the end-to-end case the
@@ -287,7 +292,7 @@ func TestVerifyAPIReportsARewriteOfCheckpointedEvents(t *testing.T) {
 // signed coverage, and a clean chain still verifies clean.
 func TestVerifyAPIWithoutCheckpointsIsUnchanged(t *testing.T) {
 	ctx := context.Background()
-	mem := memory.New()
+	mem := &checkpointMemoryStore{Store: memory.New()}
 	ext := extension.New(
 		extension.WithStore(mem),
 		extension.WithUnauthenticatedAPI(),
@@ -343,7 +348,7 @@ func TestHMACChainWithASeparateCheckpointKeysetVerifiesClean(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	mem := memory.New()
+	mem := &checkpointMemoryStore{Store: memory.New()}
 	ext := extension.New(
 		extension.WithConfig(extension.Config{
 			TamperEvidence: extension.TamperEvidenceConfig{
@@ -439,4 +444,28 @@ func TestBoundedVerifyWithNoScopeStillPassesOnAnIntactChain(t *testing.T) {
 	if report.CheckpointHeadChecked {
 		t.Errorf("the head comparison ran against a caller that claimed no head: %+v", report)
 	}
+}
+
+// checkpointMemoryStore gives these sequential attack tests an explicit corrupt
+// read snapshot, without weakening the production store's monotonic head API.
+type checkpointMemoryStore struct {
+	*memory.Store
+	corruptHead *stream.Stream
+}
+
+func (*checkpointMemoryStore) SetHasher(*hash.Chain) {}
+
+func (s *checkpointMemoryStore) GetStream(ctx context.Context, streamID id.ID) (*stream.Stream, error) {
+	if s.corruptHead != nil && s.corruptHead.ID == streamID {
+		snapshot := *s.corruptHead
+		return &snapshot, nil
+	}
+	return s.Store.GetStream(ctx, streamID)
+}
+func (s *checkpointMemoryStore) GetStreamByScope(ctx context.Context, app, tenant string) (*stream.Stream, error) {
+	if s.corruptHead != nil && s.corruptHead.AppID == app && s.corruptHead.TenantID == tenant {
+		snapshot := *s.corruptHead
+		return &snapshot, nil
+	}
+	return s.Store.GetStreamByScope(ctx, app, tenant)
 }

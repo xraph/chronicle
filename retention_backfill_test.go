@@ -15,6 +15,7 @@ import (
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/sink"
 	"github.com/xraph/chronicle/store"
+	"github.com/xraph/chronicle/stream"
 )
 
 // archivedPurge runs a policy the way retention ran before retention records
@@ -396,9 +397,8 @@ func TestBackfillChecksBothSidesOfAPurgedHead(t *testing.T) {
 	if forged.Hash, forged.HashKeyID, err = chain.Compute(ctx, forged.PrevHash, &forged); err != nil {
 		t.Fatalf("Compute: %v", err)
 	}
-	if err := rc.s.UpdateStreamHead(ctx, rc.streamID, forged.Hash, 6); err != nil {
-		t.Fatalf("UpdateStreamHead: %v", err)
-	}
+	corruptStream(t, rc.c, rc.streamID, func(st *stream.Stream) { st.HeadHash = forged.Hash; st.HeadSeq = 6 })
+	rc.s = rc.c.Store().(*store.Adapter).Store
 
 	report := rc.backfill(t, &sliceArchive{name: "forged-head", events: []*audit.Event{&forged}}, false)
 	if len(report.Recovered) != 0 || !sameSeqs(refusedSeqs(report), []uint64{6}) {

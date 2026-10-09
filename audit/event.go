@@ -59,6 +59,10 @@ type Event struct {
 	Severity   string         `json:"severity"`
 	Reason     string         `json:"reason,omitempty"`
 
+	// ExactMetadata selects lossless JSON number decoding for reliable records.
+	// Assigned by Chronicle before persistence, preserved by archives.
+	ExactMetadata bool `json:"exact_metadata,omitempty"`
+
 	// GDPR (crypto-erasure support)
 	SubjectID       string `json:"subject_id,omitempty"`
 	EncryptionKeyID string `json:"encryption_key_id,omitempty"`
