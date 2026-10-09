@@ -282,6 +282,13 @@ func contentV4(scheme Scheme, prevHash string, event *audit.Event) string {
 		marshalMetadata(event.Metadata),
 	)
 
+	// The optional encoding marker authenticates the interpretation of sealed
+	// metadata too. Removing it must not preserve the ciphertext's valid hash.
+	// Unmarked historical events retain their exact original field sequence.
+	if event.ExactMetadata {
+		fields = append(fields, "chronicle/metadata-decimal/v1")
+	}
+
 	var b strings.Builder
 	for i, f := range fields {
 		if i > 0 {
@@ -432,7 +439,7 @@ func (c *Chain) VerifyWithPin(ctx context.Context, prevHash string, event *audit
 		}
 		// No scheme the tolerant path tries covers the request fields, and
 		// no row old enough to carry no scheme was ever written with them.
-		if hasRequestContext(event) {
+		if hasRequestContext(event) || event.ExactMetadata {
 			return Result{Tolerant: true}, nil
 		}
 		for _, scheme := range []Scheme{SchemePlain, SchemeLegacy} {
@@ -455,7 +462,7 @@ func (c *Chain) VerifyWithPin(ctx context.Context, prevHash string, event *audit
 	// none of those schemes was ever written by a version that had them. So
 	// a v1, v2 or v3 row carrying one had it added afterwards, and nothing in
 	// its digest says what it should be.
-	if hasRequestContext(event) && !coversRequestContext(claimed) {
+	if (hasRequestContext(event) || event.ExactMetadata) && !coversRequestContext(claimed) {
 		return Result{Scheme: claimed}, nil
 	}
 

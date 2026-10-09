@@ -79,7 +79,9 @@ sequence, hash provenance, and the backend-assigned `ExactMetadata` marker are
 excluded from the semantic fingerprint. Inputs already marked encrypted or
 erased are rejected.
 
-Reliable events set `ExactMetadata`. PostgreSQL records that choice in
+Reliable events set `ExactMetadata`, whose presence is covered by the v4/v5
+chain digest through an additional framed encoding marker. Unmarked historical
+events keep their original hash bytes. PostgreSQL records that choice in
 `lossless_metadata`, and reads those rows using `json.Number`. Legacy rows
 retain their historical float/int decoding so existing chain hashes still
 verify. Crypto-erasure seals the normalized metadata, then the chain hashes the
