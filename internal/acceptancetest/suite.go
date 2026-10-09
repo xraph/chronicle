@@ -28,20 +28,33 @@ func Request() acceptance.Request {
 	return acceptance.Request{Producer: "dispatch", Installation: "host-a", SourceKey: "delivery-1", SourceFingerprint: "source-sha", OrgID: "org-a", Event: &audit.Event{AppID: "app-a", TenantID: "tenant-a", Action: "run.completed", Resource: "run", Category: "workflow", Timestamp: time.Date(2026, 10, 9, 1, 2, 3, 123456789, time.UTC), Metadata: map[string]any{"nested": []any{map[string]any{"n": json.Number("9007199254740993")}}, "decimal": json.Number("1e3"), "fraction": json.Number("0.123456789012345678901234567890123456789"), "tiny": json.Number("1e-30"), "huge": json.Number("12345678901234567890123456789012345678901234567890")}}}
 }
 
-type provider struct{ offline atomic.Bool }
+type provider struct {
+	offline atomic.Bool
+	reads   atomic.Int64
+}
 
 func (p *provider) Current(context.Context, keys.Use) (key []byte, keyID string, err error) {
+	p.reads.Add(1)
 	if p.offline.Load() {
 		return nil, "", errors.New("key unavailable")
 	}
 	return make([]byte, 32), "hmac-1", nil
 }
 func (p *provider) ByID(context.Context, string) ([]byte, error) {
+	p.reads.Add(1)
 	if p.offline.Load() {
 		return nil, errors.New("key unavailable")
 	}
 	return make([]byte, 32), nil
 }
+
+type rawJSON string
+
+func (r rawJSON) MarshalJSON() ([]byte, error) { return []byte(r), nil }
+
+type textOnly struct{ calls *int }
+
+func (v textOnly) MarshalText() ([]byte, error) { *v.calls++; return []byte("valid"), nil }
 
 type sealCounter struct{ n atomic.Int64 }
 
@@ -63,6 +76,87 @@ func engine(t *testing.T, s store.Store, p *provider, sealer chronicle.EventSeal
 // Run checks independent engines, mixed writers, replay and immutable bindings.
 func Run(t *testing.T, newStore func(*testing.T) store.Store) {
 	t.Helper()
+	t.Run("text boundary", func(t *testing.T) {
+		s := newStore(t)
+		seals := &sealCounter{}
+		p := &provider{}
+		c := engine(t, s, p, seals)
+		// The keyed engine validates its configured key during construction.
+		initialKeyReads := p.reads.Load()
+		ctx := context.Background()
+		fields := []string{"UserID", "IP", "UserAgent", "RequestID", "SessionID", "Action", "Resource", "Category", "ResourceID", "Outcome", "Severity", "Reason", "SubjectID"}
+		for _, field := range fields {
+			for _, bad := range []string{string([]byte{0xff}), "bad\x00text"} {
+				r := Request()
+				r.SourceKey = field
+				reflect.ValueOf(r.Event).Elem().FieldByName(field).SetString(bad)
+				receipt, err := c.RecordOnce(ctx, r)
+				if !errors.Is(err, acceptance.ErrInvalid) || receipt != nil {
+					t.Fatalf("%s: receipt=%+v err=%v", field, receipt, err)
+				}
+			}
+		}
+		textCalls := 0
+		text := textOnly{&textCalls}
+		for _, metadata := range []map[string]any{
+			{"nested": []any{map[string]any{"value": string([]byte{0xff})}}},
+			{string([]byte{0xfe}): "value"},
+			{"value": "\x00"}, {"\x00": "value"},
+			{"raw": json.RawMessage(`"\ud800"`)},
+			{"raw": json.RawMessage(`"\u0000"`)},
+			{"raw": json.RawMessage("\"" + string([]byte{0xff}) + "\"")},
+			{"custom": rawJSON("\"" + string([]byte{0xfe}) + "\"")},
+			{"custom": rawJSON(`{"\ud800":1}`)},
+			{"text": text}, {"text key": map[textOnly]int{text: 1}},
+		} {
+			r := Request()
+			r.Event.Metadata = metadata
+			receipt, err := c.RecordOnce(ctx, r)
+			if !errors.Is(err, acceptance.ErrInvalid) || receipt != nil {
+				t.Fatalf("metadata: receipt=%+v err=%v", receipt, err)
+			}
+		}
+		if textCalls != 0 {
+			t.Fatalf("invoked rejected TextMarshaler %d times", textCalls)
+		}
+		streams, listErr := s.ListStreams(ctx, stream.ListOpts{Limit: 100})
+		if listErr != nil || len(streams) != 0 || seals.n.Load() != 0 || p.reads.Load() != initialKeyReads {
+			t.Fatalf("invalid input side effect: streams=%d seals=%d keys=%d err=%v", len(streams), seals.n.Load(), p.reads.Load()-initialKeyReads, listErr)
+		}
+		count, countErr := s.Count(ctx, &audit.CountQuery{})
+		if countErr != nil || count != 0 {
+			t.Fatalf("invalid input events=%d err=%v", count, countErr)
+		}
+		// A real replacement character is valid; malformed bytes cannot replay it.
+		for i, field := range fields {
+			r := Request()
+			r.SourceKey = field
+			reflect.ValueOf(r.Event).Elem().FieldByName(field).SetString("�")
+			accepted, err := c.RecordOnce(ctx, r)
+			if err != nil || accepted.Sequence != uint64(i+1) {
+				t.Fatalf("valid %s: %+v %v", field, accepted, err)
+			}
+			reflect.ValueOf(r.Event).Elem().FieldByName(field).SetString(string([]byte{0xfe}))
+			receipt, err := c.RecordOnce(ctx, r)
+			if !errors.Is(err, acceptance.ErrInvalid) || receipt != nil {
+				t.Fatalf("replayed invalid %s: %+v %v", field, receipt, err)
+			}
+		}
+		r := Request()
+		r.Event.Metadata = map[string]any{"�": []any{"�", rawJSON(`"\ufffd"`)}}
+		accepted, err := c.RecordOnce(ctx, r)
+		if err != nil || accepted.Sequence != uint64(len(fields)+1) {
+			t.Fatalf("valid metadata: %+v %v", accepted, err)
+		}
+		r.Event.Metadata = map[string]any{string([]byte{0xff}): []any{"�", rawJSON(`"\ufffd"`)}}
+		receipt, err := c.RecordOnce(ctx, r)
+		if !errors.Is(err, acceptance.ErrInvalid) || receipt != nil {
+			t.Fatalf("invalid metadata replay: %+v %v", receipt, err)
+		}
+		if seals.n.Load() != int64(len(fields)+1) {
+			t.Fatalf("replay sealing side effect: %d", seals.n.Load())
+		}
+	})
 	t.Run("concurrent receipts and recovery without keys", func(t *testing.T) {
 		s := newStore(t)
 		p := &provider{}

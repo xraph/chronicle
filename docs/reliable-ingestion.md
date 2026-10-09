@@ -73,6 +73,22 @@ rejected. Metadata input is limited to 1 MiB, scope/source fields to 512 bytes,
 decimal expansion to 4096 places, and expanded numbers to 1 MiB in total.
 The normalized request is limited to 2 MiB. Missing and empty metadata are equivalent.
 
+Supply valid UTF-8 without embedded NUL in every event text field and metadata
+string or object key. Invalid text returns `acceptance.ErrInvalid` before any
+receipt lookup, stream/event write, or sealing key access. A real replacement
+character (U+FFFD) is valid. Raw JSON and `MarshalJSON` output must also contain
+valid UTF-8 and paired Unicode surrogate escapes; an escaped NUL is rejected
+because PostgreSQL jsonb cannot store it.
+
+Metadata supports plain JSON values and custom `MarshalJSON` representations.
+Each JSON marshaler runs once during normalization, and its output is validated
+before decoding. Types that only implement `encoding.TextMarshaler`, and map
+keys implementing that interface, are rejected. Supply plain strings or implement
+`MarshalJSON` for values, and convert map keys to strings yourself. This reliable
+API deliberately supports fewer input types than `encoding/json`; `Record`
+keeps its existing encoding behavior. Custom JSON encoders own their output,
+including any deliberate transformations of their private input data.
+
 Chronicle copies nested metadata before acceptance. It neither allocates chain
 fields on your event nor seals your caller-owned payload. Event ID, stream ID,
 sequence, hash provenance, and the backend-assigned `ExactMetadata` marker are

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -96,6 +97,14 @@ func Normalize(r Request) (Request, string, error) {
 			return Request{}, "", ErrInvalid
 		}
 	}
+	for _, v := range []string{e.UserID, e.IP, e.UserAgent, e.RequestID, e.SessionID, e.Action, e.Resource, e.Category, e.ResourceID, e.Outcome, e.Severity, e.Reason, e.SubjectID} {
+		if !validText(v) {
+			return Request{}, "", ErrInvalid
+		}
+	}
+	if err := validateMetadataText(reflect.ValueOf(e.Metadata), 0); err != nil {
+		return Request{}, "", fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
 	e.ID, e.StreamID = id.ID{}, id.ID{}
 	e.Sequence = 0
 	e.ExactMetadata = false
@@ -104,6 +113,9 @@ func Normalize(r Request) (Request, string, error) {
 	raw, err := json.Marshal(e.Metadata)
 	if err != nil || len(raw) > 1048576 {
 		return Request{}, "", fmt.Errorf("%w: metadata", ErrInvalid)
+	}
+	if err = validateJSONText(raw); err != nil {
+		return Request{}, "", fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	e.Metadata, err = normalizeMetadata(raw)
 	if err != nil {
