@@ -1,677 +1,325 @@
-# Chronicle — Composable Immutable Audit Trail for Go
+<p align="center">
+  <img src="assets/readme-banner.svg" alt="Chronicle, a tamper-evident audit logging library for Go with a SHA-256 hash chain, GDPR erasure and compliance reports" width="100%">
+</p>
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/xraph/chronicle.svg)](https://pkg.go.dev/github.com/xraph/chronicle)
-[![Go Version](https://img.shields.io/badge/go-1.25+-blue)](https://go.dev)
+# Chronicle: tamper-evident audit logging for Go
 
-Chronicle is a production-grade audit trail library that records every event into a SHA-256 hash chain. Key that chain with HMAC and it cannot be recomputed without material your database never holds. It is designed for multi-tenant SaaS applications that need SOC2, HIPAA, or GDPR compliance out of the box.
+Chronicle is an audit trail library for Go. Every event you record lands in a SHA-256 hash chain scoped to an app and tenant, and you can key that chain with HMAC, sign checkpoints over it, crypto-erase a data subject for GDPR, run retention policies and generate SOC 2, HIPAA and EU AI Act reports from it. It's built for multi-tenant SaaS backends, runs inside your own process against your own database, and plugs into [Forge](https://github.com/xraph/forge) as an extension when you want config, DI and an admin API wired for you.
 
-## Features
+[![Go 1.26+](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/) [![CI](https://github.com/xraph/chronicle/actions/workflows/ci.yml/badge.svg)](https://github.com/xraph/chronicle/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/xraph/chronicle.svg)](https://pkg.go.dev/github.com/xraph/chronicle) [![GitHub Stars](https://img.shields.io/github/stars/xraph/chronicle?style=flat)](https://github.com/xraph/chronicle/stargazers)
 
-- **Hash chain integrity** — Every event is linked by SHA-256 hashes, optionally keyed with HMAC. Read [Tamper evidence](#tamper-evidence) for what each mode detects, and what neither one does.
-- **GDPR crypto-erasure** — Per-subject AES-256-GCM encryption of the personal payload. Destroy the key and it is irrecoverable, while the operational record and the hash chain stay intact and verifiable.
-- **Multi-tenant scoping** — Events are automatically scoped to app + tenant from context. Cross-tenant queries are impossible.
-- **Compliance reports** — Generate SOC2 Type II, HIPAA, EU AI Act, and custom reports. Export to JSON, CSV, Markdown, or HTML.
-- **Pluggable stores** — Postgres (pgx), Grove ORM, SQLite, Redis (cache layer), and in-memory (testing).
-- **Pluggable sinks** — Fire-and-forget event outputs (stdout, file, S3, custom). Sinks never block the pipeline.
-- **Plugin system** — BeforeRecord enrichment, AfterRecord notification, SinkProvider, AlertHandler, and more.
-- **Retention policies** — Automatic archival and purge with configurable schedules.
-- **Admin HTTP API** — 21 endpoints for events, verification, erasure, retention, compliance, and stats, guarded per operation class (read / write / admin).
-- **Forge integration** — Drop-in extension for the Forge framework with DI-injected Emitter.
-- **Type-safe IDs** — TypeID-based identifiers (`audit_01h2x...`, `stream_01h2x...`).
+[Documentation](https://www.xraph.com/docs/chronicle) · [Quick start](#quick-start) · [Features](#why-chronicle) · [Stores](#storage-backends) · [Tamper evidence](#tamper-evidence) · [GDPR erasure](#gdpr-crypto-erasure) · [Forge](#use-it-with-forge) · [FAQ](#faq)
 
-## Quick Start
+## Quick start
+
+You need [Go 1.26 or later](https://go.dev/dl/).
+
+```bash
+go get github.com/xraph/chronicle@latest
+```
+
+Save this as `main.go`. It records two events into an in-memory store and then verifies the chain:
 
 ```go
 package main
 
 import (
-    "context"
-    "fmt"
-    "log"
+	"context"
+	"fmt"
+	"log"
 
-    "github.com/xraph/chronicle"
-    "github.com/xraph/chronicle/audit"
-    "github.com/xraph/chronicle/scope"
-    "github.com/xraph/chronicle/store"
-    "github.com/xraph/chronicle/store/memory"
+	"github.com/xraph/chronicle"
+	"github.com/xraph/chronicle/scope"
+	"github.com/xraph/chronicle/store"
+	"github.com/xraph/chronicle/store/memory"
+	"github.com/xraph/chronicle/verify"
 )
 
 func main() {
-    ctx := context.Background()
-    ctx = scope.WithAppID(ctx, "myapp")
-    ctx = scope.WithTenantID(ctx, "tenant-1")
+	ctx := context.Background()
+	ctx = scope.WithAppID(ctx, "billing")
+	ctx = scope.WithTenantID(ctx, "acme")
+	ctx = scope.WithUserID(ctx, "user-42")
 
-    mem := memory.New()
-    adapter := store.NewAdapter(mem)
+	c, err := chronicle.New(chronicle.WithStore(store.NewAdapter(memory.New())))
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    c, err := chronicle.New(chronicle.WithStore(adapter))
-    if err != nil {
-        log.Fatal(err)
-    }
+	err = c.Info(ctx, "invoice.paid", "invoice", "inv-1001").
+		Category("billing").
+		Meta("amount_cents", 4999).
+		Record()
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    // Record an event.
-    err = c.Info(ctx, "login", "session", "sess-001").
-        Category("auth").
-        UserID("user-42").
-        Meta("provider", "okta").
-        Record()
-    if err != nil {
-        log.Fatal(err)
-    }
+	err = c.Critical(ctx, "role.granted", "role", "admin").
+		Category("access").
+		Reason("granted by support ticket 812").
+		Record()
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    // Query events.
-    result, err := c.Query(ctx, &audit.Query{Limit: 10, Order: "desc"})
-    if err != nil {
-        log.Fatal(err)
-    }
-    for _, ev := range result.Events {
-        fmt.Printf("[%s] %s %s/%s\n", ev.Severity, ev.Action, ev.Resource, ev.ResourceID)
-    }
+	report, err := c.VerifyChain(ctx, &verify.Input{AppID: "billing", TenantID: "acme"})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("valid=%v verified=%d tampered=%v\n", report.Valid, report.Verified, report.Tampered)
 }
 ```
 
-## Installation
+Run it:
 
 ```bash
-go get github.com/xraph/chronicle
+go mod tidy
+go run .
+# valid=true verified=2 tampered=[]
 ```
 
-## Architecture
+You put the app, tenant and user on the context once, usually in middleware, and every event you record from that request picks them up. `Info`, `Warning` and `Critical` set the severity, and the builder takes `Category`, `Reason`, `Outcome`, `SubjectID`, `Meta` and the request fields (`IP`, `UserAgent`, `RequestID`, `SessionID`) before `Record` writes it. You read events back with `c.Query`, `c.Aggregate` or `c.ByUser`.
 
-```
-Context (AppID, TenantID, UserID, IP)
-    |
-    v
-EventBuilder  -->  Chronicle.Record()
-                       |
-                  1. Apply scope from context
-                  2. Assign ID + timestamp
-                  3. Validate required fields
-                  4. Resolve or create stream (app+tenant)
-                  5. Compute SHA-256 hash chain
-                  6. Store.Append
-                  7. Update stream head
-                       |
-                  Plugins (BeforeRecord / AfterRecord)
-                       |
-                  Sinks (stdout, file, S3, ...)
-```
+Swap `memory.New()` for a real backend from the [table below](#storage-backends) and you have a persistent audit log.
 
-**Package Index:**
+## Why Chronicle?
 
-| Package | Import Path | Purpose |
-|---------|-------------|---------|
-| chronicle | `github.com/xraph/chronicle` | Root engine, EventBuilder, Emitter, Storer |
-| audit | `.../audit` | Event type, query types, Store interface |
-| stream | `.../stream` | Hash chain stream per app+tenant |
-| hash | `.../hash` | SHA-256 chain computation |
-| verify | `.../verify` | Chain integrity verification |
-| store | `.../store` | Composite Store interface, Adapter |
-| crypto | `.../crypto` | AES-256-GCM for GDPR erasure |
-| erasure | `.../erasure` | GDPR subject erasure service |
-| compliance | `.../compliance` | Report generation and export |
-| retention | `.../retention` | Policy-based archival and purge |
-| sink | `.../sink` | Fire-and-forget output targets |
-| plugin | `.../plugin` | Extensibility hooks |
-| batcher | `.../batcher` | Batched event writing |
-| scope | `.../scope` | Context-based tenant isolation |
-| id | `.../id` | TypeID-based entity identifiers |
-| handler | `.../handler` | Admin REST endpoints (21 routes) |
-| extension | `.../extension` | Forge framework extension |
+An audit log that anyone with database access can quietly edit is a log you can't show an auditor. Chronicle links each event to the one before it, so when you verify, a deleted or edited row shows up, and on top of that chain you get the pieces your compliance work keeps asking for.
 
-## Store Backends
+| You need | Chronicle gives you |
+| --- | --- |
+| Evidence nobody edited the log | A per-stream SHA-256 hash chain, optional HMAC keying, and ed25519-signed checkpoints, checked by `VerifyChain` |
+| Tenant isolation | Streams scoped to app and tenant from the context, with queries filtered the same way |
+| GDPR right to erasure | Per-subject AES-256-GCM sealing. Destroy the key and the personal payload is gone while the chain still verifies |
+| Retention | Per-category retention policies that archive to a sink and purge, recorded so verification can tell a purge from a deletion |
+| Compliance reports | SOC 2 Type II, HIPAA, EU AI Act and custom reports, exported as JSON, CSV, Markdown or HTML |
+| An admin API | Event, verification, checkpoint, erasure, retention, report and stats routes, guarded per operation class |
+| Your existing database | PostgreSQL, SQLite, MongoDB and Redis through [Grove](https://github.com/xraph/grove), plus an in-memory store for tests |
+| Readable IDs | TypeID identifiers such as `audit_01h2x...` |
 
-| Backend | Package | Use Case |
-|---------|---------|----------|
-| **PostgreSQL** (pgx) | `store/postgres` | Production — direct pgx driver |
-| **Grove ORM** | `store/grovestore` | Production — Grove ORM |
-| **SQLite** | `store/sqlite` | Single-node / embedded |
-| **Redis** | `store/redis` | Cache layer (read-through) |
-| **Memory** | `store/memory` | Testing and examples |
+## Storage backends
 
-All backends implement the composite `store.Store` interface and are wrapped with `store.NewAdapter()` to satisfy `chronicle.Storer`.
+Every backend implements the composite `store.Store` interface. Wrap one with `store.NewAdapter` to pass it to `chronicle.New`.
 
-## Compliance Reports
+| Backend | Package | Constructor | Notes |
+| --- | --- | --- | --- |
+| In-memory | `store/memory` | `memory.New()` | Tests and examples |
+| SQLite | `store/sqlite` | `sqlite.New(db *grove.DB, opts...)` | Single node or embedded |
+| PostgreSQL | `store/postgres` | `postgres.New(db *grove.DB, opts...)` | Production, through Grove's pgdriver |
+| MongoDB | `store/mongo` | `mongo.New(db *grove.DB)` | Production, through Grove's mongodriver |
+| Redis | `store/redis` | `redis.New(kvStore *kv.Store, opts...)` | Through Grove KV. Doesn't support checkpoints |
 
-Generate compliance reports from your audit data:
+`store/sealedstore` wraps any of them so reads come back decrypted when crypto-erasure is on. The [stores docs](https://www.xraph.com/docs/chronicle/stores/postgres) cover schema and migration for each one.
+
+## Tamper evidence
+
+The default digest is plain SHA-256 (scheme `chronicle/v4`). It catches corruption and accidental edits. It will not stop someone who can write to your database, because the algorithm is public and recomputing every digest after a rewritten row takes a few lines of code. `TestPlainChainDoesNotDetectARewrite` in `tamper_test.go` pins that limit so you don't have to take it on trust.
+
+If you key the chain, nobody can produce a digest from the stored row alone:
 
 ```go
-engine := compliance.NewEngine(auditStore, verifyStore, reportStore, logger)
-
-// SOC2 Type II
-report, _ := engine.SOC2(ctx, &compliance.SOC2Input{
-    Period:      compliance.DateRange{From: from, To: to},
-    AppID:       "myapp",
-    GeneratedBy: "admin",
-})
-
-// HIPAA
-report, _ := engine.HIPAA(ctx, &compliance.HIPAAInput{...})
-
-// EU AI Act
-report, _ := engine.EUAIAct(ctx, &compliance.EUAIActInput{...})
-
-// Custom
-report, _ := engine.Custom(ctx, &compliance.CustomInput{...})
-
-// Export
-engine.Export(ctx, report, compliance.FormatMarkdown, os.Stdout)
+c, err := chronicle.New(
+	chronicle.WithStore(adapter),
+	chronicle.WithDigestScheme(hash.SchemeHMACV5),
+	chronicle.WithKeyProvider(kp), // for example keys.NewFileProvider("/etc/chronicle/keys.json")
+)
 ```
 
-Supported formats: `json`, `csv`, `markdown`, `html`.
+Ask for HMAC without a key provider and `New` returns `ErrHMACKeyUnavailable`. That refusal at startup is deliberate: writing unkeyed digests while you believe they are keyed would be the worse failure.
 
-## GDPR Crypto-Erasure
+Each event records the scheme that wrote it, and each stream records the scheme it is pinned to and from which sequence. If you turn HMAC on for a database that already holds events, the pin moves forward from the next sequence you record, and your older events keep verifying under the scheme they were written with. A pin only moves up. Point a plain-configured process at a stream already pinned to HMAC and it refuses to record. An older Chronicle process doesn't know `chronicle/v5`, so when you change schemes, stop every instance and then start them. During a rolling restart the old and new processes would drag the pin back and forth.
 
-Chronicle supports GDPR Article 17 (right to erasure) through crypto-erasure:
+| Scheme | Digest | Status |
+| --- | --- | --- |
+| `chronicle/v1`, `chronicle/v2` | SHA-256 | Verify only |
+| `chronicle/v3` | HMAC-SHA256 | Verify only |
+| `chronicle/v4` | SHA-256, length-prefixed fields | Written by default |
+| `chronicle/v5` | HMAC-SHA256, length-prefixed fields | Written when you choose HMAC |
 
-1. Each data subject's events are sealed with a key that belongs to that subject in one app and tenant. The same subject ID in two tenants gets two keys.
-2. On erasure request, that scope's key is destroyed, which makes the encrypted data irrecoverable. Other tenants' data is untouched.
-3. Events are marked as erased in the store.
-4. The hash chain stays valid, because hashes cover the stored ciphertext and destroying a key doesn't change it.
+v2 and v3 joined fields with a bare `|`, so content could slide across a separator without changing the hashed bytes. Chronicle will not write them any more, and `TestDelimiterJoinedContentCollides` in `hash/` keeps the collision on record.
+
+Keying narrows who can rewrite your log. Someone who can write both the events table and the streams table can still downgrade a whole stream and its pin together. Signed checkpoints close most of that gap. Turn them on and Chronicle periodically signs where each stream's chain stood, chains each checkpoint to the one before, and on verification compares the latest checkpoint against the head you claim, which catches a truncated tail or a wiped stream. If an attacker deletes a checkpoint together with the events it covers, verification still passes, because all of the evidence lives in the same database you are protecting. Anchoring checkpoints somewhere outside that database is not built yet.
+
+The [verification docs](https://www.xraph.com/docs/chronicle/subsystems/verification) walk through each check and the test that pins it.
+
+## GDPR crypto-erasure
+
+To use it, turn on crypto-erasure and give Chronicle a key store:
 
 ```go
-keyStore := crypto.NewInMemoryKeyStore()
-service := erasure.NewService(store, keyStore)
+keyStore := crypto.NewInMemoryKeyStore() // tests only: losing the key store erases everyone
 
-result, _ := service.Erase(ctx, &erasure.Input{
-    SubjectID:   "user-alice",
-    Reason:      "GDPR Article 17",
-    RequestedBy: "dpo@company.com",
-}, appID, tenantID)
-// result.KeyDestroyed == true
-// result.EventsAffected == 3
+c, err := chronicle.New(
+	chronicle.WithStore(adapter),
+	chronicle.WithCryptoErasure(true),
+	chronicle.WithSealer(crypto.NewSealer(keyStore)),
+)
 ```
 
-## Plugin System
+For every event with a `SubjectID`, the `Metadata`, `Reason` and `IP` fields are encrypted under a key that belongs to that subject in one app and tenant. The same subject in two tenants gets two keys. The digest covers the encrypted bytes, so destroying a key changes nothing the verifier reads, and the chain keeps verifying.
 
-Plugins implement any subset of hook interfaces. The registry discovers capabilities at registration time for O(1) dispatch:
+To erase a subject, call the erasure service with the subject and the scope:
 
 ```go
-type MyPlugin struct{}
+svc := erasure.NewService(chronicleStore, keyStore)
 
-func (p *MyPlugin) Name() string { return "my-plugin" }
-
-// Enrich events before they are stored.
-func (p *MyPlugin) OnBeforeRecord(ctx context.Context, event *audit.Event) error {
-    event.Metadata["enriched"] = true
-    return nil
-}
-
-// React after events are stored.
-func (p *MyPlugin) OnAfterRecord(ctx context.Context, event *audit.Event) error {
-    fmt.Println("Event recorded:", event.ID)
-    return nil
-}
-
-registry := plugin.NewRegistry(logger)
-registry.Register(&MyPlugin{})
+result, err := svc.Erase(ctx, &erasure.Input{
+	SubjectID:   "user-alice",
+	Reason:      "GDPR Article 17 request",
+	RequestedBy: "dpo@example.com",
+}, "billing", "acme")
+// result.KeyDestroyed, result.EventsAffected
 ```
 
-| Interface | When |
-|-----------|------|
-| `OnInit` | Chronicle starts |
-| `OnShutdown` | Chronicle stops |
-| `BeforeRecord` | Before event is persisted (enrichment, filtering) |
-| `AfterRecord` | After event is persisted (notifications, alerts) |
-| `SinkProvider` | Provides a custom Sink |
-| `Exporter` | Provides a custom export format |
-| `AlertHandler` | Fires when events match alert rules |
+After that, the sealed fields you read back say `[ERASED]`, metadata is dropped and the event reports `Erased: true`. `SubjectID`, `UserID`, the action, resource, category, outcome, severity and timestamps stay readable on purpose: they are the operational record, and reports group on them. An erasure destroys what was recorded about a person, not the fact that something involving them happened. The [GDPR erasure guide](https://www.xraph.com/docs/chronicle/guides/gdpr-erasure) has the rest.
 
-## Admin API
+## Compliance reports and retention
 
-The handler package provides 21 REST endpoints mounted under `/chronicle/`:
+`compliance.NewEngine(auditStore, verifyStore, reportStore, logger)` builds reports with `SOC2`, `HIPAA`, `EUAIAct` and `Custom`, and `Export` writes one as `compliance.FormatJSON`, `FormatCSV`, `FormatMarkdown` or `FormatHTML`. Reports carry the chain verification result for their period.
 
-**Events:** `GET /events`, `GET /events/{id}`, `GET /events/user/{user_id}`, `POST /events/aggregate`
+Retention lives in `retention/`. A policy names a category, a duration and whether to archive. When it runs, the enforcer first writes a retention record into the chain, then archives the expired events through a `sink.Sink` if the policy asks for that (`sink.NewFileSink`, `sink.NewS3Sink` and `sink.NewStdoutSink` are built in), and then purges them. Verification reads those records, so a purged range shows up as retained and not as a gap.
 
-**Verification:** `POST /verify`
+## Use it with Forge
 
-**Erasure:** `POST /erasures`, `GET /erasures`, `GET /erasures/{id}`
+The `extension` package turns Chronicle into a [Forge extension](https://github.com/xraph/forge#extensions). It reads `extensions.chronicle` from your config (falling back to a top-level `chronicle` key), builds the store, mounts the admin API under `/chronicle`, runs the retention and checkpoint schedulers, and registers `chronicle.Emitter` in the container so other extensions can record events with `vessel.Inject[chronicle.Emitter]`.
 
-**Retention:** `GET /retention`, `POST /retention`, `DELETE /retention/{id}`, `POST /retention/enforce`, `GET /retention/archives`
-
-**Reports:** `GET /reports`, `POST /reports/soc2`, `POST /reports/hipaa`, `POST /reports/euaiact`, `POST /reports/custom`, `GET /reports/{id}`, `GET /reports/{id}/export/{format}`
-
-**Stats:** `GET /stats`
-
-## Forge Integration
-
-Chronicle ships as a Forge extension with full lifecycle management:
+```bash
+go get github.com/xraph/chronicle@latest github.com/xraph/grove/extension@latest
+```
 
 ```go
-ext := extension.New(
-    extension.WithBatchSize(100),
-    extension.WithCryptoErasure(false),  // see note below: not implemented yet
-    extension.WithRetentionInterval(24 * time.Hour),
-
-    // Required: the admin API can purge audit history.
-    extension.WithAuth("jwt",
-        []string{"chronicle:read"},   // observe events, reports, policies
-        []string{"chronicle:write"},  // save policies, generate reports
-        []string{"chronicle:admin"},  // enforce retention, delete policies, erase
-    ),
+import (
+	chronicle "github.com/xraph/chronicle/extension"
+	grove "github.com/xraph/grove/extension"
 )
 
-ext.Init(ctx, store)  // runs migrations, wires components
-ext.Start(ctx)        // starts background retention scheduler
-defer ext.Stop(ctx)
-
-// DI: other extensions receive the Emitter interface
-emitter := ext.Emitter()
-emitter.Info(ctx, "login", "session", "sess-1").Category("auth").Record()
-
-// Mount admin API
-mux.Handle("/", ext.Routes())
+app := forge.NewApp(forge.AppConfig{
+	Name: "billing-api",
+	Extensions: []forge.Extension{
+		grove.New(),     // extensions.grove: driver and dsn
+		chronicle.New(), // extensions.chronicle: auth, tamper evidence, checkpoints
+	},
+})
 ```
 
-### API authentication
+List Grove first. Chronicle looks up the container's `*grove.DB` during `Register` and picks the PostgreSQL, SQLite or MongoDB store to match its driver. You can also name a database with `grove_database`, point at a Grove KV store with `grove_kv` for Redis, or skip discovery and pass `chronicle.WithStore(memory.New())`.
 
-The admin API exposes operations that permanently destroy audit data:
-`POST /v1/retention/enforce` purges events, `DELETE /v1/retention/:id` disables
-retention, and `POST /v1/erasures` cannot be undone. Chronicle's per-request
-scope check keeps tenants out of each other's data, but it does not gate these
-operations, so the extension refuses to start until you decide who may call them.
-
-Pick one:
-
-```yaml
-chronicle:
-  auth:
-    provider: jwt                      # a registered forge auth provider
-    read_scopes:  [chronicle:read]
-    write_scopes: [chronicle:write]
-    admin_scopes: [chronicle:admin]
-```
-
-```yaml
-chronicle:
-  auth:
-    allow_unauthenticated: true        # something upstream already authenticates
-```
-
-```yaml
-chronicle:
-  disable_routes: true                 # do not mount the API at all
-```
-
-Routes are graded by blast radius. `read` observes; `write` creates records that
-destroy nothing (saving a policy, generating a report); `admin` covers the
-irreversible operations. A token that can read events cannot purge them.
-
-Note that forge's `WithAuth` route options only annotate the OpenAPI spec — they
-are not enforced at request time in forge v1.9.5. Chronicle enforces with the
-auth registry's middleware and uses those options for documentation only.
-
-### Dashboard
-
-Chronicle's pages in the Forge dashboard come from a React plugin,
-`@forge-go/dashboard-plugin-chronicle`, which lives in the forge-dashboard repo.
-Add it to the plugins list in your dashboard shell and that side is done. The Go
-side needs nothing from you: forge's dashboard picks up the extension's contract
-automatically when both extensions are registered. If you're coming from the server-rendered pages,
-[MIGRATION.md](MIGRATION.md) has the snippet and a line for everything they did.
-
-Reads need a signed-in user with a resolvable app. Writes depend on the scopes
-that user holds, matched as the bare names `chronicle.write` and
-`chronicle.admin`:
-
-| Needs | What it covers |
-|---|---|
-| Any signed-in user | every page: lists, details, verify, preview, export, settings |
-| `chronicle.write` or `chronicle.admin` | taking a checkpoint, generating a report |
-| `chronicle.admin` | saving, deleting and enforcing retention policies, requesting an erasure |
-
-A tenant session with no scope sees every page and can change nothing. Enforcement
-purges audit events, which is why it sits with the admin scope and not the write
-one.
-
-The old `dashboard_mutations` key and `WithDashboardMutations()` do nothing now.
-The key still loads and the option still compiles, so nothing breaks, but both
-are deprecated and will go in a later release. Delete them from your config when
-you get a chance.
-
-Each dashboard session is scoped by the `app_id` claim, and by `tenant_id` or
-`org_id` for a tenant, on the signed-in user. A session with no app is refused,
-because an empty app matches every app in Chronicle's stores. Until your auth
-provider fills those claims in, a single-app deployment can name its app instead:
-
-```yaml
-chronicle:
-  dashboard:
-    app_id: my-app          # chronicle.dashboard.app_id
-    tenant_id: my-tenant    # optional; chronicle.dashboard.tenant_id
-```
-
-The configured values are only a fallback for a session whose claims say nothing.
-A claim that is present but unreadable (empty, null, or not a string) is still
-refused, and a request with no signed-in user never takes either value. The
-configured tenant applies to that session only, the one whose app came from
-`dashboard.app_id`. A session that claims its app never takes it, even for the
-same app, and `tenant_id` without `app_id` is refused at startup. Values with
-leading or trailing whitespace or a control character are refused at startup
-too, not trimmed.
-
-A session that claims an app but no tenant is not treated as an operator by
-default. An app-wide view over a claimed app needs the `chronicle.admin` scope,
-and without it the session is refused. The reason is a member who clears their
-active organisation: they arrive with an app and no tenant, and must not see
-every tenant. A session with a tenant claim needs no scope, and neither does the
-`dashboard.app_id` session.
+The admin API can purge history, so the extension won't start until you decide who may call it. Configure an auth provider, allow unauthenticated access explicitly, or turn the routes off. Requests also need an app scope on the context (Forge's scope, or `scope.WithAppID` from your own middleware), or they get a 401.
 
 ## Configuration
 
-```go
-c, _ := chronicle.New(
-    chronicle.WithStore(adapter),             // required: backing store
-    chronicle.WithLogger(logger),             // slog.Logger (default: slog.Default)
-    chronicle.WithBatchSize(100),             // max events before flush
-    chronicle.WithFlushInterval(time.Second), // max time between flushes
-    chronicle.WithCryptoErasure(false),       // see note below
-)
-```
-
-### Tamper evidence
-
-The default digest is an unkeyed SHA-256. It catches corruption and accidental
-edits. It does not catch tampering by anyone who can write to your database,
-because the algorithm ships in this repository, so rewriting an event and
-recomputing every digest after it is about twenty lines of work.
-`TestPlainChainDoesNotDetectARewrite` in `tamper_test.go` asserts that directly,
-so the limit is pinned by a test rather than left to inference.
-
-Keying the digest changes who can do that:
-
 ```yaml
-chronicle:
-  tamper_evidence:
-    digest: hmac                    # plain (default) | hmac
-    keys:
-      provider: file
-      path: /etc/chronicle/hmac.json
+extensions:
+  grove:
+    driver: postgres
+    dsn: postgres://app:secret@localhost:5432/app?sslmode=disable
+
+  chronicle:
+    base_path: /chronicle
+    retention_interval: 24h        # 0 turns the retention scheduler off
+    enable_crypto_erasure: false   # true also needs WithKeyStore
+    auth:
+      provider: jwt                # a forge auth provider; or allow_unauthenticated: true
+      read_scopes: [chronicle:read]
+      write_scopes: [chronicle:write]
+      admin_scopes: [chronicle:admin]
+    tamper_evidence:
+      digest: hmac                 # plain (default) or hmac
+      keys:
+        provider: file
+        path: /etc/chronicle/keys.json
+    checkpoints:
+      enabled: true
+      every_events: 1000
+      every_interval: 1h
+      signer:
+        provider: file
+        path: /etc/chronicle/checkpoint-signer.json
 ```
 
-Or programmatically:
+Read scopes cover listing and verifying. Write scopes cover saving a retention policy and generating a report. Admin scopes cover the irreversible operations: enforcing retention, deleting a policy and requesting an erasure.
 
-```go
-c, _ := chronicle.New(
-    chronicle.WithStore(adapter),
-    chronicle.WithDigestScheme(hash.SchemeHMACV5),
-    chronicle.WithKeyProvider(kp),
-)
-```
+| Key | Option | Default |
+| --- | --- | --- |
+| `disable_routes` | `WithDisableRoutes()` | `false` |
+| `disable_migrate` | `WithDisableMigrate()` | `false` |
+| `base_path` | `WithBasePath(path)` | `/chronicle` |
+| `retention_interval` | `WithRetentionInterval(d)` | `24h` |
+| `enable_crypto_erasure` | `WithCryptoErasure(true)` plus `WithKeyStore(ks)` | `false` |
+| `grove_database` | `WithGroveDatabase(name)` | default `*grove.DB` |
+| `grove_kv` | `WithGroveKV(name)` | unset |
+| `auth.*` | `WithAuth(provider, read, write, admin)` or `WithUnauthenticatedAPI()` | none, so startup fails while routes are on |
+| `tamper_evidence.digest` | `WithDigestScheme("hmac")` plus `WithKeyProvider(p)` | `plain` |
+| `checkpoints.*` | `WithCheckpoints(cfg)` | off |
+| `dashboard.app_id`, `dashboard.tenant_id` | none | unset |
 
-Set `digest: hmac` without a key source and Chronicle refuses to start. You
-configured a keyed chain, so writing unkeyed digests while you believed
-otherwise is the worse failure. A keyset that parses but has no active `hmac`
-key in it, because the `use` is misspelled or the only entry is `"active":
-false`, is caught at startup as well. Otherwise the process boots green and then
-fails on every event you record.
+`WithStore`, `WithArchiveSink`, `WithConfig` and `WithRequireConfig` round out the options. `batch_size` and `flush_interval` still load, but `Record` writes each event synchronously, so they don't change how events are stored. The dashboard keys name the app a Forge dashboard session falls back to when its claims carry none; [MIGRATION.md](MIGRATION.md) covers the move from the old server-rendered dashboard pages.
 
-The keyset is a JSON file holding every key you have used, with one marked
-active per use. Rotating means adding a key and moving the active flag. Retired
-keys stay, because events written under them still have to verify, and
-`Provider.ByID` is what resolves them.
+## Documentation
 
-Rotating is not enough when a key leaks. Whoever holds it can rewrite every
-event, label each row with that key's ID, recompute, and get a clean report,
-because the digests genuinely check out. Set `"revoked": true` on the entry and
-`ByID` refuses to resolve it at all, so verification errors instead of passing.
-Leave the material in the file when you do, so a row naming that key is reported
-as revoked, not as an ID nobody recognises. It cuts both ways. Events you signed
-honestly with that key stop verifying too, because nobody can tell them apart
-from the forged ones. That stretch of the log no longer proves anything, and
-saying so beats a green tick that does not mean what it looks like.
+| Topic | Where |
+| --- | --- |
+| Getting started | [Getting started](https://www.xraph.com/docs/chronicle/getting-started), [architecture](https://www.xraph.com/docs/chronicle/architecture) |
+| Recording and scoping | [Recording](https://www.xraph.com/docs/chronicle/subsystems/recording), [multi-tenancy](https://www.xraph.com/docs/chronicle/concepts/multi-tenancy), [configuration](https://www.xraph.com/docs/chronicle/concepts/configuration) |
+| Integrity | [Verification](https://www.xraph.com/docs/chronicle/subsystems/verification) |
+| Compliance work | [Erasure](https://www.xraph.com/docs/chronicle/subsystems/erasure), [retention](https://www.xraph.com/docs/chronicle/subsystems/retention), [compliance reports](https://www.xraph.com/docs/chronicle/subsystems/compliance) |
+| Storage | [PostgreSQL](https://www.xraph.com/docs/chronicle/stores/postgres), [SQLite](https://www.xraph.com/docs/chronicle/stores/sqlite), [MongoDB](https://www.xraph.com/docs/chronicle/stores/mongo), [Redis](https://www.xraph.com/docs/chronicle/stores/redis), [memory](https://www.xraph.com/docs/chronicle/stores/memory), [custom store](https://www.xraph.com/docs/chronicle/guides/custom-store) |
+| Forge | [Forge extension guide](https://www.xraph.com/docs/chronicle/guides/forge-extension), [admin API](https://www.xraph.com/docs/chronicle/subsystems/admin-api), [HTTP API reference](https://www.xraph.com/docs/chronicle/api-reference/http-api) |
 
-**What keying buys you.** An event's digest can no longer be produced from the
-stored row alone. Each event records the scheme that wrote it and each stream
-records the scheme it is pinned to from which sequence, so an event claiming a
-weaker scheme than its stream promises is reported as tampering rather than
-read as history.
-
-Turn `hmac` on for a database that already holds events and the pin moves on its
-own. The first time you record into a stream, Chronicle advances that stream to
-the keyed scheme from the next sequence, and writes the pin before the event.
-Everything below the new boundary keeps verifying under the scheme it was
-written with. Chronicle only ever moves a pin up. Point a plain-configured
-process at a stream already pinned to `hmac` and it refuses to record, because a
-pin that drops on its own looks exactly like an attacker lowering it.
-
-Upgrading a deployment that already writes `hmac` needs a stop then start, not
-a rolling restart. An older process does not recognise `chronicle/v5`, and an
-unrecognised scheme ranks below every one it does know, so it reads the pin the
-new process just set as weaker than its own and pulls it back down to
-`chronicle/v3`. The two versions then take turns moving the pin while events
-land under both. The same goes for any scheme change, including turning `hmac`
-on for the first time.
-
-#### Digest schemes
-
-Every event records which scheme produced it, so upgrading never invalidates
-what is already stored. There are five:
-
-| scheme | digest | content | status |
-| --- | --- | --- | --- |
-| `chronicle/v1` | SHA-256 | legacy field set | verify-only |
-| `chronicle/v2` | SHA-256 | delimiter-joined | verify-only |
-| `chronicle/v3` | HMAC-SHA256 | delimiter-joined | verify-only |
-| `chronicle/v4` | SHA-256 | length-prefixed | written when `digest: plain` |
-| `chronicle/v5` | HMAC-SHA256 | length-prefixed | written when `digest: hmac` |
-
-v2 and v3 joined their fields with a bare `|` and escaped nothing, so content
-could move across a separator without changing the bytes being hashed. A user ID
-of `alice` beside an address of `10.0.0.9|attacker-note` hashes to exactly the
-same digest as a user ID of `alice|10.0.0.9` beside an address of
-`attacker-note`. Same digest, different answer to who acted and from where.
-
-Keying did not help there. The MAC covered those same ambiguous bytes, so that
-one rewrite was the single tampering move that worked without the key. v4 and v5
-length-prefix every field, so a reader can find where each one ends without
-trusting what is inside it.
-
-Events written before v4 keep their recorded scheme and keep verifying under it.
-They also keep that weakness, and there is no fixing it after the fact. You
-cannot re-digest them without the key, and re-digesting them with the key would
-destroy whatever the old digests were worth as evidence. Read a `chronicle/v2`
-or `chronicle/v3` row as evidence that something was recorded, not as proof of
-precisely what. `TestDelimiterJoinedContentCollides` in `hash/` holds the
-collision open so nobody has to take that on trust.
-
-Chronicle will not write v1, v2 or v3. Configure one and it fails at startup
-naming the replacement, rather than accepting a setting that promises evidence
-it cannot deliver.
-
-v4 and v5 also cover the user agent, request ID and session ID an event was
-recorded under, whenever any of the three is set. That didn't need a new
-scheme. Every v4 and v5 event written before those fields existed has all three
-empty, its bytes are exactly what they were, and it keeps verifying under the
-scheme it records, so there's no pin to move and nothing to reconfigure. An
-event that has them can't lose them or gain them without breaking its digest:
-every field is length-prefixed, so the 17-field and 20-field forms never
-produce the same bytes. A v1, v2 or v3 row carrying any of them fails
-verification outright, because none of those schemes was ever written with
-them. Someone added it afterwards.
-
-One thing to know while you roll this out. A process from before this change
-doesn't read the new columns, so when it verifies an event that has them it
-recomputes without them and reports that event as tampered. Nothing is wrong
-with the event. Finish the rollout before you trust a verification run.
-
-**What it does not buy you.** Someone who can write to your database can still
-rewrite every event to the unkeyed scheme and rewrite the stream's pin to
-match. Verification accepts that, because both halves of the evidence live in
-the same database and whoever controls it controls both.
-`TestFullStreamDowngradeIsNotDetectedWithoutSignedCheckpoints` pins that limit
-too. Closing it needs a signature held somewhere Chronicle cannot reach.
-Signed checkpoints, covered below, are the first half of that, and they exist
-now. On their own they only get you so far: a local checkpoint still lives in
-the same database as the events, so an attacker with that same write access
-can delete it too. External anchoring is what reaches the rest, and that part
-isn't built yet.
-
-So read keying as narrowing who can carry the attack out, not ending it. It
-defends against someone who can write `chronicle_events` but not
-`chronicle_streams`, and who holds no key your provider has ever known. Both
-halves have to hold. Reach the stream row too and the pin moves with the events,
-which is the case above. Get hold of a key and every digest recomputes cleanly,
-which is what revoking it is for.
-
-#### Checkpoints
-
-Turn checkpointing on and Chronicle periodically signs a statement about
-where a stream's chain stood. That statement is what makes a later rewrite of
-anything before it provable, even when the events and the stream's pin get
-rewritten together.
-
-```yaml
-chronicle:
-  checkpoints:
-    enabled: true
-    every_events: 1000       # checkpoint once a stream gains this many events
-    every_interval: 1h       # or at least this often, whichever comes first
-    signer:
-      provider: file
-      path: /etc/chronicle/checkpoint-signer.json
-```
-
-Leave `signer.provider` empty and Chronicle takes the signing key from
-whatever `keys.Provider` you already passed to `WithKeyProvider` in code, as
-long as it resolves `UseCheckpointSig`. Give it neither and checkpointing
-refuses to start rather than silently signing nothing.
-
-`every_interval` matters more than `every_events` looks like it should. The
-gap between two checkpoints is exactly how long an attacker can rewrite
-without a signature standing in the way, so a quiet stream that never hits
-the event count still needs the interval to bound that window.
-
-Sign a checkpoint over a range and rewriting any event inside it stops
-passing verification, but only once the range you verify actually reaches
-the checkpoint's `ToSeq`. The checkpoint already asserted, under a key
-nobody but the signer holds, what the chain hashed to at that point, and
-recomputing the row after it's been changed can't reproduce that hash.
-Verify a narrower range that stops short of `ToSeq` and that comparison
-never runs at all: `HashChecked` stays false, and a relinked rewrite inside
-the part you skipped passes clean. `TestRewriteAfterACheckpointIsProvable`
-pins the ordinary case, where the range does reach it.
-
-Checkpoints chain to each other too, each one carrying the digest of the one
-before it. Delete one from the middle of a run and the next checkpoint can no
-longer show a clean line back to the one before the gap, which is how a
-missing checkpoint gets caught. `TestDeletingAMiddleCheckpointIsDetected`
-pins that.
-
-The range checks don't reach past the head you claim, and the reason is more
-specific than "a checkpoint can be deleted too." Verification asks the
-checkpoint store for what falls inside the range you're checking, and the top
-of that range comes from the head you claim. A checkpoint whose starting
-sequence sits past that head gets excluded before its signature or its hash
-is looked at, on every backend. Rewrite the stream's own head to hide a
-truncated tail and every checkpoint covering the removed events drops out of
-that comparison, whether its row survives or not.
-
-One check runs outside the range, and it catches exactly that. Chronicle
-reads the stream's latest checkpoint directly, confirms its signature still
-verifies, and compares its `to_seq` against the head you claimed. A
-checkpoint asserting the chain once reached sequence 15, against a claimed
-head of 10, fails the verification: `checkpoint_head_ok` comes back false,
-and `checkpoint_head_checked` tells you the comparison ran rather than
-leaving you to guess. It runs before the range is resolved at all, so
-deleting every event and zeroing the head doesn't get past it either.
-`TestTruncationIsDetectedWhileTheCheckpointSurvives` pins the truncation and
-`TestTotalWipeIsCaughtByTheLatestCheckpoint` pins the wipe.
-
-Retention won't trip it. Purging works from the front of a stream and never
-lowers the head, so a checkpoint ending past the head you claim means events
-left the tail.
-
-Deleting every checkpoint a stream has is milder. Nothing gets tampered
-with, so `Valid` stays true. But no span of the coverage ladder can claim
-`LevelSigned` anymore, because nothing survived to have signed it.
-`TestDeletingEveryCheckpointDropsCoverageNotValidity` pins that too.
-
-What still gets through is deleting the covering checkpoint along with the
-events it covers. The newest surviving checkpoint then ends exactly where the
-rewritten head says it should, the comparison agrees, and it's right to,
-given what's left to compare against.
-
-You don't have to delete the row to get that, either. Blanking or corrupting
-its `signature` column does the same job for less work. The head comparison
-only lets a checkpoint contradict you if its signature still verifies, so a
-corrupted one drops straight out of it, and the row already sits past the
-rewritten head, which keeps it out of the range checks too. Nothing reports a
-signature failure, because nothing fetched the row to find one. `Valid` comes
-back true either way.
-
-Closing this needs a signature held somewhere write access to Chronicle's own
-database can't reach. External anchoring, publishing a checkpoint or just its
-hash somewhere an attacker with a SQL shell can't also edit, is what does it,
-and it's the next piece of work.
-`TestTruncationBeyondADeletedCheckpointIsNotDetected` pins the deletion half.
-
-### Crypto-erasure
-
-Enabling it requires a key store, because the key store's durability decides
-whether sealed events can ever be read again:
-
-```go
-c, _ := chronicle.New(
-    chronicle.WithStore(adapter),
-    chronicle.WithCryptoErasure(true),
-    chronicle.WithSealer(crypto.NewSealer(keyStore)),
-)
-```
-
-Under the Forge extension, `extension.WithKeyStore(...)` supplies it and the
-store is wrapped automatically so reads come back decrypted.
-
-**What is encrypted:** `Metadata`, `Reason` and `IP`, keyed per subject, for any
-event carrying a `SubjectID`.
-
-**What is not, and why:** `SubjectID` stays readable because it is the lookup key
-used to find a subject's events in order to erase them and to prove afterwards
-that they were erased. `UserID` stays readable because it identifies the *actor*
-rather than the data subject, and `ByUser` depends on it. `Action`, `Resource`,
-`Category`, `Outcome`, `Severity`, `ResourceID` and the timestamps stay readable
-because they are the operational record that must outlive an erasure, and queries
-and compliance reports group on them.
-
-So an erasure destroys what was recorded *about* a subject, not the fact that an
-event involving them occurred. Read the guarantee as exactly that.
-
-**Why the chain survives:** the digest is computed over the encrypted bytes, not
-the plaintext. Destroying a key therefore changes nothing the verifier reads. Had
-the hash covered plaintext, every erased event would have reported as tampered.
-The corollary is that verification paths (`EventRange`, `VerifyEvent`) read the
-stored form while display paths (`Get`, `Query`, `ByUser`) return decrypted
-copies. Retention archives the sealed bytes, so cold storage never holds
-plaintext an erasure was meant to destroy.
-
-Once a key is gone, sealed fields read back as `[ERASED]`, metadata is dropped,
-and the event reports `Erased: true`.
-
-| Option | Default |
-|--------|---------|
-| BatchSize | 100 |
-| FlushInterval | 1s |
-| ShutdownTimeout | 30s |
-| CryptoErasure | false |
-| RetentionCheckInterval | 24h |
+The Go API is on [pkg.go.dev](https://pkg.go.dev/github.com/xraph/chronicle).
 
 ## Examples
 
-See the [`_examples/`](./_examples/) directory:
+| Example | What it shows |
+| --- | --- |
+| [basic](_examples/basic/) | Recording, querying and verifying events |
+| [hash-chain](_examples/hash-chain/) | How the chain links events, and what verification reports |
+| [gdpr](_examples/gdpr/) | Crypto-erasure and key destruction |
+| [compliance](_examples/compliance/) | SOC 2 and HIPAA reports |
+| [plugins](_examples/plugins/) | The `plugin` hook registry and a custom sink |
+| [forge](_examples/forge/) | Registering the extension against a Forge app |
 
-| Example | Description |
-|---------|-------------|
-| [`basic`](./_examples/basic/) | Record, query, and verify events |
-| [`plugins`](./_examples/plugins/) | Custom plugins with enrichment and sinks |
-| [`compliance`](./_examples/compliance/) | SOC2 and HIPAA report generation |
-| [`gdpr`](./_examples/gdpr/) | Crypto-erasure with key destruction |
-| [`hash-chain`](./_examples/hash-chain/) | Hash chain structure and verification |
-| [`forge`](./_examples/forge/) | Forge extension lifecycle |
+Run one from the repository root with `GOWORK=off go run ./_examples/basic`.
+
+## FAQ
+
+### How do I make an audit log tamper-evident in Go?
+
+Record events through Chronicle and verify with `VerifyChain`. For protection against someone with database write access, switch the digest to HMAC with a key the database never holds, and turn on signed checkpoints.
+
+### Does Chronicle support GDPR right to erasure?
+
+Yes, through crypto-erasure. Each subject's personal fields are encrypted under their own key, and erasing the subject destroys the key. The hash chain still verifies afterwards because the digest covers the ciphertext.
+
+### Which databases can Chronicle store audit events in?
+
+PostgreSQL, SQLite and MongoDB through Grove, Redis through Grove KV, and an in-memory store for tests. You can write your own by implementing `store.Store`.
+
+### Can I use Chronicle without Forge?
+
+Yes. The root package, the stores and the subsystems are plain Go. The `extension` package is only there if you run a Forge app.
+
+### Does Chronicle write events in batches?
+
+No. `Record` writes each event synchronously, because linking an event needs the previous event's hash. The `batcher` package exists for callers that drive batching themselves.
+
+## Contributing
+
+Issues and focused pull requests are welcome on [GitHub](https://github.com/xraph/chronicle/issues).
 
 ```bash
-go run ./_examples/basic/
+git clone https://github.com/xraph/chronicle.git
+cd chronicle
+GOWORK=off go test ./...
+GOWORK=off go vet ./...
+golangci-lint run ./...
 ```
+
+The Postgres, MongoDB and Redis tests skip unless you set `CHRONICLE_TEST_POSTGRES_DSN`, `CHRONICLE_TEST_MONGO_URI` or `CHRONICLE_TEST_REDIS_DSN`, so a green run without them says nothing about those backends. Point them at throwaway containers on non-default ports. [AGENTS.md](AGENTS.md) has the container commands, the lint rules that bite and the release steps. Commits follow [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## License
 
-Part of the Forge ecosystem.
+See the [Chronicle repository](https://github.com/xraph/chronicle) for license terms.
+
+Chronicle is part of the [Forge](https://github.com/xraph/forge) forgery stack, built by [Rex Raphael](https://github.com/juicycleff) and [contributors](https://github.com/xraph/chronicle/graphs/contributors).
