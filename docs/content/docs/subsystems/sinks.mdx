@@ -1,9 +1,11 @@
 ---
 title: Sinks
-description: Fire-and-forget event output targets — stdout, file, S3, and custom.
+description: Event output targets (stdout, file, S3 and custom) and how retention archives through them.
 ---
 
-Sinks are secondary output destinations for audit events. Unlike the primary `store.Store`, sinks are **fire-and-forget**: errors are logged but never cause `Record()` to fail. They run after the event has been successfully persisted to the store.
+Sinks are secondary output destinations for audit events. Today the one thing in Chronicle that writes to a sink is retention: before it purges expired events, it archives them to the archive sink if the policy asks for that (see [Sinks in retention](#sinks-in-retention)).
+
+`Record()` doesn't write to sinks. Nothing fans recorded events out to them, so a sink you build and don't hand to retention only receives what your own code writes to it.
 
 ## Sink interface
 
@@ -22,36 +24,36 @@ Sinks receive batches of events. `Write` delivers the batch, `Flush` drains any 
 
 ### Stdout
 
-Writes JSON-encoded events to `os.Stdout`. Useful for development and log aggregation pipelines.
+Writes JSON-encoded events to an `io.Writer`. Useful for development and log aggregation pipelines.
 
 ```go
 import "github.com/xraph/chronicle/sink"
 
-s := sink.NewStdout()
+s := sink.NewStdoutSink(os.Stdout)
 ```
 
 ### File
 
-Writes JSON-encoded events to a file, one event per line.
+Writes JSONL files (one event per line) to a directory, named `<prefix>-*.jsonl`. `sink.WithMaxSize(bytes)` rotates to a new file past that size.
 
 ```go
-s, err := sink.NewFile("/var/log/chronicle/audit.jsonl")
+s := sink.NewFileSink("/var/log/chronicle", "audit", sink.WithMaxSize(100<<20))
 ```
 
 ### S3
 
-Uploads batches of events to an S3-compatible object store.
+Uploads batches of events as gzip-compressed JSONL to an S3-compatible object store. It takes anything with a `PutObject(ctx, bucket, key string, body io.Reader) error` method (`sink.S3Writer`), so you adapt your S3 client to that.
 
 ```go
-s := sink.NewS3(s3Client, "my-audit-bucket", "prefix/")
+s := sink.NewS3Sink(s3Writer, "my-audit-bucket", "prefix/")
 ```
 
 ### Multi
 
-Fans out to multiple sinks. If one sink returns an error, the others continue.
+Fans out to multiple sinks. If one sink returns an error, the others continue, and you get the combined error back.
 
 ```go
-s := sink.NewMulti(stdoutSink, fileSink, s3Sink)
+s := sink.NewMultiSink(logger, stdoutSink, fileSink, s3Sink) // logger may be nil
 ```
 
 ## Custom sink
@@ -88,24 +90,12 @@ func (k *KafkaSink) Close() error {
 }
 ```
 
-## Registering sinks via the plugin system
+## Sinks and the plugin system
 
-Use the `SinkProvider` plugin interface to attach sinks to Chronicle:
-
-```go
-type MySinkProvider struct{}
-
-func (p *MySinkProvider) Name() string { return "my-sink-provider" }
-func (p *MySinkProvider) Sink() sink.Sink { return sink.NewS3(client, "bucket", "prefix/") }
-
-registry := plugin.NewRegistry(logger)
-registry.Register(&MySinkProvider{})
-```
-
-Chronicle discovers the `SinkProvider` interface at registration time and adds the sink to its fan-out.
+The `plugin` package declares a `SinkProvider` interface, and `plugin.Registry` collects the plugins that implement it. Nothing in Chronicle reads that collection, though: `Record` doesn't fan out to registered sinks. To archive through a sink, pass it to retention.
 
 ## Sinks in retention
 
-The retention system also uses a `sink.Sink` as its **archive sink**. Events matching a policy with `Archive = true` are written to the archive sink before being purged from the primary store. Configure it with `extension.WithArchiveSink(s)`.
+The retention system uses a `sink.Sink` as its archive sink. Events matching a policy with `Archive = true` are written to the archive sink before being purged from the primary store. Configure it with `extension.WithArchiveSink(s)`.
 
 Sinks only write. To read an archive back, which the retention backfill needs, use `sink.NewFileArchive` for a `FileSink` directory or `sink.NewS3Archive` for an `S3Sink` bucket. Both implement `sink.ArchiveReader`.

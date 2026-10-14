@@ -13,21 +13,18 @@ Chronicle is organized as a set of focused Go packages. The root `chronicle` pac
 │  Info / Warning / Critical → EventBuilder → Record             │
 │  Query / VerifyChain                                           │
 ├──────────────────────────────────────────────────────────────┤
-│                    Record pipeline                              │
+│              Record pipeline (synchronous)                      │
 │  1. Apply scope (AppID, TenantID, UserID, IP from ctx)         │
 │  2. Assign ID (TypeID "audit_") + Timestamp                    │
 │  3. Validate required fields (action, resource, category)       │
-│  4. Resolve or create stream (app+tenant → "stream_" ID)        │
-│  5. Compute SHA-256 hash chain                                  │
-│  6. store.Append (via Storer interface)                         │
-│  7. Update stream head (HeadHash, HeadSeq)                      │
-├───────────────────────────┬────────────────────────────────────┤
-│  plugin.Registry           │  batcher                           │
-│  BeforeRecord (enrich)     │  (optional high-throughput         │
-│  AfterRecord  (notify)     │   batched writes)                  │
-├───────────────────────────┴────────────────────────────────────┤
+│  4. Seal subject fields (when crypto-erasure is on)             │
+│  5. Resolve or create stream (app+tenant → "stream_" ID)        │
+│  6. Compute digest (SHA-256, or HMAC when keyed)                │
+│  7. store.Append (via Storer interface)                         │
+│  8. Update stream head (HeadHash, HeadSeq)                      │
+├────────────────────────────────────────────────────────────────┤
 │                      store.Storer                               │
-│  (chronicle.Storer interface — avoids import cycle)             │
+│  (chronicle.Storer interface: avoids import cycle)              │
 │  ↑ store.NewAdapter(store.Store) bridges the two               │
 ├──────────────┬─────────────┬──────────────┬────────────────────┤
 │   audit      │   stream    │   verify     │  erasure/retention  │
@@ -35,10 +32,10 @@ Chronicle is organized as a set of focused Go packages. The root `chronicle` pac
 ├──────────────┴─────────────┴──────────────┴────────────────────┤
 │                      store.Store                                │
 │  (composite interface: all sub-stores + Migrate/Ping/Close)    │
-├──────────┬───────────┬────────────┬─────────────────────────────┤
-│ Postgres │   Grove   │   SQLite   │   Memory (testing only)      │
-│ (pgx/v5) │  (ORM)   │            │                              │
-└──────────┴───────────┴────────────┴─────────────────────────────┘
+├────────────────────────────────────────────┬───────────────────┤
+│ Postgres, SQLite, MongoDB (on *grove.DB),   │ Memory            │
+│ Redis (on Grove KV)                         │ (testing only)    │
+└────────────────────────────────────────────┴───────────────────┘
 ```
 
 ## The import-cycle problem
@@ -50,7 +47,7 @@ The root `chronicle` package defines `Entity`, `Config`, and error sentinels. It
 The root package defines its own minimal interface `chronicle.Storer` using a `chronicle.StreamInfo` struct (mirroring only the fields the record pipeline needs). The `store.NewAdapter` function bridges `store.Store` → `chronicle.Storer` by translating `stream.Stream` ↔ `chronicle.StreamInfo`:
 
 ```go
-// store.NewAdapter — bridges the import cycle
+// store.NewAdapter: bridges the import cycle
 adapter := store.NewAdapter(pgStore) // pgStore implements store.Store
 
 c, err := chronicle.New(chronicle.WithStore(adapter)) // takes chronicle.Storer
@@ -58,36 +55,32 @@ c, err := chronicle.New(chronicle.WithStore(adapter)) // takes chronicle.Storer
 
 You always construct `store.NewAdapter(yourBackend)` before passing to `chronicle.New`.
 
-## Hash chain formula
+## Hash chain
 
-Every event's `Hash` is computed as:
+Every event's `Hash` is a digest over the previous event's hash and the event's own fields, so changing any recorded field, or deleting an event, breaks every later link. The scheme that wrote an event is stored on it:
 
-```
-SHA256(prevHash | timestamp | action | resource | category | resourceID | outcome | severity | metadata_json)
-```
+| Scheme | Digest | Status |
+| --- | --- | --- |
+| `chronicle/v1`, `chronicle/v2` | SHA-256 | Verify only |
+| `chronicle/v3` | HMAC-SHA256 | Verify only |
+| `chronicle/v4` | SHA-256 over length-prefixed fields | Written by default |
+| `chronicle/v5` | HMAC-SHA256 over length-prefixed fields | Written when you choose HMAC |
 
-- `prevHash` — the `Hash` of the previous event in the stream (empty string for the first event)
-- `metadata_json` — JSON-encoded metadata with **sorted keys** for deterministic output
-- `|` — literal pipe byte separator
-
-Any modification to any field changes the hash, breaking every subsequent hash in the chain.
+The plain scheme catches corruption and accidental edits, but anyone who can write the database can recompute it. Key the chain with HMAC and turn on signed checkpoints to raise that bar; see [Verification](/docs/subsystems/verification).
 
 ## Scope enforcement
 
-`scope.ApplyToEvent(ctx, event)` stamps AppID, TenantID, UserID, and IP onto the event before persist. `scope.ApplyToQuery(ctx, q)` forces the query's AppID and TenantID to match the context — making cross-tenant reads structurally impossible regardless of what the caller passes.
+`scope.ApplyToEvent(ctx, event)` stamps AppID, TenantID, UserID, and IP onto the event before persist. `scope.ApplyToQuery(ctx, q)` forces the query's AppID and TenantID to match the context, whatever the caller passed.
 
 The `handler` package's middleware returns `401` if no AppID is present in the context.
 
-## Batcher (optional)
+## Batching
 
-For high-throughput scenarios, wrap the store with `batcher.New(store, size, interval)`. The batcher accumulates events and calls `AppendBatch` instead of `Append` once the batch is full or the flush interval elapses. The `Chronicle` engine always writes through the `Storer` interface, so the batcher is transparent.
+`Record` doesn't batch: it writes each event before it returns, because linking an event needs the previous event's hash. The `batcher` package (`batcher.New(batchSize, flushInterval, flushFn, logger)`) is a standalone helper that collects events and hands them to a flush function you supply; `chronicle.New` never uses it.
 
 ## Plugin hooks
 
-Plugins run synchronously inside the record pipeline:
-
-- **`BeforeRecord`** — fires after validation, before `store.Append`. Use for enrichment, tagging, or filtering (`plugin.ErrSkipEvent` aborts the record).
-- **`AfterRecord`** — fires after `store.Append` succeeds. Use for notifications, alerting, or metrics.
+The `plugin` package's hooks (`BeforeRecord`, `AfterRecord` and the rest) aren't called by the record pipeline. To use them, call the registry around `Record` yourself; see [Plugins](/docs/subsystems/plugins).
 
 ## Store composition
 
@@ -108,7 +101,7 @@ type Store interface {
 }
 ```
 
-All backends implement this single interface. Pass the same backend value to `compliance.NewEngine`, `retention.NewEnforcer`, and `handler.New` — they each accept the specific sub-interface they need.
+All backends implement this single interface. Pass the same backend value to `compliance.NewEngine`, `retention.NewEnforcer`, and `handler.New`: they each accept the specific sub-interface they need.
 
 ## Package index
 
@@ -124,13 +117,16 @@ All backends implement this single interface. Pass the same backend value to `co
 | `erasure` | `.../erasure` | GDPR subject erasure service |
 | `compliance` | `.../compliance` | Report generation and export |
 | `retention` | `.../retention` | Policy-based archival and purge |
-| `sink` | `.../sink` | Fire-and-forget output targets |
-| `plugin` | `.../plugin` | Extensibility hooks |
-| `batcher` | `.../batcher` | Batched event writing |
+| `sink` | `.../sink` | Output targets; retention archives through them |
+| `plugin` | `.../plugin` | Hook interfaces and registry (not called by `Record`) |
+| `batcher` | `.../batcher` | Standalone batching helper (not used by `Record`) |
 | `scope` | `.../scope` | Context-based tenant isolation |
 | `id` | `.../id` | TypeID-based entity identifiers |
-| `handler` | `.../handler` | Admin REST endpoints (21 routes) |
+| `handler` | `.../handler` | Admin REST endpoints (24 routes) on a Forge router |
 | `extension` | `.../extension` | Forge framework extension |
 | `store/memory` | `.../store/memory` | In-memory backend (testing) |
-| `store/postgres` | `.../store/postgres` | PostgreSQL backend (pgx/v5) |
-| `store/grovestore` | `.../store/grovestore` | Grove ORM backend |
+| `store/postgres` | `.../store/postgres` | PostgreSQL backend on a `*grove.DB` (pgdriver) |
+| `store/sqlite` | `.../store/sqlite` | SQLite backend on a `*grove.DB` |
+| `store/mongo` | `.../store/mongo` | MongoDB backend on a `*grove.DB` |
+| `store/redis` | `.../store/redis` | Redis backend on Grove KV (no checkpoints) |
+| `store/sealedstore` | `.../store/sealedstore` | Wraps a store so reads come back decrypted under crypto-erasure |

@@ -111,17 +111,19 @@ err = engine.Export(ctx, report, compliance.FormatMarkdown, os.Stdout)
 | CSV | `compliance.FormatCSV` | Spreadsheet-compatible |
 | Markdown | `compliance.FormatMarkdown` | Human-readable |
 | HTML | `compliance.FormatHTML` | Browser or email |
-| PDF | `compliance.FormatPDF` | Defined but not yet implemented |
+| PDF | `compliance.FormatPDF` | Declared, but `Export` rejects it with an unsupported-format error |
+
+`FormatPDF` exists as a constant only. Pass it to `Export` (or ask the admin API for `/export/pdf`) and you get an error, not a PDF. Export to HTML and print that if you need a PDF today.
 
 ## Report structure
 
 A `compliance.Report` contains:
 
-- **Sections** — `[]Section`, each with a `Title`, `Events`, aggregate `Stats`, and `Notes`
-- **Stats** — `*Stats` with `TotalEvents`, `CriticalEvents`, `FailedEvents`, `DeniedEvents`
-- **Verification**: the `*verify.Report` from generation time, or nil when no verification ran
-- **VerificationScope**: what that verification covered and why, see [Chain verification](#chain-verification)
-- **Data** — raw exported bytes (populated by `Export`)
+- Sections: `[]Section`, each with a `Title`, `Events`, aggregate `Stats`, and `Notes`
+- Stats: `*Stats` with `TotalEvents`, `CriticalEvents`, `FailedEvents`, `DeniedEvents`
+- Verification: the `*verify.Report` from generation time, or nil when no verification ran
+- VerificationScope: what that verification covered and why, see [Chain verification](#chain-verification)
+- Data: raw exported bytes (populated by `Export`)
 
 ## HTTP endpoints
 

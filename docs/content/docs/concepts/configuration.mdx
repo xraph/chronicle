@@ -9,35 +9,42 @@ description: Options and defaults for chronicle.New and the Forge extension.
 
 ```go
 c, err := chronicle.New(
-    chronicle.WithStore(adapter),               // required
-    chronicle.WithLogger(logger),               // optional
-    chronicle.WithBatchSize(200),               // optional
-    chronicle.WithFlushInterval(2*time.Second), // optional
-    chronicle.WithCryptoErasure(true),          // optional
+    chronicle.WithStore(adapter),                     // required
+    chronicle.WithLogger(logger),                     // optional
+    chronicle.WithDigestScheme(hash.SchemeHMACV5),    // optional, needs a key provider
+    chronicle.WithKeyProvider(kp),
+    chronicle.WithCryptoErasure(true),                // optional, needs a sealer
+    chronicle.WithSealer(crypto.NewSealer(keyStore)),
 )
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithStore(s)` | `chronicle.Storer` | — | **Required.** Pass `store.NewAdapter(yourBackend)`. |
-| `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Structured logger for internal events. |
-| `WithBatchSize(n)` | `int` | `100` | Max events to accumulate before flushing to the store. |
-| `WithFlushInterval(d)` | `time.Duration` | `1s` | Max time between store flushes. |
-| `WithCryptoErasure(b)` | `bool` | `false` | Enable AES-256-GCM per-subject encryption for GDPR. |
+| `WithStore(s)` | `chronicle.Storer` | none | Required. Pass `store.NewAdapter(yourBackend)`. |
+| `WithLogger(l)` | `log.Logger` (`github.com/xraph/go-utils/log`) | a no-op logger | Logger for internal events. |
+| `WithDigestScheme(s)` | `hash.Scheme` | plain SHA-256 (`chronicle/v4`) | `hash.SchemeHMACV5` keys the chain. Without a key provider, `New` returns `ErrHMACKeyUnavailable`. |
+| `WithKeyProvider(p)` | `keys.Provider` | none | Key material for the HMAC scheme. |
+| `WithCheckpointSigner(s)` | `checkpoint.Signer` | none | Signs checkpoints. |
+| `WithCryptoErasure(b)` | `bool` | `false` | Per-subject AES-256-GCM sealing for GDPR. Needs `WithSealer`; without one, `New` returns `ErrCryptoErasureUnavailable`. |
+| `WithSealer(s)` | `EventSealer` | none | The sealer crypto-erasure encrypts with, usually `crypto.NewSealer(keyStore)`. |
+| `WithBatchSize(n)` | `int` | `100` | Stored, but has no effect: `Record` writes each event synchronously. |
+| `WithFlushInterval(d)` | `time.Duration` | `1s` | Stored, but has no effect, like `WithBatchSize`. |
+
+`Record` writes each event to the store before it returns, because linking an event into the hash chain needs the previous event's hash. There's no buffering, so there's nothing to flush. The `batcher` package exists for callers that drive batching themselves.
 
 ### Config defaults
 
 ```go
 Config{
-    BatchSize:              100,
-    FlushInterval:          1 * time.Second,
+    BatchSize:              100,             // not applied by Record
+    FlushInterval:          1 * time.Second, // not applied by Record
     ShutdownTimeout:        30 * time.Second,
     EnableCryptoErasure:    false,
     RetentionCheckInterval: 24 * time.Hour,
 }
 ```
 
-`ShutdownTimeout` and `RetentionCheckInterval` are set via `DefaultConfig()` and are not currently exposed as `WithXxx` options on the root package — use the extension options below to control the retention interval.
+`ShutdownTimeout` and `RetentionCheckInterval` are set by `DefaultConfig()` and have no `WithXxx` option on the root package. Use the extension's `retention_interval` to control how often retention runs.
 
 ## Store adapter
 
@@ -53,32 +60,35 @@ See [Architecture](/docs/architecture) for the import-cycle reason behind this.
 
 ## Forge extension options
 
-The `extension.New` function accepts its own set of options:
+The extension package has its own options:
 
 ```go
-ext := extension.New(
-    extension.WithStore(pgStore),
-    extension.WithBatchSize(200),
-    extension.WithFlushInterval(2*time.Second),
-    extension.WithCryptoErasure(true),
-    extension.WithRetentionInterval(12*time.Hour),
-    extension.WithArchiveSink(s3Sink),
-    extension.WithLogger(logger),
-    extension.WithDisableRoutes(false),
-    extension.WithDisableMigrate(false),
+ext := chronicleext.New(
+    chronicleext.WithStore(pgStore),
+    chronicleext.WithAuth("jwt", readScopes, writeScopes, adminScopes),
+    chronicleext.WithCryptoErasure(true),
+    chronicleext.WithKeyStore(keyStore),
+    chronicleext.WithRetentionInterval(12*time.Hour),
+    chronicleext.WithArchiveSink(s3Sink),
 )
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `WithStore(s)` | `store.Store` | — | **Required.** Composite store backend. |
-| `WithBatchSize(n)` | `int` | `100` | Passed to `chronicle.WithBatchSize`. |
-| `WithFlushInterval(d)` | `time.Duration` | `1s` | Passed to `chronicle.WithFlushInterval`. |
+| `WithStore(s)` | `store.Store` | none | Composite store backend. Optional when a grove database or KV store is available. |
+| `WithAuth(provider, read, write, admin)` | `string`, `[]string` x3 | none | Forge auth provider and the scopes for read, write and admin operations. |
+| `WithUnauthenticatedAPI()` | | off | Serve the admin API with no auth. Local development only. |
 | `WithCryptoErasure(b)` | `bool` | `false` | Enable GDPR crypto-erasure. |
+| `WithKeyStore(ks)` | `crypto.KeyStore` | nil | Key store for crypto-erasure; required when it's on. |
 | `WithRetentionInterval(d)` | `time.Duration` | `24h` | How often retention policies are enforced. Set to `0` to disable. |
-| `WithArchiveSink(s)` | `sink.Sink` | `nil` | Sink used to write events before they are purged. |
-| `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Logger for all Chronicle components. |
-| `WithDisableRoutes(b)` | `bool` | `false` | Skip HTTP route registration in the Forge router. |
-| `WithDisableMigrate(b)` | `bool` | `false` | Skip `store.Migrate` on `Start`. |
+| `WithArchiveSink(s)` | `sink.Sink` | `nil` | Sink retention archives events to before it purges them. |
+| `WithDigestScheme(scheme)`, `WithKeyProvider(p)` | `string`, `keys.Provider` | `"plain"` | `"hmac"` keys the chain. |
+| `WithCheckpoints(cfg)` | `CheckpointConfig` | off | Signed checkpoints. |
+| `WithBasePath(path)` | `string` | `/chronicle` | URL prefix for the admin API. |
+| `WithDisableRoutes()` | | `false` | Skip HTTP route registration in the Forge router. |
+| `WithDisableMigrate()` | | `false` | Skip `store.Migrate` on `Start`. |
+| `WithGroveDatabase(name)`, `WithGroveKV(name)` | `string` | unset | Resolve a grove DB or KV store from the container. |
+| `WithBatchSize(n)`, `WithFlushInterval(d)` | | `100`, `1s` | Passed through, and have no effect: `Record` is synchronous. |
+| `WithConfig(cfg)`, `WithRequireConfig(b)` | | | Replace the config, or require it in YAML. |
 
-The extension calls `store.NewAdapter` internally — pass the raw `store.Store`, not an already-adapted `chronicle.Storer`.
+The extension uses the Forge app's logger; there's no logger option. It calls `store.NewAdapter` internally, so pass the raw `store.Store`, not an already-adapted `chronicle.Storer`. YAML keys are listed in the [Forge extension guide](/docs/guides/forge-extension#yaml-configuration).

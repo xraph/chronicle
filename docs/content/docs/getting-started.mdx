@@ -5,13 +5,13 @@ description: Install Chronicle and record your first audit event in under five m
 
 ## Prerequisites
 
-- Go 1.25.7 or later
+- Go 1.26 or later
 - A Go module (`go mod init`)
 
 ## Install
 
 ```bash
-go get github.com/xraph/chronicle
+go get github.com/xraph/chronicle@latest
 ```
 
 ## Step 1: Create the store and adapter
@@ -47,6 +47,8 @@ func main() {
 
 `store.NewAdapter` is required. `chronicle.New` accepts `chronicle.Storer` (not `store.Store` directly). The adapter bridges the two, avoiding an import cycle between the root package and the store package.
 
+`Record` writes each event to the store synchronously, before it returns. There's no buffering: linking an event into the hash chain needs the previous event's hash.
+
 ## Step 2: Set up a scoped context
 
 Chronicle extracts the app ID, tenant ID, user ID, and IP from the context and stamps them onto every event automatically:
@@ -77,7 +79,7 @@ if err != nil {
 }
 ```
 
-The three positional arguments to `c.Info` are **action**, **resource**, and **resource ID**. `Category` is required for compliance filtering. Other builder methods:
+The three positional arguments to `c.Info` are the action, the resource, and the resource ID. `Category` is required for compliance filtering. Other builder methods:
 
 | Method | Description |
 |--------|-------------|
@@ -106,7 +108,7 @@ for _, ev := range result.Events {
 }
 ```
 
-Queries are automatically scoped to the app + tenant from the context. Cross-tenant access is impossible.
+Queries are automatically scoped to the app and tenant from the context.
 
 ## Step 5: Verify the hash chain
 
@@ -126,48 +128,47 @@ fmt.Printf("valid=%v verified=%d gaps=%v tampered=%v\n",
 
 ## Step 6: Mount the admin API (optional)
 
+The admin API in the `handler` package registers its routes on a Forge router, so the way to serve it is the Forge extension. It mounts the events, verification, checkpoint, erasure, retention, report and stats routes under `/chronicle/v1/...`:
+
 ```go
 import (
-    "net/http"
-
-    "github.com/xraph/chronicle/handler"
-    "log/slog"
+    "github.com/xraph/forge"
+    chronicleext "github.com/xraph/chronicle/extension"
+    "github.com/xraph/chronicle/store/memory"
 )
 
-mux := http.NewServeMux()
-
-api := handler.New(handler.Dependencies{
-    AuditStore:     mem,
-    VerifyStore:    mem,
-    ErasureStore:   mem,
-    RetentionStore: mem,
-    ReportStore:    mem,
-    Logger:         slog.Default(),
-}, mux)
-api.RegisterRoutes(mux)
-
-log.Fatal(http.ListenAndServe(":8080", mux))
+app := forge.NewApp(forge.AppConfig{
+    Name: "billing-api",
+    Extensions: []forge.Extension{
+        chronicleext.New(
+            chronicleext.WithStore(memory.New()),
+            chronicleext.WithUnauthenticatedAPI(), // local development only
+        ),
+    },
+})
 ```
 
-This mounts 21 endpoints under `/chronicle/` for events, verification, erasure, retention, compliance reports, and stats.
+The admin API can purge history, so the extension refuses to start with routes on until you configure an auth provider, allow unauthenticated access explicitly as above, or turn the routes off. See the [Forge extension guide](/docs/guides/forge-extension).
 
 ## Step 7: Switch to PostgreSQL for production
 
 ```go
 import (
-    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/pgdriver"
     "github.com/xraph/chronicle/store/postgres"
 )
 
-pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+drv := pgdriver.New()
+if err := drv.Open(ctx, os.Getenv("DATABASE_URL")); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
 if err != nil {
     log.Fatal(err)
 }
 
-pgStore, err := postgres.New(pool)
-if err != nil {
-    log.Fatal(err)
-}
+pgStore := postgres.New(db)
 if err := pgStore.Migrate(ctx); err != nil {
     log.Fatal(err)
 }
@@ -178,7 +179,7 @@ c, err := chronicle.New(chronicle.WithStore(adapter))
 
 ## Next steps
 
-- [Architecture](/docs/architecture) — Understand how the packages fit together
-- [Recording events](/docs/subsystems/recording) — Full EventBuilder API reference
-- [GDPR erasure](/docs/guides/gdpr-erasure) — End-to-end crypto-erasure walkthrough
-- [Stores](/docs/stores/postgres) — Connect to PostgreSQL for production
+- [Architecture](/docs/architecture): how the packages fit together
+- [Recording events](/docs/subsystems/recording): the full EventBuilder API
+- [GDPR erasure](/docs/guides/gdpr-erasure): an end-to-end crypto-erasure walkthrough
+- [Stores](/docs/stores/postgres): connect to PostgreSQL for production

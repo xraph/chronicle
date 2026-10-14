@@ -11,6 +11,7 @@ The `store/sqlite` package implements Chronicle's `store.Store` interface using 
 import (
     "github.com/xraph/grove"
     "github.com/xraph/grove/drivers/sqlitedriver"
+    _ "github.com/xraph/grove/drivers/sqlitedriver/sqlitemigrate" // Migrate needs the executor
     "github.com/xraph/chronicle/store/sqlite"
 )
 ```
@@ -18,7 +19,11 @@ import (
 ## Constructor
 
 ```go
-db, err := grove.Open(sqlitedriver.Open("chronicle.db"))
+drv := sqlitedriver.New()
+if err := drv.Open(ctx, "chronicle.db"); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
 if err != nil {
     log.Fatal(err)
 }
@@ -26,15 +31,19 @@ if err != nil {
 s := sqlite.New(db)
 ```
 
-Pass `":memory:"` for a fully in-process, zero-persistence store useful in tests:
+For tests, point it at a file under `t.TempDir()`. Be careful with `":memory:"`: every pooled connection opens its own empty in-memory database, so tables `Migrate` creates on one connection can be missing on the next.
 
 ```go
-db, err := grove.Open(sqlitedriver.Open(":memory:"))
+drv := sqlitedriver.New()
+if err := drv.Open(ctx, filepath.Join(t.TempDir(), "chronicle.db")); err != nil {
+    t.Fatal(err)
+}
+db, err := grove.Open(drv)
 ```
 
 ## Migrations
 
-Run schema migrations before first use. Migrations are idempotent -- safe to run on every startup:
+Run schema migrations before first use. Migrations are idempotent: safe to run on every startup:
 
 ```go
 if err := s.Migrate(ctx); err != nil {
@@ -58,7 +67,11 @@ import (
 
 ctx := context.Background()
 
-db, err := grove.Open(sqlitedriver.Open("chronicle.db"))
+drv := sqlitedriver.New()
+if err := drv.Open(ctx, "chronicle.db"); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
 if err != nil {
     log.Fatal(err)
 }
@@ -76,13 +89,14 @@ c, err := chronicle.New(chronicle.WithStore(adapter))
 ## With the Forge extension
 
 ```go
-import "github.com/xraph/chronicle/extension"
+import chronicleext "github.com/xraph/chronicle/extension"
 
-ext := extension.New(
-    extension.WithStore(s),
-    // Migrate runs automatically on Start unless WithDisableMigrate(true)
+ext := chronicleext.New(
+    chronicleext.WithStore(s),
+    chronicleext.WithUnauthenticatedAPI(), // or WithAuth(...); required while routes are on
+    // Migrate runs automatically on Start unless WithDisableMigrate()
 )
-app.Register(ext)
+app.RegisterExtension(ext)
 ```
 
 ## Interfaces implemented

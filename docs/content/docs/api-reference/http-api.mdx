@@ -1,29 +1,15 @@
 ---
 title: HTTP Admin API
-description: Complete reference for the Chronicle admin API — 21 endpoints.
+description: Complete reference for the Chronicle admin API.
 ---
 
-The admin API is served by `handler.New(deps, router)`. All routes are mounted under `/v1`. Requests and responses use JSON. All requests require an `AppID` in the context; missing AppID returns `401 Unauthorized`.
+The admin API is served by `handler.New(deps, router)` on a Forge router. All routes are registered under `/v1`, and the Forge extension mounts them under its base path, so with the defaults `GET /v1/events` is `GET /chronicle/v1/events`. Requests and responses use JSON. All requests require an app ID in the context; a missing one returns `401 Unauthorized`.
 
 ## Setup
 
-```go
-import "github.com/xraph/chronicle/handler"
+Mount it through the [Forge extension](/docs/guides/forge-extension), which builds the dependencies and guards for you. Routes are registered automatically unless you pass `WithDisableRoutes()`, and then `ext.RegisterRoutes(router)` puts them on a `forge.Router` of your choice. Each route also needs the read, write or admin scopes configured with `auth.*` (see [Admin API](/docs/subsystems/admin-api#authentication)).
 
-api := handler.New(handler.Dependencies{
-    AuditStore:     myStore,
-    VerifyStore:    myStore,
-    ErasureStore:   myStore,
-    RetentionStore: myStore,
-    ReportStore:    myStore,
-    Compliance:     complianceEngine,
-    Retention:      retentionEnforcer,
-    Logger:         slog.Default(),
-}, mux)
-api.RegisterRoutes(mux)
-```
-
-When using the Forge extension, routes are registered automatically unless `WithDisableRoutes(true)` is set.
+The paths below don't repeat the base path.
 
 ## Error format
 
@@ -34,7 +20,8 @@ When using the Forge extension, routes are registered automatically unless `With
 | Code | Condition |
 |------|-----------|
 | `400` | Invalid request body or query parameters |
-| `401` | Missing AppID |
+| `401` | Missing app ID, or the auth provider rejected the caller |
+| `403` | Usually what the auth provider answers when the caller lacks the route's scope |
 | `404` | Entity not found |
 | `500` | Internal error |
 
@@ -182,6 +169,16 @@ After a retention policy has removed events, the report also carries `retained`,
 Those sequences don't count as gaps. `record_seq` is the retention record that lists them.
 
 ---
+
+## Checkpoints
+
+```
+GET /v1/checkpoints
+GET /v1/checkpoints/:id
+POST /v1/checkpoints
+```
+
+List signed checkpoints, get one, or force one now. The `POST` is a write route. Checkpoints need `checkpoints.enabled` and a signer; see [Verification](/docs/subsystems/verification).
 
 ## Erasure
 

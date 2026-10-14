@@ -11,7 +11,7 @@ The `store/memory` package provides a fully in-memory implementation of Chronicl
 - Local development and examples
 - Prototyping before choosing a production backend
 
-**Not suitable for production** — all data is lost when the process exits.
+**Not suitable for production**: all data is lost when the process exits.
 
 ## Import and constructor
 
@@ -41,13 +41,16 @@ c, err := chronicle.New(chronicle.WithStore(adapter))
 ## Usage with the Forge extension
 
 ```go
-import "github.com/xraph/chronicle/extension"
+import chronicleext "github.com/xraph/chronicle/extension"
 
 mem := memory.New()
-ext := extension.New(extension.WithStore(mem))
+ext := chronicleext.New(
+    chronicleext.WithStore(mem),
+    chronicleext.WithUnauthenticatedAPI(), // or WithAuth(...); required while routes are on
+)
 ```
 
-The extension calls `store.NewAdapter` internally — no need to do it yourself.
+The extension calls `store.NewAdapter` internally, so there's no need to do it yourself.
 
 ## Interfaces implemented
 
@@ -65,8 +68,8 @@ The extension calls `store.NewAdapter` internally — no need to do it yourself.
 
 | Aspect | Detail |
 |--------|--------|
-| Concurrency | `sync.RWMutex` — reads concurrent, writes exclusive |
+| Concurrency | `sync.RWMutex`: reads concurrent, writes exclusive |
 | Migrate | No-op |
 | Ping | No-op (always succeeds) |
 | Close | No-op |
-| Persistence | None — all data lost on process exit |
+| Persistence | None: all data lost on process exit |

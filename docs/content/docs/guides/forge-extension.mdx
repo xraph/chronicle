@@ -9,35 +9,41 @@ Chronicle ships as a `forge.Extension` that integrates with the Forge framework'
 
 ```go
 import (
-    "github.com/xraph/chronicle/extension"
-    "github.com/xraph/chronicle/store/postgres"
+    "time"
+
+    "github.com/xraph/forge"
+    chronicleext "github.com/xraph/chronicle/extension"
+    grove "github.com/xraph/grove/extension"
 )
 
-pgStore, err := postgres.New(pool)
-if err != nil {
-    log.Fatal(err)
-}
-
-ext := extension.New(
-    extension.WithStore(pgStore),
-    extension.WithCryptoErasure(true),
-    extension.WithRetentionInterval(24 * time.Hour),
-    extension.WithArchiveSink(s3Sink),
-    extension.WithLogger(myLogger),
-)
-
-app.Register(ext)
+app := forge.NewApp(forge.AppConfig{
+    Name: "billing-api",
+    Extensions: []forge.Extension{
+        grove.New(), // extensions.grove: driver and dsn
+        chronicleext.New(
+            chronicleext.WithAuth("jwt",
+                []string{"chronicle:read"},
+                []string{"chronicle:write"},
+                []string{"chronicle:admin"},
+            ),
+            chronicleext.WithRetentionInterval(24 * time.Hour),
+        ),
+    },
+})
 ```
 
-`app.Register(ext)` calls `ext.Register(app)` which:
-1. Runs `store.NewAdapter` and builds `chronicle.New`.
-2. Creates `compliance.Engine`, `retention.Enforcer`, and `handler.API`.
-3. Registers all 21 HTTP routes in the Forge router (unless `WithDisableRoutes(true)`).
-4. Provides `chronicle.Emitter` in the Vessel DI container.
+List Grove first: Chronicle looks up the container's `*grove.DB` during `Register` and picks the PostgreSQL, SQLite or MongoDB store to match its driver. `app.RegisterExtension(ext)` works too, before the app starts.
 
-`app.Start(ctx)` calls `ext.Start(ctx)` which:
-1. Runs `pgStore.Migrate(ctx)` (unless `WithDisableMigrate(true)`).
-2. Launches the retention scheduler goroutine.
+The admin API can purge history, so with routes on the extension refuses to start until you configure an auth provider (`WithAuth` or `auth.provider`), allow unauthenticated access explicitly (`WithUnauthenticatedAPI()` or `auth.allow_unauthenticated: true`), or turn the routes off. Requests also need an app scope on the context (Forge's scope, or `scope.WithAppID` from your own middleware), or they get a 401.
+
+During `Register` the extension:
+1. Loads config from `extensions.chronicle` (or a top-level `chronicle` key) and builds the hash chain (plain or HMAC).
+2. Picks a store (see [store resolution](#store-resolution-order)), wraps it with `store.NewAdapter` and builds `chronicle.New`.
+3. Creates the compliance engine, the retention enforcer and the `handler.API`, wrapping the store with `sealedstore` when crypto-erasure is on.
+4. Registers the admin routes under the base path (`/chronicle` by default) plus `/v1`, unless routes are disabled.
+5. Provides `chronicle.Emitter` in the DI container.
+
+`Start` runs `Migrate` on the store (unless `disable_migrate` is set), then starts the retention scheduler (when `retention_interval` is above zero) and the checkpoint scheduler (when checkpoints are enabled). `Stop` cancels both schedulers. `Health` pings the store.
 
 ## Receive the Emitter via DI
 
@@ -54,9 +60,12 @@ type MyExtension struct {
 }
 
 func (e *MyExtension) Register(app forge.App) error {
-    return vessel.Invoke(app.Container(), func(emitter chronicle.Emitter) {
-        e.emitter = emitter
-    })
+    emitter, err := vessel.Inject[chronicle.Emitter](app.Container())
+    if err != nil {
+        return err
+    }
+    e.emitter = emitter
+    return nil
 }
 
 func (e *MyExtension) doSomething(ctx context.Context) {
@@ -86,7 +95,7 @@ enforcer := ext.RetentionEnforcer()
 // The handler.API (for manual route registration)
 api := ext.API()
 
-// An http.Handler for standalone use
+// An http.Handler serving the same routes on a router of its own
 h := ext.Handler()
 ```
 
@@ -95,28 +104,30 @@ h := ext.Handler()
 If you want to mount routes on a sub-path or a different router:
 
 ```go
-ext := extension.New(
-    extension.WithStore(pgStore),
-    extension.WithDisableRoutes(true),
+ext := chronicleext.New(
+    chronicleext.WithStore(pgStore),
+    chronicleext.WithDisableRoutes(),
 )
-app.Register(ext)
+app.RegisterExtension(ext)
 
-// Mount manually in your own router
-customRouter.Mount("/audit", ext.Handler())
+// After Register: put the routes on a Forge router group of your own.
+ext.RegisterRoutes(app.Router().Group("/audit"))
 ```
+
+`ext.Handler()` returns the same routes as an `http.Handler` on a router of its own, at `/v1/...`.
 
 ## Disable automatic migrations
 
 ```go
-ext := extension.New(
-    extension.WithStore(pgStore),
-    extension.WithDisableMigrate(true),
+ext := chronicleext.New(
+    chronicleext.WithStore(pgStore),
+    chronicleext.WithDisableMigrate(),
 )
 // Run migrations yourself before starting
 if err := pgStore.Migrate(ctx); err != nil {
     log.Fatal(err)
 }
-app.Register(ext)
+app.RegisterExtension(ext)
 ```
 
 ## Grove database integration
@@ -128,8 +139,8 @@ When your Forge app uses the [Grove extension](https://github.com/xraph/grove) t
 If the Grove extension registers a single database (or a default in multi-DB mode), use `WithGroveDatabase` with an empty name:
 
 ```go
-ext := extension.New(
-    extension.WithGroveDatabase(""),
+ext := chronicleext.New(
+    chronicleext.WithGroveDatabase(""),
 )
 ```
 
@@ -138,20 +149,20 @@ ext := extension.New(
 In multi-database setups, reference a specific database by name:
 
 ```go
-ext := extension.New(
-    extension.WithGroveDatabase("audit"),
+ext := chronicleext.New(
+    chronicleext.WithGroveDatabase("audit"),
 )
 ```
 
-This resolves the grove.DB named `"audit"` from the DI container and auto-constructs the matching store. The driver type is detected automatically -- you do not need to import individual store packages.
+This resolves the grove.DB named `"audit"` from the DI container and auto-constructs the matching store. The driver type is detected automatically, so you don't import the store packages yourself.
 
 ### Using the default grove KV store
 
 If the Grove extension registers a KV store, use `WithGroveKV` with an empty name:
 
 ```go
-ext := extension.New(
-    extension.WithGroveKV(""),
+ext := chronicleext.New(
+    chronicleext.WithGroveKV(""),
 )
 ```
 
@@ -160,8 +171,8 @@ ext := extension.New(
 In multi-KV setups, reference a specific KV store by name:
 
 ```go
-ext := extension.New(
-    extension.WithGroveKV("chronicle-kv"),
+ext := chronicleext.New(
+    chronicleext.WithGroveKV("chronicle-kv"),
 )
 ```
 
@@ -169,10 +180,12 @@ ext := extension.New(
 
 The extension resolves its store in this order:
 
-1. **Explicit store** -- if `WithStore(s)` was called, it is used directly and grove is ignored.
-2. **Grove database** -- if `WithGroveDatabase(name)` was called (or `grove_database` is set in YAML), the named or default `grove.DB` is resolved from DI.
-3. **Grove KV** -- if `WithGroveKV(name)` was called (or `grove_kv` is set in YAML), the named or default grove KV store is resolved from DI.
-4. **In-memory fallback** -- if none of the above is configured, an in-memory store is used.
+1. Explicit store: if `WithStore(s)` was called, it is used directly and grove is ignored.
+2. Grove database: if `WithGroveDatabase(name)` was called (or `grove_database` is set in YAML), the named or default `grove.DB` is resolved from DI.
+3. Grove KV: if `WithGroveKV(name)` was called (or `grove_kv` is set in YAML), the named or default grove KV store is resolved from DI, and the Redis store is built on it.
+4. A default `grove.DB` in the container, if the Grove extension registered one.
+
+There is no in-memory fallback. If none of these applies, `Register` fails with "no store configured".
 
 ## YAML configuration
 
@@ -182,14 +195,17 @@ The Chronicle extension automatically loads configuration from your Forge app's 
 # forge.yaml (or app.yaml, config.yaml, etc.)
 extensions:
   chronicle:
+    base_path: /chronicle
     grove_database: audit
-    grove_kv: chronicle-kv
-    batch_size: 100
-    flush_interval: 1s
-    crypto_erasure: true
+    enable_crypto_erasure: true   # also needs WithKeyStore
     retention_interval: 24h
     disable_routes: false
     disable_migrate: false
+    auth:
+      provider: jwt
+      read_scopes: [chronicle:read]
+      write_scopes: [chronicle:write]
+      admin_scopes: [chronicle:admin]
 ```
 
 Or at the top level:
@@ -197,11 +213,9 @@ Or at the top level:
 ```yaml
 chronicle:
   grove_database: ""
-  grove_kv: ""
-  batch_size: 100
-  flush_interval: 1s
-  crypto_erasure: false
   retention_interval: 24h
+  auth:
+    allow_unauthenticated: true   # local development only
 ```
 
 ### Configuration reference
@@ -210,9 +224,13 @@ chronicle:
 |-------|----------|------|---------|-------------|
 | `GroveDatabase` | `grove_database` | `string` | `""` | Name of the grove.DB to resolve from DI; empty uses the default DB |
 | `GroveKV` | `grove_kv` | `string` | `""` | Name of the grove KV store to resolve from DI; empty uses the default KV |
-| `BatchSize` | `batch_size` | `int` | `100` | Event batch size |
-| `FlushInterval` | `flush_interval` | `duration` | `1s` | Batch flush interval |
-| `CryptoErasure` | `crypto_erasure` | `bool` | `false` | Enable GDPR crypto-erasure |
+| `BasePath` | `base_path` | `string` | `"/chronicle"` | URL prefix for the admin API |
+| `BatchSize` | `batch_size` | `int` | `100` | Loaded, but has no effect: `Record` writes each event synchronously |
+| `FlushInterval` | `flush_interval` | `duration` | `1s` | Loaded, but has no effect, like `batch_size` |
+| `EnableCryptoErasure` | `enable_crypto_erasure` | `bool` | `false` | Enable GDPR crypto-erasure (also needs `WithKeyStore`) |
+| `Auth` | `auth.provider`, `auth.read_scopes`, `auth.write_scopes`, `auth.admin_scopes`, `auth.allow_unauthenticated` | | none | Who may call the admin API. Required while routes are on |
+| `TamperEvidence` | `tamper_evidence.digest`, `tamper_evidence.keys.*` | | `plain` | `hmac` keys the chain; see [Verification](/docs/subsystems/verification) |
+| `Checkpoints` | `checkpoints.enabled`, `every_events`, `every_interval`, `signer.*` | | off | Signed checkpoints |
 | `RetentionInterval` | `retention_interval` | `duration` | `24h` | Retention enforcement interval (0 = off) |
 | `DisableRoutes` | `disable_routes` | `bool` | `false` | Skip auto route registration |
 | `DisableMigrate` | `disable_migrate` | `bool` | `false` | Skip `Migrate` on `Start` |
@@ -223,14 +241,20 @@ chronicle:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `WithStore(s)` | — | **Required.** `store.Store` backend. |
-| `WithBatchSize(n)` | 100 | Event batch size. |
-| `WithFlushInterval(d)` | 1s | Batch flush interval. |
-| `WithCryptoErasure(b)` | false | Enable GDPR crypto-erasure. |
-| `WithRetentionInterval(d)` | 24h | Retention enforcement interval (0 = off). |
-| `WithArchiveSink(s)` | nil | Archive sink for retention. |
-| `WithLogger(l)` | `slog.Default()` | Logger. |
-| `WithDisableRoutes(b)` | false | Skip auto route registration. |
-| `WithDisableMigrate(b)` | false | Skip `Migrate` on `Start`. |
+| `WithStore(s)` | none | A `store.Store` backend. Optional when a grove database is available |
+| `WithAuth(provider, read, write, admin)` | none | Forge auth provider and the scopes for each operation class |
+| `WithUnauthenticatedAPI()` | off | Allow the admin API without auth (local development) |
+| `WithBatchSize(n)` | 100 | No effect: `Record` is synchronous |
+| `WithFlushInterval(d)` | 1s | No effect: `Record` is synchronous |
+| `WithCryptoErasure(b)` | false | Enable GDPR crypto-erasure |
+| `WithKeyStore(ks)` | nil | Key store for crypto-erasure; required when it's on |
+| `WithRetentionInterval(d)` | 24h | Retention enforcement interval (0 = off) |
+| `WithArchiveSink(s)` | nil | Archive sink for retention |
+| `WithDigestScheme(scheme)`, `WithKeyProvider(p)` | `plain` | Key the hash chain with HMAC |
+| `WithCheckpoints(cfg)` | off | Signed checkpoints |
+| `WithBasePath(path)` | `/chronicle` | URL prefix for the admin API |
+| `WithDisableRoutes()` | false | Skip auto route registration |
+| `WithDisableMigrate()` | false | Skip `Migrate` on `Start` |
+| `WithConfig(cfg)`, `WithRequireConfig(b)` | | Replace the config, or require it in YAML |
 | `WithGroveDatabase(name)` | `""` | Resolve a grove.DB from DI by name; empty uses the default DB. |
 | `WithGroveKV(name)` | `""` | Resolve a grove KV store from DI by name; empty uses the default KV. |

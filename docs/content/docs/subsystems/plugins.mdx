@@ -1,9 +1,11 @@
 ---
 title: Plugins
-description: The Chronicle plugin system — hook interfaces, the registry, and ErrSkipEvent.
+description: The plugin package's hook interfaces, its registry, and ErrSkipEvent. Not wired into Record yet.
 ---
 
-Chronicle's plugin system allows you to extend the record pipeline and react to system events without modifying Chronicle internals. Plugins implement any subset of the hook interfaces. The registry discovers capabilities at registration time for O(1) per-event dispatch overhead.
+The `plugin` package defines hook interfaces and a `Registry` that sorts plugins by the hooks they implement and can emit each hook.
+
+It isn't wired into Chronicle yet. `chronicle.New` takes no registry and `Record` never calls one, so `OnBeforeRecord`, `OnAfterRecord`, alert handlers and `SinkProvider` sinks don't run when you record an event, and the Forge extension doesn't build a registry either. To use plugins today, call the registry yourself around `Record`, as in [Driving the registry yourself](#driving-the-registry-yourself). The "fires when" lines below describe what each hook is for when you do that.
 
 ## Plugin base interface
 
@@ -26,7 +28,7 @@ func (p *MyPlugin) OnInit(ctx context.Context) error { ... }
 func (p *MyPlugin) OnShutdown(ctx context.Context) error { ... }
 ```
 
-`OnInit` fires when Chronicle starts. `OnShutdown` fires when Chronicle stops.
+`registry.EmitInit(ctx)` and `registry.EmitShutdown(ctx)` call them.
 
 ### `BeforeRecord`
 
@@ -37,10 +39,10 @@ func (p *MyPlugin) OnBeforeRecord(ctx context.Context, event *audit.Event) error
 }
 ```
 
-Fires **before** `store.Append`. Use for:
-- **Enrichment** — add computed metadata fields
-- **Filtering** — return `plugin.ErrSkipEvent` to silently discard the event
-- **Transformation** — modify any non-identity, non-hash field
+`registry.EmitBeforeRecord(ctx, event)` calls it. Use for:
+- Enrichment: add computed metadata fields
+- Filtering: return `plugin.ErrSkipEvent`, and `EmitBeforeRecord` returns it so you can skip the `Record` call
+- Transformation: modify any non-identity, non-hash field
 
 ### `AfterRecord`
 
@@ -51,17 +53,17 @@ func (p *MyPlugin) OnAfterRecord(ctx context.Context, event *audit.Event) error 
 }
 ```
 
-Fires **after** `store.Append` succeeds. Use for notifications, alerting, forwarding, metrics counters.
+`registry.EmitAfterRecord(ctx, event)` calls it, and checks the event against the registry's alert rules. Use for notifications, alerting, forwarding, metrics counters.
 
 ### `SinkProvider`
 
 ```go
 func (p *MySinkPlugin) Sink() sink.Sink {
-    return sink.NewS3(client, "audit-bucket", "events/")
+    return sink.NewS3Sink(s3Writer, "audit-bucket", "events/")
 }
 ```
 
-Provides a custom `sink.Sink` that is added to Chronicle's fan-out.
+`registry.Sinks()` returns the sinks these plugins provide. Nothing in Chronicle writes to them.
 
 ### `AlertHandler`
 
@@ -72,7 +74,7 @@ func (p *MyPlugin) OnAlert(ctx context.Context, event *audit.Event, rule *plugin
 }
 ```
 
-Fires when a recorded event matches an alert rule set on the registry.
+`EmitAfterRecord` calls it when the event matches an alert rule set on the registry.
 
 ### `Exporter`
 
@@ -81,7 +83,7 @@ func (p *MyPlugin) Format() string { return "ndjson" }
 func (p *MyPlugin) Export(ctx context.Context, data any, w io.Writer) error { ... }
 ```
 
-Provides a custom export format for compliance reports.
+Meant to provide a custom export format for compliance reports. The compliance engine doesn't consult the registry, so it isn't used yet.
 
 ### `ComplianceReporter`
 
@@ -89,24 +91,24 @@ Provides a custom export format for compliance reports.
 func (p *MyPlugin) ReportType() string { return "pci-dss" }
 ```
 
-Provides a custom compliance report type.
+Meant to provide a custom compliance report type. Not used yet, for the same reason.
 
 ## Hook interface summary
 
 | Interface | Method | When |
 |-----------|--------|------|
-| `OnInit` | `OnInit(ctx)` | Chronicle starts |
-| `OnShutdown` | `OnShutdown(ctx)` | Chronicle stops |
-| `BeforeRecord` | `OnBeforeRecord(ctx, event)` | Before `store.Append` |
-| `AfterRecord` | `OnAfterRecord(ctx, event)` | After `store.Append` succeeds |
-| `SinkProvider` | `Sink()` | Once at registration |
-| `AlertHandler` | `OnAlert(ctx, event, rule)` | When an alert rule matches |
-| `Exporter` | `Format() / Export(...)` | On report export |
-| `ComplianceReporter` | `ReportType()` | On compliance report generation |
+| `OnInit` | `OnInit(ctx)` | `registry.EmitInit` |
+| `OnShutdown` | `OnShutdown(ctx)` | `registry.EmitShutdown` |
+| `BeforeRecord` | `OnBeforeRecord(ctx, event)` | `registry.EmitBeforeRecord` |
+| `AfterRecord` | `OnAfterRecord(ctx, event)` | `registry.EmitAfterRecord` |
+| `SinkProvider` | `Sink()` | Once at registration; listed by `registry.Sinks()` |
+| `AlertHandler` | `OnAlert(ctx, event, rule)` | `registry.EmitAfterRecord`, when an alert rule matches |
+| `Exporter` | `Format() / Export(...)` | Nothing calls it yet |
+| `ComplianceReporter` | `ReportType()` | Nothing calls it yet |
 
 ## ErrSkipEvent
 
-Returning `plugin.ErrSkipEvent` from `OnBeforeRecord` aborts the record pipeline for that event. No error is propagated to the caller — the event is silently dropped.
+Returning `plugin.ErrSkipEvent` from `OnBeforeRecord` makes `registry.EmitBeforeRecord` return `ErrSkipEvent`. Your code then skips the `Record` call; Chronicle doesn't drop anything on its own.
 
 ```go
 func (p *MyPlugin) OnBeforeRecord(ctx context.Context, event *audit.Event) error {
@@ -132,7 +134,27 @@ registry.SetAlertRules([]plugin.AlertRule{
 })
 ```
 
-The registry inspects each plugin at `Register` time to determine which interfaces it implements. At event time, only the registered interface paths are called — there is no runtime `interface{}` type assertion per event.
+The registry inspects each plugin at `Register` time to determine which interfaces it implements, so emitting a hook doesn't type-assert every plugin again.
+
+## Driving the registry yourself
+
+Since `Record` doesn't call the registry, wrap it:
+
+```go
+func record(ctx context.Context, c *chronicle.Chronicle, registry *plugin.Registry, event *audit.Event) error {
+    if err := registry.EmitBeforeRecord(ctx, event); err != nil {
+        if errors.Is(err, plugin.ErrSkipEvent) {
+            return nil // a plugin filtered it out
+        }
+        return err
+    }
+    if err := c.Record(ctx, event); err != nil {
+        return err
+    }
+    registry.EmitAfterRecord(ctx, event)
+    return nil
+}
+```
 
 ## Full example
 
@@ -152,6 +174,6 @@ func (p *EnrichmentPlugin) OnAfterRecord(ctx context.Context, event *audit.Event
     return nil
 }
 
-registry := plugin.NewRegistry(slog.Default())
+registry := plugin.NewRegistry(logger) // a github.com/xraph/go-utils/log Logger
 registry.Register(&EnrichmentPlugin{})
 ```

@@ -7,7 +7,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## chronicle (root)
 
-**Import:** `github.com/xraph/chronicle`
+Import: `github.com/xraph/chronicle`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -25,10 +25,10 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 | `DefaultConfig()` | func | Returns sensible defaults |
 | `Option` | type | Functional option type |
 | `WithStore(s)` | func | Set the backing `chronicle.Storer` (use `store.NewAdapter(backend)`) |
-| `WithLogger(l)` | func | Set `*slog.Logger` |
-| `WithBatchSize(n)` | func | Max events per batch |
-| `WithFlushInterval(d)` | func | Max time between flushes |
-| `WithCryptoErasure(b)` | func | Enable GDPR AES-256-GCM encryption |
+| `WithLogger(l)` | func | Set a `github.com/xraph/go-utils/log` logger |
+| `WithBatchSize(n)`, `WithFlushInterval(d)` | func | Stored, no effect: `Record` is synchronous |
+| `WithCryptoErasure(b)`, `WithSealer(s)` | func | Enable GDPR AES-256-GCM encryption (needs a sealer) |
+| `WithDigestScheme(s)`, `WithKeyProvider(p)`, `WithCheckpointSigner(s)` | func | Tamper-evidence options |
 | `Emitter` | interface | Minimal interface for DI injection: `Info/Warning/Critical/Record/Query` |
 | `Storer` | interface | Minimal store interface (avoids import cycle with `store` package) |
 | `StreamInfo` | struct | Stream snapshot used by the record pipeline |
@@ -37,7 +37,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## audit
 
-**Import:** `github.com/xraph/chronicle/audit`
+Import: `github.com/xraph/chronicle/audit`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -54,7 +54,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## stream
 
-**Import:** `github.com/xraph/chronicle/stream`
+Import: `github.com/xraph/chronicle/stream`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -64,7 +64,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## hash
 
-**Import:** `github.com/xraph/chronicle/hash`
+Import: `github.com/xraph/chronicle/hash`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -72,7 +72,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## verify
 
-**Import:** `github.com/xraph/chronicle/verify`
+Import: `github.com/xraph/chronicle/verify`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -83,7 +83,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## store
 
-**Import:** `github.com/xraph/chronicle/store`
+Import: `github.com/xraph/chronicle/store`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -92,7 +92,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## crypto
 
-**Import:** `github.com/xraph/chronicle/crypto`
+Import: `github.com/xraph/chronicle/crypto`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -108,7 +108,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## erasure
 
-**Import:** `github.com/xraph/chronicle/erasure`
+Import: `github.com/xraph/chronicle/erasure`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -121,7 +121,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## compliance
 
-**Import:** `github.com/xraph/chronicle/compliance`
+Import: `github.com/xraph/chronicle/compliance`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -132,12 +132,12 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 | `Stats` | struct | TotalEvents, CriticalEvents, FailedEvents, DeniedEvents |
 | `DateRange` | struct | From, To time range |
 | `SOC2Input`, `HIPAAInput`, `EUAIActInput`, `CustomInput` | struct | Report inputs |
-| `FormatJSON`, `FormatCSV`, `FormatMarkdown`, `FormatHTML`, `FormatPDF` | const | Export format constants |
+| `FormatJSON`, `FormatCSV`, `FormatMarkdown`, `FormatHTML`, `FormatPDF` | const | Export format constants. `Export` rejects `FormatPDF` |
 | `ReportStore` | interface | SaveReport, GetReport, ListReports, DeleteReport |
 
 ## retention
 
-**Import:** `github.com/xraph/chronicle/retention`
+Import: `github.com/xraph/chronicle/retention`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -154,7 +154,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## sink
 
-**Import:** `github.com/xraph/chronicle/sink`
+Import: `github.com/xraph/chronicle/sink`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -166,7 +166,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## plugin
 
-**Import:** `github.com/xraph/chronicle/plugin`
+Import: `github.com/xraph/chronicle/plugin`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -178,23 +178,24 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 | `AlertHandler` | interface | `OnAlert(ctx, event, rule) error` |
 | `Exporter` | interface | `Format() / Export(...)` |
 | `ComplianceReporter` | interface | `ReportType() string` |
-| `Registry` | struct | Discovery-based plugin dispatcher |
+| `Registry` | struct | Plugin dispatcher you call yourself; `Record` doesn't use it |
 | `NewRegistry(logger)` | func | Constructor |
 | `AlertRule` | struct | Name, Severity, Category, Outcome for alert matching |
-| `ErrSkipEvent` | error | Return from BeforeRecord to silently drop the event |
+| `ErrSkipEvent` | error | Return from BeforeRecord; `EmitBeforeRecord` returns it so you can skip the event |
 
 ## batcher
 
-**Import:** `github.com/xraph/chronicle/batcher`
+Import: `github.com/xraph/chronicle/batcher`
 
 | Export | Type | Purpose |
 |--------|------|---------|
-| `Batcher` | struct | Accumulates events and flushes in batches |
-| `New(store, size, interval)` | func | Constructor |
+| `Batcher` | struct | Accumulates events and hands them to your flush function; `chronicle.New` doesn't use it |
+| `New(batchSize, flushInterval, flushFn, logger)` | func | Constructor |
+| `FlushFunc` | type | `func(ctx, events []*audit.Event) error` |
 
 ## scope
 
-**Import:** `github.com/xraph/chronicle/scope`
+Import: `github.com/xraph/chronicle/scope`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -213,7 +214,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## id
 
-**Import:** `github.com/xraph/chronicle/id`
+Import: `github.com/xraph/chronicle/id`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -228,7 +229,7 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 
 ## handler
 
-**Import:** `github.com/xraph/chronicle/handler`
+Import: `github.com/xraph/chronicle/handler`
 
 | Export | Type | Purpose |
 |--------|------|---------|
@@ -236,30 +237,34 @@ This is a reference map of every package in the `github.com/xraph/chronicle` mod
 | `New(deps, router)` | func | Constructor |
 | `Dependencies` | struct | AuditStore, VerifyStore, ErasureStore, RetentionStore, ReportStore, Compliance, Retention, Logger |
 | `RegisterRoutes(router)` | method | Mount all routes |
-| `Handler()` | method | Returns standalone `http.Handler` |
+| `Handler()` | method | Returns the routes as an `http.Handler` on a router of its own |
+| `RegisterRoutes(router)` | method | Registers the routes on a Forge router |
 
 ## extension
 
-**Import:** `github.com/xraph/chronicle/extension`
+Import: `github.com/xraph/chronicle/extension`
 
 | Export | Type | Purpose |
 |--------|------|---------|
 | `Extension` | struct | Forge extension wrapping the full Chronicle stack |
 | `New(opts...)` | func | Constructor |
 | `Option` | type | Functional option type |
-| `WithStore(s)`, `WithBatchSize(n)`, `WithFlushInterval(d)`, `WithCryptoErasure(b)`, `WithRetentionInterval(d)`, `WithArchiveSink(s)`, `WithLogger(l)`, `WithDisableRoutes(b)`, `WithDisableMigrate(b)` | func | Option constructors |
+| `WithStore(s)`, `WithAuth(provider, read, write, admin)`, `WithUnauthenticatedAPI()`, `WithCryptoErasure(b)`, `WithKeyStore(ks)`, `WithRetentionInterval(d)`, `WithArchiveSink(s)`, `WithDigestScheme(s)`, `WithKeyProvider(p)`, `WithCheckpoints(cfg)`, `WithBasePath(p)`, `WithDisableRoutes()`, `WithDisableMigrate()`, `WithGroveDatabase(n)`, `WithGroveKV(n)`, `WithConfig(c)`, `WithRequireConfig(b)`, `WithBatchSize(n)`, `WithFlushInterval(d)` | func | Option constructors (`WithBatchSize` and `WithFlushInterval` have no effect) |
 | `Chronicle()` | method | Returns `*chronicle.Chronicle` |
 | `Emitter()` | method | Returns `chronicle.Emitter` |
 | `ComplianceEngine()` | method | Returns `*compliance.Engine` |
 | `RetentionEnforcer()` | method | Returns `*retention.Enforcer` |
 | `API()` | method | Returns `*handler.API` |
-| `Handler()` | method | Returns standalone `http.Handler` |
+| `Handler()` | method | Returns the routes as an `http.Handler` on a router of its own |
+| `RegisterRoutes(router)` | method | Registers the routes on a Forge router |
 
 ## Store backends
 
 | Package | Driver |
 |---------|--------|
 | `store/memory` | In-memory (zero-dependency, for tests) |
-| `store/postgres` | PostgreSQL via pgx/v5 |
-| `store/grovestore` | PostgreSQL / MySQL / SQLite via Grove ORM |
-| `store/sqlite` | SQLite via `modernc.org/sqlite` (pure Go, no CGO) |
+| `store/postgres` | PostgreSQL on a `*grove.DB` (Grove's pgdriver) |
+| `store/sqlite` | SQLite on a `*grove.DB` (Grove's sqlitedriver) |
+| `store/mongo` | MongoDB on a `*grove.DB` (Grove's mongodriver) |
+| `store/redis` | Redis on a Grove `*kv.Store` (no checkpoints) |
+| `store/sealedstore` | Wraps any store so reads come back decrypted under crypto-erasure |

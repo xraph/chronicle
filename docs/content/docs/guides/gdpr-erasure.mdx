@@ -17,20 +17,30 @@ This guide walks through a complete GDPR Article 17 (right to erasure) implement
 ## Step 1: Enable crypto-erasure
 
 ```go
+import "github.com/xraph/chronicle/crypto"
+
+keyStore := crypto.NewInMemoryKeyStore() // tests only: losing it erases everyone
+
 c, err := chronicle.New(
     chronicle.WithStore(adapter),
     chronicle.WithCryptoErasure(true),
+    chronicle.WithSealer(crypto.NewSealer(keyStore)),
 )
 ```
+
+Crypto-erasure needs a sealer. `WithCryptoErasure(true)` without `WithSealer` makes `New` fail with `ErrCryptoErasureUnavailable`, rather than accept a flag nothing would honour. Use a durable `crypto.KeyStore` in production; the in-memory one loses every key on restart.
 
 Or via the extension:
 
 ```go
-ext := extension.New(
-    extension.WithStore(pgStore),
-    extension.WithCryptoErasure(true),
+ext := chronicleext.New(
+    chronicleext.WithStore(pgStore),
+    chronicleext.WithCryptoErasure(true),
+    chronicleext.WithKeyStore(keyStore), // required, or Register fails with ErrKeyStoreRequired
 )
 ```
+
+The extension builds the sealer from the key store and wraps the store with `sealedstore`, so reads come back decrypted.
 
 ## Step 2: Record events with a SubjectID
 
@@ -75,7 +85,7 @@ Content-Type: application/json
 
 {
   "subject_id": "alice",
-  "reason": "GDPR Article 17 — right to erasure",
+  "reason": "GDPR Article 17: right to erasure",
   "requested_by": "dpo@company.com"
 }
 ```
@@ -160,8 +170,8 @@ type KeyStore interface {
 
 The `keyID` your store receives is opaque. Chronicle builds it with `crypto.ScopedKeyID(appID, tenantID, subjectID)`, and events sealed before keys were scoped still use the bare subject ID. Store and compare it byte for byte. If you map it onto Vault paths or KMS aliases, hash or escape it first, because it contains `|` and `:` and whatever your IDs contain. Upgrading from subject-keyed seals doesn't need any keys moved; see [Erasure](/docs/subsystems/erasure#upgrading-from-subject-keyed-seals) for what happens to keys that more than one tenant shares.
 
-The key store is separate from the Chronicle store — Chronicle does not manage it. Provision it yourself and pass it to `erasure.NewService`.
+The key store is separate from the Chronicle store: Chronicle does not manage it. Provision it yourself and pass it to `erasure.NewService`.
 
 ## Erasure record retention
 
-Erasure records (`erasure.Erasure`) are **not** automatically purged by retention policies — they are compliance records. Store them for as long as your compliance framework requires (typically at least 7 years).
+Erasure records (`erasure.Erasure`) are **not** automatically purged by retention policies: they are compliance records. Store them for as long as your compliance framework requires (typically at least 7 years).

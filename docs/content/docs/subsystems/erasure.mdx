@@ -8,20 +8,30 @@ Chronicle implements GDPR Article 17 (right to erasure) through **crypto-erasure
 ## Enable crypto-erasure
 
 ```go
+import "github.com/xraph/chronicle/crypto"
+
+keyStore := crypto.NewInMemoryKeyStore() // tests only: losing it erases everyone
+
 c, err := chronicle.New(
     chronicle.WithStore(adapter),
     chronicle.WithCryptoErasure(true),
+    chronicle.WithSealer(crypto.NewSealer(keyStore)),
 )
 ```
+
+Crypto-erasure needs a sealer. `WithCryptoErasure(true)` without `WithSealer` makes `New` fail with `ErrCryptoErasureUnavailable`, rather than accept a flag nothing would honour. Use a durable `crypto.KeyStore` in production; the in-memory one loses every key on restart.
 
 Or via the extension:
 
 ```go
-ext := extension.New(
-    extension.WithStore(s),
-    extension.WithCryptoErasure(true),
+ext := chronicleext.New(
+    chronicleext.WithStore(s),
+    chronicleext.WithCryptoErasure(true),
+    chronicleext.WithKeyStore(keyStore), // required, or Register fails with ErrKeyStoreRequired
 )
 ```
+
+The extension builds the sealer from the key store and wraps the store with `sealedstore`, so reads come back decrypted.
 
 ## Record events with a subject ID
 

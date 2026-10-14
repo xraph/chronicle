@@ -40,7 +40,7 @@ All three take the same positional arguments: **action** (verb), **resource** (n
 | `.Outcome(s)` | `"success"`, `"failure"`, or `"denied"` |
 | `.Reason(s)` | Human-readable reason string |
 
-The `TenantID` and `AppID` override methods are useful when recording events on behalf of a different scope than the one stored in the context — for example, in an admin or background job context.
+The `TenantID` and `AppID` override methods are useful when recording events on behalf of a different scope than the one stored in the context: for example, in an admin or background job context.
 
 ### Terminal methods
 
@@ -53,25 +53,28 @@ The `TenantID` and `AppID` override methods are useful when recording events on 
 
 Chronicle rejects events missing any of these three fields:
 
-- **Action** — the positional first argument to `c.Info` / `c.Warning` / `c.Critical`
-- **Resource** — the positional second argument
-- **Category** — set via `.Category(s)`
+- Action: the positional first argument to `c.Info` / `c.Warning` / `c.Critical`
+- Resource: the positional second argument
+- Category: set via `.Category(s)`
 
 `AppID` is also required and is extracted from the context automatically.
 
 ## Record pipeline
 
-When `Record()` is called, Chronicle executes these 7 steps:
+When `Record()` is called, Chronicle runs these steps synchronously, in the calling goroutine, and returns only once the event is stored:
 
-1. **Apply scope** — `scope.ApplyToEvent(ctx, event)` stamps AppID, TenantID, UserID, IP.
-2. **Assign identity** — assigns a `audit_` TypeID and the current timestamp.
-3. **Validate** — returns an error if Action, Resource, Category, or AppID are missing.
-4. **Resolve stream** — looks up (or creates) the stream for the app+tenant scope.
-5. **Compute hash** — `SHA256(prevHash|timestamp|action|resource|category|resourceID|outcome|severity|metadata_json)`.
-6. **Store.Append** — persists the event via the `chronicle.Storer` interface.
-7. **Update stream head** — advances HeadHash and HeadSeq on the stream.
+1. Apply scope: `scope.ApplyToEvent(ctx, event)` stamps AppID, TenantID, UserID and IP.
+2. Assign identity: an `audit_` TypeID and the current timestamp.
+3. Validate: returns an error if Action, Resource, Category or AppID is missing.
+4. Seal: with crypto-erasure on and a `SubjectID` set, the subject's `Metadata`, `Reason` and `IP` are encrypted, so the hash covers the stored bytes.
+5. Resolve stream: looks up (or creates) the stream for the app and tenant.
+6. Compute hash: the digest under the stream's scheme (plain SHA-256 `chronicle/v4` by default, or HMAC `chronicle/v5`) over the previous hash and the event's length-prefixed fields.
+7. Store: persists the event through the `chronicle.Storer` interface.
+8. Update stream head: advances HeadHash and HeadSeq on the stream.
 
-Plugin `BeforeRecord` hooks fire between steps 3 and 4. Plugin `AfterRecord` hooks fire after step 7.
+There's no batching: each event needs the previous one's hash, so `WithBatchSize` and `WithFlushInterval` don't change how events are written.
+
+Plugins and sinks aren't part of this pipeline. `Record` never calls a `plugin.Registry`, so `BeforeRecord` and `AfterRecord` hooks don't fire, and it never writes to a `sink.Sink`. Sinks are used by retention, to archive events before a purge. See [Plugins](/docs/subsystems/plugins) and [Sinks](/docs/subsystems/sinks).
 
 ## Direct record
 

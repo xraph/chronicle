@@ -18,7 +18,11 @@ import (
 ## Constructor
 
 ```go
-kvStore, err := kv.Open(redisdriver.Open("redis://localhost:6379/0"))
+rdb := redisdriver.New()
+if err := rdb.Open(ctx, "redis://localhost:6379/0"); err != nil {
+    log.Fatal(err)
+}
+kvStore, err := kv.Open(rdb)
 if err != nil {
     log.Fatal(err)
 }
@@ -82,7 +86,11 @@ import (
 
 ctx := context.Background()
 
-kvStore, err := kv.Open(redisdriver.Open("redis://localhost:6379/0"))
+rdb := redisdriver.New()
+if err := rdb.Open(ctx, "redis://localhost:6379/0"); err != nil {
+    log.Fatal(err)
+}
+kvStore, err := kv.Open(rdb)
 if err != nil {
     log.Fatal(err)
 }
@@ -100,10 +108,13 @@ c, err := chronicle.New(chronicle.WithStore(adapter))
 ## With the Forge extension
 
 ```go
-import "github.com/xraph/chronicle/extension"
+import chronicleext "github.com/xraph/chronicle/extension"
 
-ext := extension.New(extension.WithStore(s))
-app.Register(ext)
+ext := chronicleext.New(
+    chronicleext.WithStore(s),
+    chronicleext.WithUnauthenticatedAPI(), // or WithAuth(...); required while routes are on
+)
+app.RegisterExtension(ext)
 ```
 
 ## Interfaces implemented
@@ -125,7 +136,7 @@ app.Register(ext)
 | Driver | Grove KV + redisdriver |
 | Migrations | One-off scope key rebuild, then a single `EXISTS` per call |
 | Ping | `kv.Ping(ctx)` |
-| Close | No-op -- caller owns the `*kv.Store` lifecycle |
+| Close | No-op: caller owns the `*kv.Store` lifecycle |
 
 ## When to use
 

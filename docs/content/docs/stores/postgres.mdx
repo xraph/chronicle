@@ -18,7 +18,11 @@ import (
 ## Constructor
 
 ```go
-db, err := grove.Open(pgdriver.Open(os.Getenv("DATABASE_URL")))
+drv := pgdriver.New()
+if err := drv.Open(ctx, os.Getenv("DATABASE_URL")); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
 if err != nil {
     log.Fatal(err)
 }
@@ -28,7 +32,7 @@ s := postgres.New(db)
 
 ## Migrations
 
-Run schema migrations before using the store. Migrations are idempotent -- safe to run on every startup:
+Run schema migrations before using the store. Migrations are idempotent: safe to run on every startup:
 
 ```go
 if err := s.Migrate(ctx); err != nil {
@@ -53,7 +57,11 @@ import (
 
 ctx := context.Background()
 
-db, err := grove.Open(pgdriver.Open(os.Getenv("DATABASE_URL")))
+drv := pgdriver.New()
+if err := drv.Open(ctx, os.Getenv("DATABASE_URL")); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
 if err != nil {
     log.Fatal(err)
 }
@@ -71,13 +79,14 @@ c, err := chronicle.New(chronicle.WithStore(adapter))
 ## With the Forge extension
 
 ```go
-import "github.com/xraph/chronicle/extension"
+import chronicleext "github.com/xraph/chronicle/extension"
 
-ext := extension.New(
-    extension.WithStore(s),
-    // Migrate runs automatically on Start unless WithDisableMigrate(true)
+ext := chronicleext.New(
+    chronicleext.WithStore(s),
+    chronicleext.WithUnauthenticatedAPI(), // or WithAuth(...); required while routes are on
+    // Migrate runs automatically on Start unless WithDisableMigrate()
 )
-app.Register(ext)
+app.RegisterExtension(ext)
 ```
 
 ## Interfaces implemented
@@ -100,4 +109,4 @@ app.Register(ext)
 | Migrations | grove migrator with embedded SQL |
 | Transactions | Database-level ACID |
 | Ping | `db.Ping(ctx)` |
-| Close | Caller-owned -- call `db.Close()` |
+| Close | Caller-owned: call `db.Close()` |
