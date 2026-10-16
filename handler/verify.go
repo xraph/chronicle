@@ -6,8 +6,6 @@ import (
 
 	"github.com/xraph/forge"
 	log "github.com/xraph/go-utils/log"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/verify"
@@ -47,14 +45,6 @@ func (a *API) verifyChain(ctx forge.Context, req *VerifyChainRequest) (*verify.R
 	if err != nil {
 		return nil, forge.BadRequest("invalid stream_id")
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.verifyChain",
-		trace.WithAttributes(
-			attribute.String("stream_id", req.StreamID),
-			attribute.String("from_seq", fmt.Sprintf("%d", req.FromSeq)),
-			attribute.String("to_seq", fmt.Sprintf("%d", req.ToSeq)),
-		))
-	defer span.End()
 
 	// Security-critical: confirm the caller owns the stream. Without this, any
 	// caller could verify another tenant's chain, learning its event count,

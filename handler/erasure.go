@@ -7,8 +7,6 @@ import (
 
 	"github.com/xraph/forge"
 	log "github.com/xraph/go-utils/log"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/erasure"
@@ -32,10 +30,6 @@ func (a *API) requestErasure(ctx forge.Context, req *RequestErasureRequest) (*er
 	if req.RequestedBy == "" {
 		return nil, forge.BadRequest("requested_by is required")
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.requestErasure",
-		trace.WithAttributes(attribute.String("subject_id", req.SubjectID)))
-	defer span.End()
 
 	info := scope.FromContext(c)
 
@@ -126,9 +120,6 @@ func (a *API) listErasures(ctx forge.Context) error {
 		return err
 	}
 
-	c, span := a.tracer.Start(c, "chronicle.listErasures")
-	defer span.End()
-
 	// Security-critical: erasure records carry subject IDs, reasons and
 	// requesters. Scope is applied by the store, before LIMIT/OFFSET.
 	info := scope.FromContext(c)
@@ -153,9 +144,6 @@ func (a *API) getErasure(ctx forge.Context, _ *GetErasureRequest) (*erasure.Eras
 	if err := requireScope(c); err != nil {
 		return nil, err
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.getErasure")
-	defer span.End()
 
 	erasureID, err := parseErasureID(ctx.Param("id"))
 	if err != nil {

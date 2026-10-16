@@ -8,9 +8,13 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+	gometrics "github.com/xraph/go-utils/metrics"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/telemetry"
 	"github.com/xraph/chronicle/sink"
 )
 
@@ -59,6 +63,8 @@ type Enforcer struct {
 
 	recorder   ChainRecorder
 	unrecorded bool
+
+	metrics *telemetry.RetentionMetrics
 }
 
 // EnforcerOption configures an Enforcer.
@@ -78,6 +84,23 @@ func WithChainRecorder(r ChainRecorder) EnforcerOption {
 // hash-chained, or where the chain is knowingly not verified.
 func WithUnrecordedPurge() EnforcerOption {
 	return func(e *Enforcer) { e.unrecorded = true }
+}
+
+// WithMetrics counts the events every policy archives and purges on m. In a
+// Forge app pass app.Metrics(), and the series land on /_/metrics as
+// forge_chronicle_events_archived_total and forge_chronicle_events_purged_total.
+// The Forge extension does this for you. A nil m records nothing.
+func WithMetrics(m gometrics.Metrics) EnforcerOption {
+	return func(e *Enforcer) { e.metrics = telemetry.NewRetentionMetrics(m) }
+}
+
+// policySentinels name the errors a policy can fail with, for the span
+// status.
+var policySentinels = []telemetry.Sentinel{
+	{Err: ErrNoChainRecorder, Name: "retention.ErrNoChainRecorder"},
+	{Err: ErrPolicyWithoutApp, Name: "retention.ErrPolicyWithoutApp"},
+	{Err: chronicle.ErrRetentionWithheld, Name: "chronicle.ErrRetentionWithheld"},
+	{Err: chronicle.ErrStreamNotFound, Name: "chronicle.ErrStreamNotFound"},
 }
 
 // NewEnforcer creates a retention enforcer.
@@ -194,7 +217,29 @@ func (e *Enforcer) enforce(
 	return result, nil
 }
 
+// enforcePolicy runs one policy as one "enforce retention policy" span, and
+// counts what it archived and purged, including what a policy that failed
+// part-way still managed.
 func (e *Enforcer) enforcePolicy(ctx context.Context, policy *Policy) (*EnforceResult, error) {
+	ctx, span := telemetry.Start(ctx, telemetry.SpanEnforcePolicy,
+		trace.WithAttributes(telemetry.AttrRetentionArchive.Bool(policy.Archive)))
+	defer span.End()
+
+	result, err := e.runPolicy(ctx, span, policy)
+	if result != nil {
+		span.SetAttributes(
+			telemetry.AttrRetentionArchived.Int64(result.Archived),
+			telemetry.AttrRetentionPurged.Int64(result.Purged),
+		)
+		e.metrics.Add(result.Archived, result.Purged)
+	}
+	telemetry.Fail(span, err, policySentinels...)
+	return result, err
+}
+
+// runPolicy is enforcePolicy without its telemetry, apart from the count of
+// expired events it puts on span.
+func (e *Enforcer) runPolicy(ctx context.Context, span trace.Span, policy *Policy) (*EnforceResult, error) {
 	if policy.AppID == "" {
 		return nil, ErrPolicyWithoutApp
 	}
@@ -219,6 +264,7 @@ func (e *Enforcer) enforcePolicy(ctx context.Context, policy *Policy) (*EnforceR
 	events = slices.DeleteFunc(events, func(ev *audit.Event) bool {
 		return ev.Category == audit.CategoryRetention
 	})
+	span.SetAttributes(telemetry.AttrRetentionExpired.Int(len(events)))
 
 	if len(events) == 0 {
 		return result, nil

@@ -6,12 +6,14 @@ import (
 	"io"
 
 	log "github.com/xraph/go-utils/log"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/telemetry"
 	"github.com/xraph/chronicle/verify"
 )
 
@@ -61,6 +63,11 @@ func NewEngine(
 
 // SOC2 generates a SOC2 Type II compliance report.
 func (e *Engine) SOC2(ctx context.Context, input *SOC2Input) (*Report, error) {
+	return e.generate(ctx, "soc2", func(ctx context.Context) (*Report, error) { return e.soc2(ctx, input) })
+}
+
+// soc2 builds and saves the SOC2 report. Its caller holds the span.
+func (e *Engine) soc2(ctx context.Context, input *SOC2Input) (*Report, error) {
 	e.logger.Info("generating SOC2 Type II report",
 		log.String("app_id", input.AppID),
 		log.Any("from", input.Period.From),
@@ -109,6 +116,11 @@ func (e *Engine) SOC2(ctx context.Context, input *SOC2Input) (*Report, error) {
 
 // HIPAA generates a HIPAA audit report.
 func (e *Engine) HIPAA(ctx context.Context, input *HIPAAInput) (*Report, error) {
+	return e.generate(ctx, "hipaa", func(ctx context.Context) (*Report, error) { return e.hipaa(ctx, input) })
+}
+
+// hipaa builds and saves the HIPAA report. Its caller holds the span.
+func (e *Engine) hipaa(ctx context.Context, input *HIPAAInput) (*Report, error) {
 	e.logger.Info("generating HIPAA report",
 		log.String("app_id", input.AppID),
 		log.Any("from", input.Period.From),
@@ -157,6 +169,11 @@ func (e *Engine) HIPAA(ctx context.Context, input *HIPAAInput) (*Report, error) 
 
 // EUAIAct generates an EU AI Act transparency report.
 func (e *Engine) EUAIAct(ctx context.Context, input *EUAIActInput) (*Report, error) {
+	return e.generate(ctx, "eu_ai_act", func(ctx context.Context) (*Report, error) { return e.euAIAct(ctx, input) })
+}
+
+// euAIAct builds and saves the EU AI Act report. Its caller holds the span.
+func (e *Engine) euAIAct(ctx context.Context, input *EUAIActInput) (*Report, error) {
 	e.logger.Info("generating EU AI Act report",
 		log.String("app_id", input.AppID),
 		log.Any("from", input.Period.From),
@@ -205,6 +222,11 @@ func (e *Engine) EUAIAct(ctx context.Context, input *EUAIActInput) (*Report, err
 
 // Custom generates a custom compliance report.
 func (e *Engine) Custom(ctx context.Context, input *CustomInput) (*Report, error) {
+	return e.generate(ctx, "custom", func(ctx context.Context) (*Report, error) { return e.custom(ctx, input) })
+}
+
+// custom builds and saves the custom report. Its caller holds the span.
+func (e *Engine) custom(ctx context.Context, input *CustomInput) (*Report, error) {
 	e.logger.Info("generating custom report",
 		log.String("title", input.Title),
 		log.String("app_id", input.AppID),
@@ -249,6 +271,27 @@ func (e *Engine) Custom(ctx context.Context, input *CustomInput) (*Report, error
 		log.Int64("total_events", stats.TotalEvents),
 	)
 
+	return report, nil
+}
+
+// generate runs one report builder as one "generate compliance report" span,
+// tagged with the report type (soc2, hipaa, eu_ai_act or custom) and, once
+// it is built, the number of events its period covers.
+func (e *Engine) generate(
+	ctx context.Context, reportType string, build func(context.Context) (*Report, error),
+) (*Report, error) {
+	ctx, span := telemetry.Start(ctx, telemetry.SpanGenerateReport,
+		trace.WithAttributes(telemetry.AttrReportType.String(reportType)))
+	defer span.End()
+
+	report, err := build(ctx)
+	if err != nil {
+		telemetry.Fail(span, err)
+		return nil, err
+	}
+	if report.Stats != nil {
+		span.SetAttributes(telemetry.AttrReportEvents.Int64(report.Stats.TotalEvents))
+	}
 	return report, nil
 }
 

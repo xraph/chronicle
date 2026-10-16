@@ -8,6 +8,7 @@ import (
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/crypto"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/telemetry"
 )
 
 // Service performs GDPR crypto-erasure operations.
@@ -87,17 +88,53 @@ func NewService(store Store, keyStore crypto.KeyStore) *Service {
 // unreadable. A legacy key is only ever destroyed when the caller has live
 // legacy events of its own, which keeps a scope that never used the key from
 // destroying it.
+//
+// Each call is one "erase subject" span carrying counts only. The subject ID
+// is personal data and never goes on it, and neither does an error's text:
+// a key store error can quote the key ID, which embeds the subject ID.
 func (s *Service) Erase(ctx context.Context, input *Input, appID, tenantID string) (*Result, error) {
+	ctx, span := telemetry.Start(ctx, telemetry.SpanEraseSubject)
+	defer span.End()
+
+	var prog eraseProgress
+	result, err := s.erase(ctx, input, appID, tenantID, &prog)
+	span.SetAttributes(telemetry.AttrErasureKeysDestroyed.Int(prog.keysDestroyed))
+	if err != nil {
+		span.SetAttributes(telemetry.AttrErasureFailedStep.String(prog.step))
+		telemetry.Fail(span, err)
+		return nil, err
+	}
+	span.SetAttributes(
+		telemetry.AttrErasureEventsAffected.Int64(result.EventsAffected),
+		telemetry.AttrErasureLegacyRetained.Bool(result.LegacyKeyRetained),
+	)
+	return result, nil
+}
+
+// eraseProgress is how far an erasure got, for its span. step names the step
+// running (count, record, mark, key_usage, destroy_keys, complete), which is
+// the one that failed when erase returns an error: a pending record means
+// something different depending on it. keysDestroyed counts the keys already
+// gone, failure or not.
+type eraseProgress struct {
+	step          string
+	keysDestroyed int
+}
+
+// erase is Erase without its span, reporting its progress in prog.
+func (s *Service) erase(ctx context.Context, input *Input, appID, tenantID string, prog *eraseProgress) (*Result, error) {
 	scope := Scope{AppID: appID, TenantID: tenantID}
 	subject := SubjectQuery{Scope: scope, SubjectID: input.SubjectID}
 
 	// 1. Count events for subject.
+	prog.step = "count"
 	count, err := s.store.CountBySubject(ctx, subject)
 	if err != nil {
 		return nil, fmt.Errorf("count subject events: %w", err)
 	}
 
 	// 2. Record the erasure before anything irreversible happens.
+	prog.step = "record"
 	erasureID := id.NewErasureID()
 	rec := &Erasure{
 		Entity:         chronicle.NewEntity(),
@@ -115,6 +152,7 @@ func (s *Service) Erase(ctx context.Context, input *Input, appID, tenantID strin
 	}
 
 	// 3. Mark events as erased.
+	prog.step = "mark"
 	affected, err := s.store.MarkErased(ctx, subject, erasureID)
 	if err != nil {
 		return nil, fmt.Errorf("erasure %s: mark events: %w", erasureID, err)
@@ -123,23 +161,28 @@ func (s *Service) Erase(ctx context.Context, input *Input, appID, tenantID strin
 	// 4. Destroy the keys this scope's events were sealed under. Every key is
 	// attempted even after a failure: the events are already marked, so each
 	// key that goes is one fewer for the retry.
+	prog.step = "key_usage"
 	usage, err := s.store.SubjectKeyUsage(ctx, input.SubjectID)
 	if err != nil {
 		return nil, fmt.Errorf("erasure %s: read key usage: %w", erasureID, err)
 	}
 	plan := planKeyDestruction(scope, input.SubjectID, usage)
 
+	prog.step = "destroy_keys"
 	var delErrs []error
 	for _, keyID := range plan.destroy {
 		if delErr := s.keyStore.Delete(keyID); delErr != nil {
 			delErrs = append(delErrs, delErr)
+			continue
 		}
+		prog.keysDestroyed++
 	}
 	if err = errors.Join(delErrs...); err != nil {
 		return nil, fmt.Errorf("erasure %s: destroy keys: %w", erasureID, err)
 	}
 
 	// 5. Complete the record.
+	prog.step = "complete"
 	outcome := Outcome{
 		EventsAffected:    affected,
 		KeyDestroyed:      !plan.legacyRetained,

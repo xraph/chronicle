@@ -170,7 +170,7 @@ func (p *EnrichmentPlugin) OnBeforeRecord(ctx context.Context, event *audit.Even
 }
 
 func (p *EnrichmentPlugin) OnAfterRecord(ctx context.Context, event *audit.Event) error {
-    metrics.Counter("chronicle.events.recorded", 1, tag("category", event.Category))
+    notify(event) // Chronicle already counts recorded events; see Observability
     return nil
 }
 

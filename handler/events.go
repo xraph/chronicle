@@ -7,8 +7,6 @@ import (
 
 	"github.com/xraph/forge"
 	log "github.com/xraph/go-utils/log"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/id"
@@ -21,10 +19,6 @@ func (a *API) listEvents(ctx forge.Context, req *ListEventsRequest) (*audit.Quer
 	if err := requireScope(c); err != nil {
 		return nil, err
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.listEvents",
-		trace.WithAttributes(attribute.String("category", req.Category)))
-	defer span.End()
 
 	q := &audit.Query{
 		Order: "desc",
@@ -78,9 +72,6 @@ func (a *API) getEvent(ctx forge.Context, _ *GetEventRequest) (*audit.Event, err
 		return nil, err
 	}
 
-	c, span := a.tracer.Start(c, "chronicle.getEvent")
-	defer span.End()
-
 	eventID, err := id.ParseAuditID(ctx.Param("id"))
 	if err != nil {
 		return nil, forge.BadRequest(fmt.Sprintf("invalid event ID: %v", err))
@@ -114,10 +105,6 @@ func (a *API) eventsByUser(ctx forge.Context, req *EventsByUserRequest) (*audit.
 	if userID == "" {
 		return nil, forge.BadRequest("userId is required")
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.eventsByUser",
-		trace.WithAttributes(attribute.String("user_id", userID)))
-	defer span.End()
 
 	// Security-critical: confine the lookup to the caller's scope and bound it.
 	// Without the scope a per-user lookup returns every tenant's events for that
@@ -155,9 +142,6 @@ func (a *API) aggregateEvents(ctx forge.Context, req *audit.AggregateQuery) (*au
 	if err := requireScope(c); err != nil {
 		return nil, err
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.aggregateEvents")
-	defer span.End()
 
 	// Security-critical: enforce scope on the aggregate query.
 	scope.ApplyToAggregateQuery(c, req)

@@ -17,9 +17,6 @@ func (a *API) getStats(ctx forge.Context) error {
 		return err
 	}
 
-	c, span := a.tracer.Start(c, "chronicle.getStats")
-	defer span.End()
-
 	info := scope.FromContext(c)
 
 	// Count total events.

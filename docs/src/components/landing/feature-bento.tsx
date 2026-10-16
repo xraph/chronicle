@@ -145,12 +145,11 @@ ctx = scope.WithUserID(ctx, "user-42")
         <line x1="17.5" y1="15" x2="9" y2="15" />
       </svg>
     ),
-    code: `func (p *MetricsPlugin) OnAfterRecord(
+    code: `func (p *NotifyPlugin) OnAfterRecord(
   ctx context.Context,
   ev *audit.Event,
 ) error {
-  metrics.Inc("audit.event", ev.Severity)
-  return nil
+  return p.slack.Post(ctx, ev.Action)
 }`,
     filename: "plugin.go",
   },
