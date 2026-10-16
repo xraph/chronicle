@@ -167,7 +167,7 @@ func TestStreamCheckpointDue(t *testing.T) {
 	t.Run("a stale checkpoint makes the stream due", func(t *testing.T) {
 		e := &Extension{
 			store: cpDueStore{latest: &checkpoint.Checkpoint{
-				StreamID: st.ID, ToSeq: 50, CreatedAt: time.Now().Add(-2 * time.Hour),
+				StreamID: st.ID, ToSeq: 45, CreatedAt: time.Now().Add(-2 * time.Hour),
 			}},
 			config: Config{Checkpoints: cfg},
 		}
@@ -177,6 +177,37 @@ func TestStreamCheckpointDue(t *testing.T) {
 		}
 		if !due {
 			t.Error("a stream whose last checkpoint is two hours old is not due under a one-hour interval")
+		}
+	})
+
+	t.Run("a stale checkpoint over a quiet stream is not due", func(t *testing.T) {
+		// The interval has passed, but nothing landed since ToSeq, so
+		// CheckpointStream could only say ErrNothingToCheckpoint. Calling it
+		// anyway locked the stream and re-read its checkpoint every tick,
+		// and made an idle tick look like work.
+		e := &Extension{
+			store: cpDueStore{latest: &checkpoint.Checkpoint{
+				StreamID: st.ID, ToSeq: 50, CreatedAt: time.Now().Add(-2 * time.Hour),
+			}},
+			config: Config{Checkpoints: cfg},
+		}
+		due, err := e.streamCheckpointDue(ctx, st)
+		if err != nil {
+			t.Fatalf("streamCheckpointDue: %v", err)
+		}
+		if due {
+			t.Error("a stream with no events past its last checkpoint is due")
+		}
+	})
+
+	t.Run("an empty stream with no checkpoint is not due", func(t *testing.T) {
+		e := &Extension{store: cpDueStore{err: checkpoint.ErrNotFound}, config: Config{Checkpoints: cfg}}
+		due, err := e.streamCheckpointDue(ctx, &stream.Stream{ID: id.NewStreamID(), AppID: "app"})
+		if err != nil {
+			t.Fatalf("streamCheckpointDue: %v", err)
+		}
+		if due {
+			t.Error("a stream with no events is due a checkpoint")
 		}
 	})
 
