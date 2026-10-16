@@ -8,12 +8,15 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+	gometrics "github.com/xraph/go-utils/metrics"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/chronicle/acceptance"
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/telemetry"
 	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/scope"
 	"github.com/xraph/chronicle/verify"
@@ -86,6 +89,12 @@ type Chronicle struct {
 	sealer EventSealer
 	keys   keys.Provider
 	logger log.Logger
+
+	// metrics is the sink from [WithMetrics], and recordMetrics the series
+	// registered on it in New. Both nil when no sink was given, and every
+	// recording call accepts that.
+	metrics       gometrics.Metrics
+	recordMetrics *telemetry.RecordMetrics
 
 	// checkpointSigner is what VerifyChain checks signed checkpoints under.
 	// Nil unless [WithCheckpointSigner] was given, and nil is the whole of
@@ -174,14 +183,56 @@ func New(opts ...Option) (*Chronicle, error) {
 		return nil, fmt.Errorf("chronicle: %w", err)
 	}
 	c.hasher = hasher
+	c.recordMetrics = telemetry.NewRecordMetrics(c.metrics)
 
 	return c, nil
+}
+
+// recordSentinels name the errors Record and RecordOnce can fail with, for
+// the span status. Anything else is named by its Go type.
+var recordSentinels = []telemetry.Sentinel{
+	{Err: ErrNoStore, Name: "chronicle.ErrNoStore"},
+	{Err: ErrInvalidQuery, Name: "chronicle.ErrInvalidQuery"},
+	{Err: ErrSchemeWeakeningRefused, Name: "chronicle.ErrSchemeWeakeningRefused"},
+	{Err: acceptance.ErrUnsupported, Name: "acceptance.ErrUnsupported"},
+	{Err: acceptance.ErrConflict, Name: "acceptance.ErrConflict"},
+	{Err: acceptance.ErrInvalid, Name: "acceptance.ErrInvalid"},
+	{Err: acceptance.ErrHeadConflict, Name: "acceptance.ErrHeadConflict"},
+	{Err: keys.ErrKeyNotFound, Name: "keys.ErrKeyNotFound"},
+	{Err: keys.ErrNoActiveKey, Name: "keys.ErrNoActiveKey"},
+	{Err: keys.ErrKeyRevoked, Name: "keys.ErrKeyRevoked"},
+}
+
+// schemeAttr is the digest scheme this process writes under, as a span
+// attribute.
+func (c *Chronicle) schemeAttr() trace.SpanStartOption {
+	if c.hasher == nil {
+		return trace.WithAttributes()
+	}
+	return trace.WithAttributes(telemetry.AttrHashScheme.String(string(c.hasher.Scheme())))
 }
 
 // Record persists an audit event through the Chronicle pipeline.
 // Pipeline: apply scope → assign ID/timestamp → validate → resolve stream →
 // compute hash chain → store.Append → update stream head
+//
+// Each call is one "record event" span, with the store's own query spans
+// under it, and one observation on the record metrics when [WithMetrics] was
+// given.
 func (c *Chronicle) Record(ctx context.Context, event *audit.Event) error {
+	start := time.Now()
+	ctx, span := telemetry.Start(ctx, telemetry.SpanRecordEvent, c.schemeAttr())
+
+	err := c.record(ctx, span, event)
+
+	telemetry.Fail(span, err, recordSentinels...)
+	span.End()
+	c.recordMetrics.Observe(telemetry.OperationRecord, err, time.Since(start))
+	return err
+}
+
+// record is Record's pipeline, with the span Record started for it.
+func (c *Chronicle) record(ctx context.Context, span trace.Span, event *audit.Event) error {
 	if c.store == nil {
 		return ErrNoStore
 	}
@@ -212,8 +263,13 @@ func (c *Chronicle) Record(ctx context.Context, event *audit.Event) error {
 			return fmt.Errorf("chronicle: seal event: %w", err)
 		}
 	}
+	span.SetAttributes(telemetry.AttrSealed.Bool(event.EncryptionKeyID != ""))
 
-	return c.appendToChain(ctx, event)
+	if err := c.appendToChain(ctx, event); err != nil {
+		return err
+	}
+	span.SetAttributes(telemetry.AttrStreamID.String(event.StreamID.String()))
+	return nil
 }
 
 // appendToChain links an already-validated event into its scope's stream and
