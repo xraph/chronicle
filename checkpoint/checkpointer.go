@@ -9,8 +9,12 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+	gometrics "github.com/xraph/go-utils/metrics"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/telemetry"
+	"github.com/xraph/chronicle/keys"
 )
 
 // ErrNothingToCheckpoint is returned when a stream has gained no events since
@@ -37,26 +41,51 @@ type StreamHead struct {
 // per-tenant write ceiling. A checkpoint reads the head at some instant and
 // signs that; concurrent appends simply land in the next window.
 type Checkpointer struct {
-	store  Store
-	signer Signer
-	logger log.Logger
+	store   Store
+	signer  Signer
+	logger  log.Logger
+	metrics *telemetry.CheckpointMetrics
 
 	locksMu sync.Mutex
 	locks   map[string]*sync.Mutex
+}
+
+// CheckpointerOption configures a Checkpointer.
+type CheckpointerOption func(*Checkpointer)
+
+// WithMetrics counts every CheckpointStream call on m by result (ok,
+// nothing_new, lost_race, error). In a Forge app pass app.Metrics(), and the
+// series lands on /_/metrics as forge_chronicle_checkpoints_attempted_total.
+// The Forge extension does this for you. A nil m records nothing.
+func WithMetrics(m gometrics.Metrics) CheckpointerOption {
+	return func(c *Checkpointer) { c.metrics = telemetry.NewCheckpointMetrics(m) }
 }
 
 // NewCheckpointer creates a Checkpointer. A nil logger is replaced with a no-op.
 //
 // It does not take an EventReader: CheckpointStream never reads an event, so
 // there is nothing here for one to do. See CheckpointStream's doc for why.
-func NewCheckpointer(store Store, signer Signer, logger log.Logger) *Checkpointer {
+func NewCheckpointer(store Store, signer Signer, logger log.Logger, opts ...CheckpointerOption) *Checkpointer {
 	if logger == nil {
 		logger = log.NewNoopLogger()
 	}
-	return &Checkpointer{
+	c := &Checkpointer{
 		store: store, signer: signer, logger: logger,
 		locks: make(map[string]*sync.Mutex),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// checkpointSentinels name the errors CheckpointStream can fail with, for the
+// span status.
+var checkpointSentinels = []telemetry.Sentinel{
+	{Err: ErrUnsupported, Name: "checkpoint.ErrUnsupported"},
+	{Err: keys.ErrKeyNotFound, Name: "keys.ErrKeyNotFound"},
+	{Err: keys.ErrNoActiveKey, Name: "keys.ErrNoActiveKey"},
+	{Err: keys.ErrKeyRevoked, Name: "keys.ErrKeyRevoked"},
 }
 
 // lockStream serialises checkpointing of one stream and returns the unlock.
@@ -100,7 +129,39 @@ func (c *Checkpointer) lockStream(streamID id.ID) func() {
 // existing events read that entire history into memory, serially, per
 // stream, in one goroutine -- and runCheckpointScheduler is what put this on
 // an automatic, per-stream, per-tick path across an entire deployment.
+//
+// Each call is one "take checkpoint" span. A stream with nothing new and a
+// checkpoint another writer took first are ordinary outcomes: the span
+// records them in chronicle.checkpoint.result and keeps an unset status.
 func (c *Checkpointer) CheckpointStream(ctx context.Context, st StreamHead) (*Checkpoint, error) {
+	ctx, span := telemetry.Start(ctx, telemetry.SpanTakeCheckpoint,
+		trace.WithAttributes(telemetry.AttrStreamID.String(st.ID.String())))
+	defer span.End()
+
+	cp, err := c.checkpointStream(ctx, st)
+
+	result := telemetry.ResultOK
+	switch {
+	case err == nil:
+		span.SetAttributes(
+			telemetry.AttrCheckpointEvents.Int64(cp.EventCount),
+			telemetry.AttrCheckpointAlgorithm.String(cp.Algorithm),
+		)
+	case errors.Is(err, ErrNothingToCheckpoint):
+		result = telemetry.ResultNothingNew
+	case errors.Is(err, ErrExists):
+		result = telemetry.ResultLostRace
+	default:
+		result = telemetry.ResultError
+		telemetry.Fail(span, err, checkpointSentinels...)
+	}
+	span.SetAttributes(telemetry.AttrCheckpointResult.String(result))
+	c.metrics.Inc(result)
+	return cp, err
+}
+
+// checkpointStream is CheckpointStream without its telemetry.
+func (c *Checkpointer) checkpointStream(ctx context.Context, st StreamHead) (*Checkpoint, error) {
 	unlock := c.lockStream(st.ID)
 	defer unlock()
 

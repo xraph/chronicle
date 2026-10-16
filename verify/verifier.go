@@ -8,6 +8,7 @@ import (
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/hash"
+	"github.com/xraph/chronicle/internal/telemetry"
 )
 
 // Verifier provides hash chain verification services.
@@ -55,7 +56,34 @@ func NewVerifierWithCheckpoints(store Store, chain *hash.Chain, cps checkpoint.S
 
 // VerifyChain verifies the integrity of a hash chain for a stream within a sequence range.
 // It checks that each event's hash correctly links to the previous event's hash.
+//
+// Each call is one "verify chain" span carrying the verdict and its counts.
+// A chain that fails verification is a finding, not an error, so the span
+// only takes an error status when verification itself could not run.
 func (v *Verifier) VerifyChain(ctx context.Context, input *Input) (*Report, error) {
+	ctx, span := telemetry.Start(ctx, telemetry.SpanVerifyChain)
+	defer span.End()
+	if !input.StreamID.IsNil() {
+		span.SetAttributes(telemetry.AttrStreamID.String(input.StreamID.String()))
+	}
+
+	report, err := v.verifyChain(ctx, input)
+	if err != nil {
+		telemetry.Fail(span, err)
+		return nil, err
+	}
+	span.SetAttributes(
+		telemetry.AttrVerifyValid.Bool(report.Valid),
+		telemetry.AttrVerifyVerified.Int64(report.Verified),
+		telemetry.AttrVerifyGaps.Int(len(report.Gaps)),
+		telemetry.AttrVerifyTampered.Int(len(report.Tampered)),
+		telemetry.AttrVerifyPartial.Bool(report.Partial),
+	)
+	return report, nil
+}
+
+// verifyChain is VerifyChain without its span.
+func (v *Verifier) verifyChain(ctx context.Context, input *Input) (*Report, error) {
 	report := &Report{
 		Valid: true,
 	}
