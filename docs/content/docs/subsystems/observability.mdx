@@ -9,7 +9,7 @@ In a Forge app there's nothing to set up. `forge.New` installs the tracer provid
 curl -s localhost:8080/_/metrics | grep forge_chronicle_
 ```
 
-Every span comes from the tracer `github.com/xraph/chronicle`. Database calls need nothing from Chronicle: Grove records a `db.client` span and the `db_client_operation_duration_seconds` histogram for each query, and those spans nest under the Chronicle span that made the query. Forge traces each admin API route with its own server span, and the Chronicle spans for that request sit under it.
+Every span comes from the tracer `github.com/xraph/chronicle`. Database calls need nothing from Chronicle: Grove times every query on the `db_client_operation_duration_seconds` histogram, and records a `db.client` span for it whenever the query runs under a span. Queries a Chronicle operation makes nest under that operation's span. The checkpoint scheduler's scan, which lists streams and reads their latest checkpoints before a tick knows whether it has any work, runs under no span, so it's timed but never traced. Forge traces each admin API route with its own server span, and the Chronicle spans for that request sit under it.
 
 ## Using Chronicle without Forge
 
@@ -58,7 +58,9 @@ The enum attributes take these values:
 
 `chronicle.sealed` is true when the event's personal payload was encrypted for crypto-erasure before it was hashed. `chronicle.stream.id` is the stream's TypeID (`stream_...`), which names an app and tenant's chain and never a person.
 
-A checkpoint scheduler tick only starts `checkpoint streams` when a stream is due and has gained an event since its last checkpoint, or when the scan itself fails. The scheduler polls every few minutes, and an idle tick produces no trace. A retention run always starts `enforce retention`, once per `retention_interval`.
+A checkpoint scheduler tick only starts `checkpoint streams` when a stream is due and has gained an event since its last checkpoint, or when the scan itself fails. The span is backdated to the start of the tick, so its duration covers the scan even though the scan's queries aren't under it. The scheduler polls every few minutes, and an idle tick produces no trace. A retention run always starts `enforce retention`, once per `retention_interval`, and every query the run makes sits under it.
+
+Neither scheduler keeps the span of the context `Start` was given. Forge calls `Start` inside its `start chronicle` span, and a goroutine that kept it would file its queries into that boot trace for as long as the process runs.
 
 ### Errors
 
