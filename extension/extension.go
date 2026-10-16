@@ -435,6 +435,13 @@ func (e *Extension) Start(ctx context.Context) error {
 		}
 	}
 
+	// The schedulers outlive Start by days, and forge calls Start inside a
+	// "start chronicle" span. WithCancel would keep that span, and grove
+	// starts a db.client span under any valid span context, ended or not, so
+	// every scan query a tick makes before its own root span exists would
+	// land in the long-finished boot trace. Dropping the span here keeps the
+	// cancellation and the values and leaves the ticks no parent.
+	ctx = trace.ContextWithSpanContext(ctx, trace.SpanContext{})
 	ctx, cancel := context.WithCancel(ctx)
 	e.cancel = cancel
 
@@ -731,12 +738,13 @@ func (e *Extension) runCheckpointScheduler(ctx context.Context) {
 // over one failure.
 //
 // A tick that finds work, or fails to find out, is one "checkpoint streams"
-// root span, started with trace.WithNewRoot so it never joins the boot trace
-// Start's ctx carries, and backdated to the start of the tick so its
-// duration covers the scan. An idle tick, which is most of them, starts no
-// span at all: the scheduler polls every few minutes, and a trace per poll
-// would bury the ones that did something. Every tick is timed on the
-// scheduler run histogram either way.
+// root span, started with trace.WithNewRoot and backdated to the start of the
+// tick so its duration covers the scan. An idle tick, which is most of them,
+// starts no span at all: the scheduler polls every few minutes, and a trace
+// per poll would bury the ones that did something. The scan's own queries
+// run before anyone knows whether there is work, under the span-free ctx
+// Start made, so they are never traced; the checkpoints under the root are.
+// Every tick is timed on the scheduler run histogram either way.
 func (e *Extension) checkpointAllStreams(ctx context.Context) {
 	start := time.Now()
 
@@ -861,11 +869,11 @@ func (e *Extension) streamCheckpointDue(ctx context.Context, st *stream.Stream) 
 // asserted, is this stream due?
 //
 //   - Never checkpointed (hasCheckpoint false): due immediately. There is no
-//     "elapsed since last checkpoint" to measure yet, and CheckpointStream
-//     itself returns ErrNothingToCheckpoint cheaply if the stream has no
-//     events at all, so attempting on every poll costs nothing on an empty
-//     stream and covers a new one within one poll period of its first event
-//     rather than waiting out a full EveryInterval.
+//     "elapsed since last checkpoint" to measure yet, and a new stream is
+//     covered within one poll period of its first event rather than waiting
+//     out a full EveryInterval. An empty stream never gets this far:
+//     streamCheckpointDue only asks once HeadSeq is above zero, so a stream
+//     with no events is not attempted at all.
 //   - Otherwise due when either EveryInterval has elapsed since the last
 //     checkpoint's CreatedAt, or the stream has gained at least EveryEvents
 //     sequences since the last checkpoint's ToSeq.
