@@ -21,9 +21,6 @@ func (a *API) listPolicies(ctx forge.Context) error {
 		return err
 	}
 
-	c, span := a.tracer.Start(c, "chronicle.listPolicies")
-	defer span.End()
-
 	// Security-critical: scope is applied by the store, before LIMIT/OFFSET.
 	// Filtering after pagination returned an empty page whenever another
 	// tenant's policies filled the first page.
@@ -59,9 +56,6 @@ func (a *API) savePolicy(ctx forge.Context, req *SavePolicyRequest) (*retention.
 		return nil, forge.BadRequest("invalid duration format")
 	}
 
-	c, span := a.tracer.Start(c, "chronicle.savePolicy")
-	defer span.End()
-
 	info := scope.FromContext(c)
 
 	policy := &retention.Policy{
@@ -96,9 +90,6 @@ func (a *API) deletePolicy(ctx forge.Context, _ *DeletePolicyRequest) (*struct{}
 		return nil, forge.BadRequest(fmt.Sprintf("invalid policy ID: %v", err))
 	}
 
-	c, span := a.tracer.Start(c, "chronicle.deletePolicy")
-	defer span.End()
-
 	// Security-critical: confirm ownership before deleting. Without this any
 	// caller could disable another tenant's retention by guessing an ID.
 	existing, err := a.deps.RetentionStore.GetPolicy(c, policyID)
@@ -127,9 +118,6 @@ func (a *API) enforceRetention(ctx forge.Context) error {
 		return forge.NewHTTPError(http.StatusServiceUnavailable, "retention enforcer not configured")
 	}
 
-	c, span := a.tracer.Start(c, "chronicle.enforceRetention")
-	defer span.End()
-
 	// Security-critical: run only the caller's own policies. Enforce() covers
 	// every app and belongs to the background scheduler, not to a request.
 	result, err := a.deps.Retention.EnforceScope(c, retentionScope(c))
@@ -147,9 +135,6 @@ func (a *API) listArchives(ctx forge.Context) error {
 	if err := requireScope(c); err != nil {
 		return err
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.listArchives")
-	defer span.End()
 
 	opts := retention.ListOpts{
 		Scope:  retentionScope(c),

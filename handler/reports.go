@@ -7,8 +7,6 @@ import (
 
 	"github.com/xraph/forge"
 	log "github.com/xraph/go-utils/log"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/chronicle/compliance"
 	"github.com/xraph/chronicle/scope"
@@ -28,9 +26,6 @@ func (a *API) listReports(ctx forge.Context) error {
 	if err := requireScope(c); err != nil {
 		return err
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.listReports")
-	defer span.End()
 
 	// Security-critical: scope is applied by the store, before LIMIT/OFFSET.
 	// Filtering after pagination returned an empty page whenever another
@@ -63,9 +58,6 @@ func (a *API) generateSOC2(ctx forge.Context, req *compliance.SOC2Input) (*compl
 		return nil, forge.NewHTTPError(http.StatusServiceUnavailable, "compliance engine not configured")
 	}
 
-	c, span := a.tracer.Start(c, "chronicle.generateSOC2")
-	defer span.End()
-
 	// Override scope from context for security.
 	info := scope.FromContext(c)
 	req.AppID = info.AppID
@@ -93,9 +85,6 @@ func (a *API) generateHIPAA(ctx forge.Context, req *compliance.HIPAAInput) (*com
 		return nil, forge.NewHTTPError(http.StatusServiceUnavailable, "compliance engine not configured")
 	}
 
-	c, span := a.tracer.Start(c, "chronicle.generateHIPAA")
-	defer span.End()
-
 	info := scope.FromContext(c)
 	req.AppID = info.AppID
 	if info.TenantID != "" {
@@ -121,9 +110,6 @@ func (a *API) generateEUAIAct(ctx forge.Context, req *compliance.EUAIActInput) (
 	if a.deps.Compliance == nil {
 		return nil, forge.NewHTTPError(http.StatusServiceUnavailable, "compliance engine not configured")
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.generateEUAIAct")
-	defer span.End()
 
 	info := scope.FromContext(c)
 	req.AppID = info.AppID
@@ -151,9 +137,6 @@ func (a *API) generateCustom(ctx forge.Context, req *compliance.CustomInput) (*c
 		return nil, forge.NewHTTPError(http.StatusServiceUnavailable, "compliance engine not configured")
 	}
 
-	c, span := a.tracer.Start(c, "chronicle.generateCustom")
-	defer span.End()
-
 	info := scope.FromContext(c)
 	req.AppID = info.AppID
 	if info.TenantID != "" {
@@ -175,9 +158,6 @@ func (a *API) getReport(ctx forge.Context, _ *GetReportRequest) (*compliance.Rep
 	if err := requireScope(c); err != nil {
 		return nil, err
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.getReport")
-	defer span.End()
 
 	reportID, err := parseReportID(ctx.Param("id"))
 	if err != nil {
@@ -221,13 +201,6 @@ func (a *API) exportReport(ctx forge.Context) error {
 	if !ok {
 		return forge.BadRequest("unsupported export format")
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.exportReport",
-		trace.WithAttributes(
-			attribute.String("report_id", reportID.String()),
-			attribute.String("format", string(format)),
-		))
-	defer span.End()
 
 	report, err := a.deps.ReportStore.GetReport(c, reportID)
 	if err != nil {

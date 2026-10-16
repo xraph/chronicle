@@ -9,8 +9,6 @@ import (
 
 	"github.com/xraph/forge"
 	log "github.com/xraph/go-utils/log"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/scope"
@@ -26,9 +24,6 @@ func (a *API) listCheckpoints(ctx forge.Context) error {
 	if a.deps.CheckpointStore == nil {
 		return forge.NewHTTPError(http.StatusServiceUnavailable, "checkpoints are not configured")
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.listCheckpoints")
-	defer span.End()
 
 	info := scope.FromContext(c)
 	opts := checkpoint.ListOpts{
@@ -108,9 +103,6 @@ func (a *API) getCheckpoint(ctx forge.Context, _ *GetCheckpointRequest) (*checkp
 		return nil, forge.NewHTTPError(http.StatusServiceUnavailable, "checkpoints are not configured")
 	}
 
-	c, span := a.tracer.Start(c, "chronicle.getCheckpoint")
-	defer span.End()
-
 	checkpointID, err := parseCheckpointID(ctx.Param("id"))
 	if err != nil {
 		return nil, forge.BadRequest(fmt.Sprintf("invalid checkpoint ID: %v", err))
@@ -147,10 +139,6 @@ func (a *API) forceCheckpoint(ctx forge.Context, req *ForceCheckpointRequest) (*
 	if err != nil {
 		return nil, forge.BadRequest("invalid stream_id")
 	}
-
-	c, span := a.tracer.Start(c, "chronicle.forceCheckpoint",
-		trace.WithAttributes(attribute.String("stream_id", req.StreamID)))
-	defer span.End()
 
 	// Security-critical: confirm the caller owns the stream before signing a
 	// checkpoint over it. Without this, any caller could force a checkpoint
