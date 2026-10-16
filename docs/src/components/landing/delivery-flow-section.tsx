@@ -384,7 +384,7 @@ export function DeliveryFlowSection() {
               />
               <FeatureBullet
                 title="Plugin Hooks"
-                description="BeforeRecord can enrich or silently drop events. AfterRecord fires post-persist for metrics and tracing. AlertHandler triggers on severity or category rules."
+                description="BeforeRecord can enrich or drop an event and AfterRecord can notify, when you call the registry around Record. Spans and metrics for every record are built in."
                 delay={0.4}
               />
             </div>

@@ -26,6 +26,7 @@ Import: `github.com/xraph/chronicle`
 | `Option` | type | Functional option type |
 | `WithStore(s)` | func | Set the backing `chronicle.Storer` (use `store.NewAdapter(backend)`) |
 | `WithLogger(l)` | func | Set a `github.com/xraph/go-utils/log` logger |
+| `WithMetrics(m)` | func | Count and time `Record` and `RecordOnce` on a go-utils `metrics.Metrics`. See [Observability](/docs/subsystems/observability) |
 | `WithBatchSize(n)`, `WithFlushInterval(d)` | func | Stored, no effect: `Record` is synchronous |
 | `WithCryptoErasure(b)`, `WithSealer(s)` | func | Enable GDPR AES-256-GCM encryption (needs a sealer) |
 | `WithDigestScheme(s)`, `WithKeyProvider(p)`, `WithCheckpointSigner(s)` | func | Tamper-evidence options |
@@ -147,6 +148,7 @@ Import: `github.com/xraph/chronicle/retention`
 | `NewEnforcer(store, archiveSink, logger, opts...)` | func | Constructor |
 | `WithChainRecorder(r)` | func | Record each purge in the hash chain first. Pass your `*chronicle.Chronicle`. |
 | `WithUnrecordedPurge()` | func | Purge without a recorder, leaving gaps verification reports as deletions |
+| `WithMetrics(m)` | func | Count archived and purged events on a go-utils `metrics.Metrics` |
 | `ChainRecorder` | interface | RecordRetention, implemented by `*chronicle.Chronicle` |
 | `ErrNoChainRecorder` | error | Returned when an enforcer with neither option would purge |
 | `EnforceResult` | struct | Archived, Purged, Retained int64 |
