@@ -207,6 +207,8 @@ List Grove first. Chronicle looks up the container's `*grove.DB` during `Registe
 
 The admin API can purge history, so the extension won't start until you decide who may call it. Configure an auth provider, allow unauthenticated access explicitly, or turn the routes off. Requests also need an app scope on the context (Forge's scope, or `scope.WithAppID` from your own middleware), or they get a 401.
 
+You get traces and metrics without wiring anything. Recording, verification, checkpoints, retention runs, reports and erasures each get a span on Forge's tracer provider, with the database spans from Grove nested under them, and the counters and histograms land on `/_/metrics` as `forge_chronicle_*`. No span or label carries a user, a subject or an event's payload. Outside Forge, pass `chronicle.WithMetrics(m)` with any go-utils metrics sink. [Observability](https://www.xraph.com/docs/chronicle/subsystems/observability) lists every span and metric.
+
 ## Configuration
 
 ```yaml
@@ -266,6 +268,7 @@ Read scopes cover listing and verifying. Write scopes cover saving a retention p
 | Compliance work | [Erasure](https://www.xraph.com/docs/chronicle/subsystems/erasure), [retention](https://www.xraph.com/docs/chronicle/subsystems/retention), [compliance reports](https://www.xraph.com/docs/chronicle/subsystems/compliance) |
 | Storage | [PostgreSQL](https://www.xraph.com/docs/chronicle/stores/postgres), [SQLite](https://www.xraph.com/docs/chronicle/stores/sqlite), [MongoDB](https://www.xraph.com/docs/chronicle/stores/mongo), [Redis](https://www.xraph.com/docs/chronicle/stores/redis), [memory](https://www.xraph.com/docs/chronicle/stores/memory), [custom store](https://www.xraph.com/docs/chronicle/guides/custom-store) |
 | Forge | [Forge extension guide](https://www.xraph.com/docs/chronicle/guides/forge-extension), [admin API](https://www.xraph.com/docs/chronicle/subsystems/admin-api), [HTTP API reference](https://www.xraph.com/docs/chronicle/api-reference/http-api) |
+| Running it | [Observability](https://www.xraph.com/docs/chronicle/subsystems/observability): spans, metrics and log lines |
 
 The Go API is on [pkg.go.dev](https://pkg.go.dev/github.com/xraph/chronicle).
 

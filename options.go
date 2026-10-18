@@ -4,6 +4,7 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+	gometrics "github.com/xraph/go-utils/metrics"
 
 	"github.com/xraph/chronicle/checkpoint"
 	"github.com/xraph/chronicle/hash"
@@ -25,6 +26,22 @@ func WithStore(s Storer) Option {
 func WithLogger(l log.Logger) Option {
 	return func(c *Chronicle) error {
 		c.logger = l
+		return nil
+	}
+}
+
+// WithMetrics records Chronicle's metrics on m: a counter and a latency
+// histogram for every Record and RecordOnce call. In a Forge app pass
+// app.Metrics(), and the series land on /_/metrics as
+// forge_chronicle_events_recorded_total and
+// forge_chronicle_record_duration_seconds. The Forge extension does this for
+// you.
+//
+// Spans need no option: Chronicle starts them on the global tracer provider,
+// which forge.New installs. A nil m records nothing, which is the default.
+func WithMetrics(m gometrics.Metrics) Option {
+	return func(c *Chronicle) error {
+		c.metrics = m
 		return nil
 	}
 }

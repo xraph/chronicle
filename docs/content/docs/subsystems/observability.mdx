@@ -1,113 +1,123 @@
 ---
 title: Observability
-description: Logging, AfterRecord plugins for metrics and tracing, and AlertHandler for real-time alerting.
+description: The spans and metrics Chronicle records, where they come from, and what it logs.
 ---
 
-Chronicle does not ship a built-in OpenTelemetry package — observability is composable via the plugin system and structured logging.
+In a Forge app there's nothing to set up. `forge.New` installs the tracer provider, and the extension hands `app.Metrics()` to Chronicle, the retention enforcer and the checkpointer, so spans reach your exporter and the metrics show up on `/_/metrics` as soon as the extension registers:
 
-## Structured logging
+```bash
+curl -s localhost:8080/_/metrics | grep forge_chronicle_
+```
 
-Chronicle uses `log/slog` throughout. Provide your own logger:
+Every span comes from the tracer `github.com/xraph/chronicle`. Database calls need nothing from Chronicle: Grove times every query on the `db_client_operation_duration_seconds` histogram, and records a `db.client` span for it whenever the query runs under a span. Queries a Chronicle operation makes nest under that operation's span. The checkpoint scheduler's scan, which lists streams and reads their latest checkpoints before a tick knows whether it has any work, runs under no span, so it's timed but never traced. Forge traces each admin API route with its own server span, and the Chronicle spans for that request sit under it.
+
+## Using Chronicle without Forge
+
+Spans go to the global OpenTelemetry tracer provider, so install one with `otel.SetTracerProvider` and they arrive. Metrics need a sink. Forge doesn't install a global `MeterProvider`, so Chronicle never records through `otel.Meter`. It takes a [go-utils](https://github.com/xraph/go-utils) `metrics.Metrics` instead, and three components accept one:
 
 ```go
 c, err := chronicle.New(
     chronicle.WithStore(adapter),
-    chronicle.WithLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil))),
+    chronicle.WithMetrics(m), // a github.com/xraph/go-utils/metrics.Metrics
 )
-```
 
-Or via the extension:
-
-```go
-ext := extension.New(
-    extension.WithStore(s),
-    extension.WithLogger(myLogger),
+enforcer := retention.NewEnforcer(s, archive, logger,
+    retention.WithChainRecorder(c),
+    retention.WithMetrics(m),
 )
+
+cp := checkpoint.NewCheckpointer(s, signer, logger, checkpoint.WithMetrics(m))
 ```
 
-Chronicle emits log records for:
+Leave the option out, or pass nil, and that component records no metrics. Spans don't have an off switch of their own. With no provider installed they go to OpenTelemetry's no-op tracer and cost next to nothing.
 
-- `chronicle.record` — every persisted event (level Debug)
-- `chronicle.verify` — verification runs (level Info)
-- `retention enforcement complete` — enforcement results (level Info)
-- `chronicle: migration failed` — schema migration errors (level Error)
-- `retention: enforce policy failed` — per-policy errors (level Error)
+Herald, authsome and the other extensions record through the `chronicle.Emitter` the extension registers. That's the same `*chronicle.Chronicle` that got the extension's metrics, so their events are counted too.
 
-Each log record includes the relevant scope fields (`app_id`, `tenant_id`) when available.
+## Spans
 
-## Metrics via AfterRecord
+Every span is kind `internal`. Most start under whatever span your context already carries. The two scheduler runs are the exception: `Start` hands the extension a context that carries Forge's boot span, so each run starts a new root with `trace.WithNewRoot()` and never joins the boot trace.
 
-Use an `AfterRecord` plugin to emit metrics after every successful event:
+| Span | Started by | Parent | Attributes |
+| --- | --- | --- | --- |
+| `record event` | `Chronicle.Record` (and `EventBuilder.Record`) | your span | `chronicle.hash.scheme`, `chronicle.sealed`, `chronicle.stream.id` |
+| `accept event` | `Chronicle.RecordOnce` | your span | `chronicle.hash.scheme`, `chronicle.stream.id` |
+| `verify chain` | `verify.Verifier.VerifyChain`, which `Chronicle.VerifyChain`, `POST /v1/verify`, the dashboard and compliance reports all use | your span | `chronicle.stream.id`, `chronicle.verify.valid`, `chronicle.verify.events_checked`, `chronicle.verify.gaps`, `chronicle.verify.tampered`, `chronicle.verify.partial` |
+| `take checkpoint` | `checkpoint.Checkpointer.CheckpointStream` | your span, or `checkpoint streams` | `chronicle.stream.id`, `chronicle.checkpoint.result`, `chronicle.checkpoint.events`, `chronicle.checkpoint.algorithm` |
+| `checkpoint streams` | the extension's checkpoint scheduler | root | `chronicle.checkpoint.streams_scanned`, `chronicle.checkpoint.streams_due`, `chronicle.checkpoint.taken` |
+| `enforce retention` | the extension's retention scheduler | root | `chronicle.retention.archived`, `chronicle.retention.purged` |
+| `enforce retention policy` | `retention.Enforcer`, once per policy | your span, or `enforce retention` | `chronicle.retention.archive`, `chronicle.retention.expired`, `chronicle.retention.archived`, `chronicle.retention.purged` |
+| `generate compliance report` | `compliance.Engine`: `SOC2`, `HIPAA`, `EUAIAct`, `Custom` | your span | `chronicle.report.type`, `chronicle.report.events` |
+| `erase subject` | `erasure.Service.Erase` | your span | `chronicle.erasure.events_affected`, `chronicle.erasure.keys_destroyed`, `chronicle.erasure.legacy_key_retained`, `chronicle.erasure.failed_step` |
 
-```go
-type MetricsPlugin struct{}
+The enum attributes take these values:
 
-func (p *MetricsPlugin) Name() string { return "metrics" }
+- `chronicle.hash.scheme`: `chronicle/v4` (plain) or `chronicle/v5` (HMAC).
+- `chronicle.checkpoint.result`: `ok`, `nothing_new`, `lost_race` (another writer took the same checkpoint first) or `error`.
+- `chronicle.report.type`: `soc2`, `hipaa`, `eu_ai_act` or `custom`.
+- `chronicle.erasure.failed_step`, set only when an erasure fails: `count`, `record`, `mark`, `key_usage`, `destroy_keys` or `complete`. A pending erasure record means something different before `destroy_keys` than after it, which is why the step is there.
 
-func (p *MetricsPlugin) OnAfterRecord(ctx context.Context, event *audit.Event) error {
-    otelCounter.Add(ctx, 1,
-        attribute.String("category", event.Category),
-        attribute.String("severity", event.Severity),
-        attribute.String("outcome", event.Outcome),
-    )
-    return nil
-}
+`chronicle.sealed` is true when the event's personal payload was encrypted for crypto-erasure before it was hashed. `chronicle.stream.id` is the stream's TypeID (`stream_...`), which names an app and tenant's chain and never a person.
+
+A checkpoint scheduler tick only starts `checkpoint streams` when a stream is due and has gained an event since its last checkpoint, or when the scan itself fails. The span is backdated to the start of the tick, so its duration covers the scan even though the scan's queries aren't under it. The scheduler polls every few minutes, and an idle tick produces no trace. A retention run always starts `enforce retention`, once per `retention_interval`, and every query the run makes sits under it.
+
+Neither scheduler keeps the span of the context `Start` was given. Forge calls `Start` inside its `start chronicle` span, and a goroutine that kept it would file its queries into that boot trace for as long as the process runs.
+
+### Errors
+
+A span whose operation fails gets an `Error` status and an `exception` event. The status description and the event's only attribute, `exception.type`, both hold the error's class: a sentinel's name such as `chronicle.ErrInvalidQuery` or `retention.ErrNoChainRecorder`, `context.DeadlineExceeded`, or the Go type of the innermost error. The message never goes on the span. Store and key store errors quote what they were given, and a crypto-erasure key ID contains the subject ID.
+
+Some outcomes aren't failures and keep an unset status. A chain that fails verification is a finding, which `chronicle.verify.valid` reports. A stream with nothing new to checkpoint, and a checkpoint another writer took first, show up in `chronicle.checkpoint.result`.
+
+### What never goes on a span
+
+User IDs, subject IDs, IPs, emails, session IDs, user agents, resource IDs, event metadata, reasons, requesters, report authors, event categories and actions, retention policy categories, key IDs, keys, signatures and hashes. The test suite puts an email address in an event's user, subject, resource, session, user agent, metadata, reason and category fields, in the erasure requester and report author, in a retention policy's category and in a key store error, then checks that it appears in no span name, attribute, event or status.
+
+## Metrics
+
+Forge exports every metric with its namespace prefix, so the names below are what you scrape. Outside Forge, your sink receives them without `forge_` (`chronicle_events_recorded_total` and so on). Every series under a name is registered up front with the same label keys, so a counter you haven't hit yet reads 0 and doesn't go missing.
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `forge_chronicle_events_recorded_total` | counter | `operation`: `record`, `record_once`; `result`: `ok`, `error` |
+| `forge_chronicle_record_duration_seconds` | histogram, seconds | `operation`, `result`, as above |
+| `forge_chronicle_events_archived_total` | counter | none |
+| `forge_chronicle_events_purged_total` | counter | none |
+| `forge_chronicle_checkpoints_attempted_total` | counter | `result`: `ok`, `nothing_new`, `lost_race`, `error` |
+| `forge_chronicle_scheduler_run_duration_seconds` | histogram, seconds | `job`: `retention`, `checkpoint`; `result`: `ok`, `error` |
+
+`record_duration_seconds` covers the whole call: the stream lock, the digest and the queries. Its buckets run from 0.5 ms to 5 s (0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5). A `RecordOnce` that recovers an existing receipt counts as `ok`. `scheduler_run_duration_seconds` times every scheduled run, idle checkpoint ticks included, with buckets from 10 ms to 15 minutes (0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300, 900). The archived and purged counters include what a policy removed before it failed part way.
+
+No label ever carries an app, tenant, stream, policy, subject or any other ID, or an error message. Grove already measures each query and Forge each HTTP request, so Chronicle doesn't measure either again.
+
+A few queries to start from:
+
+```text
+# Events that failed to record, per second
+sum by (operation) (rate(forge_chronicle_events_recorded_total{result="error"}[5m]))
+
+# p99 time to record an event
+histogram_quantile(0.99, sum by (le) (rate(forge_chronicle_record_duration_seconds_bucket{operation="record"}[5m])))
+
+# A scheduled run failed in the last day
+increase(forge_chronicle_scheduler_run_duration_seconds_count{result="error"}[1d]) > 0
+
+# Checkpoints failing to sign or store
+increase(forge_chronicle_checkpoints_attempted_total{result="error"}[1h]) > 0
 ```
 
-Register with the plugin registry and pass the registry to `chronicle.New` (or configure it through the extension).
+## Logging
 
-## Tracing via AfterRecord
+Chronicle logs through `github.com/xraph/go-utils/log`. Give the root package a logger with `chronicle.WithLogger(l)`; the extension uses the Forge app's logger. Without one, the root package logs nothing.
 
-Add OpenTelemetry spans for each recorded event:
+The lines worth watching:
 
-```go
-func (p *TracingPlugin) OnAfterRecord(ctx context.Context, event *audit.Event) error {
-    _, span := tracer.Start(ctx, "chronicle.event.recorded")
-    span.SetAttributes(
-        attribute.String("event.id", event.ID.String()),
-        attribute.String("event.action", event.Action),
-        attribute.String("event.category", event.Category),
-    )
-    span.End()
-    return nil
-}
-```
+- `retention enforcement complete` (Info) and `retention enforcement failed` (Error), once per scheduled retention run
+- `retention: policy enforced` (Info) and `retention: enforce policy failed` (Error), once per policy
+- `chronicle: checkpoint taken` (Info), and `checkpoint scheduler: checkpoint failed` (Error)
+- `chronicle: stream digest scheme advanced` (Info), when a stream's scheme pin moves up to HMAC
 
-The `handler` package automatically creates OTel spans for all 21 HTTP endpoints using tracer name `github.com/xraph/chronicle/handler`.
+You can also run retention yourself with `ext.RetentionEnforcer().Enforce(ctx)`. Its policy spans then hang off whatever span your context carries, and the archived and purged counters still move, but `scheduler_run_duration_seconds` only times the extension's own scheduled runs.
 
-## Real-time alerting via AlertHandler
+## Plugin hooks
 
-Use the `AlertHandler` interface for real-time alerting when events match criteria:
-
-```go
-type PagerDutyAlertPlugin struct {
-    client pagerduty.Client
-}
-
-func (p *PagerDutyAlertPlugin) Name() string { return "pagerduty-alerts" }
-
-func (p *PagerDutyAlertPlugin) OnAlert(ctx context.Context, event *audit.Event, rule *plugin.AlertRule) error {
-    return p.client.Trigger(ctx, &pagerduty.Event{
-        Summary:  fmt.Sprintf("Chronicle alert: %s — %s/%s", rule.Name, event.Action, event.Resource),
-        Severity: "critical",
-    })
-}
-
-registry := plugin.NewRegistry(logger)
-registry.Register(&PagerDutyAlertPlugin{client: pd})
-registry.SetAlertRules([]plugin.AlertRule{
-    {Name: "critical-auth", Severity: "critical", Category: "auth"},
-    {Name: "all-denied",    Outcome: "denied"},
-})
-```
-
-## Retention monitoring
-
-The extension logs every enforcement cycle:
-
-```
-INFO chronicle: retention enforcement complete archived=150 purged=150
-ERROR chronicle: retention enforcement failed error="..."
-```
-
-Set `WithRetentionInterval(0)` to disable automatic scheduling and call `enforcer.Enforce(ctx)` manually in your own monitoring loop.
+`Record` doesn't call the plugin registry. An `AfterRecord` plugin or an `AlertHandler` only runs when you call `registry.EmitAfterRecord` yourself around `Record`, as [Plugins](/docs/subsystems/plugins#driving-the-registry-yourself) shows. You don't need one for metrics or tracing, since both are built in.

@@ -21,6 +21,7 @@ import (
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/kv"
 	"github.com/xraph/vessel"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/chronicle"
 	"github.com/xraph/chronicle/checkpoint"
@@ -31,6 +32,7 @@ import (
 	"github.com/xraph/chronicle/handler"
 	"github.com/xraph/chronicle/hash"
 	"github.com/xraph/chronicle/id"
+	"github.com/xraph/chronicle/internal/telemetry"
 	"github.com/xraph/chronicle/keys"
 	"github.com/xraph/chronicle/retention"
 	"github.com/xraph/chronicle/sink"
@@ -113,6 +115,10 @@ type Extension struct {
 	// the store as resolved and before any crypto-erasure wrapping hides its
 	// type. Set in init; see backendNameOf.
 	backendName string
+
+	// schedulerMetrics times the retention and checkpoint runs Start
+	// launches. Registered in init on the app's metrics.
+	schedulerMetrics *telemetry.SchedulerMetrics
 
 	cancel context.CancelFunc
 }
@@ -302,9 +308,12 @@ func (e *Extension) init(fapp forge.App) error {
 	// Create the store adapter for Chronicle.
 	adapter := store.NewAdapter(s)
 
-	// Build Chronicle options.
+	// Build Chronicle options. The app's metrics go to Chronicle itself, so
+	// events herald, authsome and the rest record through the Emitter are
+	// counted too.
 	chronicleOpts := []chronicle.Option{
 		chronicle.WithStore(adapter),
+		chronicle.WithMetrics(e.Metrics()),
 	}
 	if sealer != nil {
 		chronicleOpts = append(chronicleOpts, chronicle.WithSealer(sealer))
@@ -358,7 +367,11 @@ func (e *Extension) init(fapp forge.App) error {
 	// Create retention enforcer. Chronicle records every purge in the chain
 	// before the rows go, so the removed sequences verify as retained rather
 	// than as deletions.
-	e.enforcer = retention.NewEnforcer(s, e.opts.archiveSink, logger, retention.WithChainRecorder(c))
+	e.enforcer = retention.NewEnforcer(s, e.opts.archiveSink, logger,
+		retention.WithChainRecorder(c),
+		retention.WithMetrics(e.Metrics()),
+	)
+	e.schedulerMetrics = telemetry.NewSchedulerMetrics(e.Metrics())
 
 	// Security-critical: decide API access before building the handler. The API
 	// can purge audit history, so an unauthenticated mount has to be a choice the
@@ -422,6 +435,13 @@ func (e *Extension) Start(ctx context.Context) error {
 		}
 	}
 
+	// The schedulers outlive Start by days, and forge calls Start inside a
+	// "start chronicle" span. WithCancel would keep that span, and grove
+	// starts a db.client span under any valid span context, ended or not, so
+	// every scan query a tick makes before its own root span exists would
+	// land in the long-finished boot trace. Dropping the span here keeps the
+	// cancellation and the values and leaves the ticks no parent.
+	ctx = trace.ContextWithSpanContext(ctx, trace.SpanContext{})
 	ctx, cancel := context.WithCancel(ctx)
 	e.cancel = cancel
 
@@ -605,20 +625,50 @@ func (e *Extension) runRetentionScheduler(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			result, err := e.enforcer.Enforce(ctx)
-			if err != nil {
-				e.Logger().Error("retention enforcement failed",
-					forge.F("error", err.Error()),
-				)
-				continue
-			}
-			if result.Archived > 0 || result.Purged > 0 {
-				e.Logger().Info("retention enforcement complete",
-					forge.F("archived", result.Archived),
-					forge.F("purged", result.Purged),
-				)
-			}
+			e.enforceRetention(ctx)
 		}
+	}
+}
+
+// retentionSentinels name the errors a scheduled retention run can fail
+// with, for the span status.
+var retentionSentinels = []telemetry.Sentinel{
+	{Err: retention.ErrNoChainRecorder, Name: "retention.ErrNoChainRecorder"},
+	{Err: retention.ErrPolicyWithoutApp, Name: "retention.ErrPolicyWithoutApp"},
+	{Err: chronicle.ErrRetentionWithheld, Name: "chronicle.ErrRetentionWithheld"},
+}
+
+// enforceRetention is one scheduled retention run: every policy once.
+//
+// It is a root span, started with trace.WithNewRoot. ctx comes from the ctx
+// Start was given, which carries forge's boot span, and a run a day later
+// has no business in the boot trace. Every policy's own span, and the
+// queries under it, nest inside this one.
+func (e *Extension) enforceRetention(ctx context.Context) {
+	start := time.Now()
+	ctx, span := telemetry.Start(ctx, telemetry.SpanEnforceRetention, trace.WithNewRoot())
+	defer span.End()
+
+	result, err := e.enforcer.Enforce(ctx)
+	e.schedulerMetrics.Observe(telemetry.JobRetention, err, time.Since(start))
+	if result != nil {
+		span.SetAttributes(
+			telemetry.AttrRetentionArchived.Int64(result.Archived),
+			telemetry.AttrRetentionPurged.Int64(result.Purged),
+		)
+	}
+	if err != nil {
+		telemetry.Fail(span, err, retentionSentinels...)
+		e.Logger().Error("retention enforcement failed",
+			forge.F("error", err.Error()),
+		)
+		return
+	}
+	if result.Archived > 0 || result.Purged > 0 {
+		e.Logger().Info("retention enforcement complete",
+			forge.F("archived", result.Archived),
+			forge.F("purged", result.Purged),
+		)
 	}
 }
 
@@ -686,28 +736,81 @@ func (e *Extension) runCheckpointScheduler(ctx context.Context) {
 // outcomes, not faults, and are skipped silently. Anything else is logged and
 // the loop moves on to the next stream rather than aborting the whole tick
 // over one failure.
+//
+// A tick that finds work, or fails to find out, is one "checkpoint streams"
+// root span, started with trace.WithNewRoot and backdated to the start of the
+// tick so its duration covers the scan. An idle tick, which is most of them,
+// starts no span at all: the scheduler polls every few minutes, and a trace
+// per poll would bury the ones that did something. The scan's own queries
+// run before anyone knows whether there is work, under the span-free ctx
+// Start made, so they are never traced; the checkpoints under the root are.
+// Every tick is timed on the scheduler run histogram either way.
 func (e *Extension) checkpointAllStreams(ctx context.Context) {
+	start := time.Now()
+
+	due, scanned, scanErr := e.dueStreams(ctx)
+	if len(due) == 0 && scanErr == nil {
+		e.schedulerMetrics.Observe(telemetry.JobCheckpoint, nil, time.Since(start))
+		return
+	}
+
+	ctx, span := telemetry.Start(ctx, telemetry.SpanCheckpointStreams,
+		trace.WithNewRoot(),
+		trace.WithTimestamp(start),
+		trace.WithAttributes(
+			telemetry.AttrStreamsScanned.Int(scanned),
+			telemetry.AttrStreamsDue.Int(len(due)),
+		),
+	)
+	defer span.End()
+
+	taken, cpErr := e.checkpointStreams(ctx, due)
+	span.SetAttributes(telemetry.AttrCheckpointsTaken.Int(taken))
+
+	runErr := scanErr
+	if runErr == nil {
+		runErr = cpErr
+	}
+	telemetry.Fail(span, runErr)
+	e.schedulerMetrics.Observe(telemetry.JobCheckpoint, runErr, time.Since(start))
+}
+
+// dueStreams lists every stream and returns the ones due a checkpoint, how
+// many it looked at, and the first error it hit. A stream whose due check
+// fails is logged and left out; the rest are still returned.
+func (e *Extension) dueStreams(ctx context.Context) (due []*stream.Stream, scanned int, firstErr error) {
 	streams, err := e.store.ListStreams(ctx, stream.ListOpts{})
 	if err != nil {
 		e.Logger().Error("checkpoint scheduler: list streams failed",
 			forge.F("error", err.Error()),
 		)
-		return
+		return nil, 0, err
 	}
 
 	for _, st := range streams {
-		due, dueErr := e.streamCheckpointDue(ctx, st)
+		isDue, dueErr := e.streamCheckpointDue(ctx, st)
 		if dueErr != nil {
 			e.Logger().Error("checkpoint scheduler: could not determine whether stream is due",
 				forge.F("stream_id", st.ID.String()),
 				forge.F("error", dueErr.Error()),
 			)
+			if firstErr == nil {
+				firstErr = dueErr
+			}
 			continue
 		}
-		if !due {
-			continue
+		if isDue {
+			due = append(due, st)
 		}
+	}
+	return due, len(streams), firstErr
+}
 
+// checkpointStreams takes a checkpoint over each stream in due and returns
+// how many it took and the first real failure. Quiet streams and lost races
+// are not failures.
+func (e *Extension) checkpointStreams(ctx context.Context, due []*stream.Stream) (taken int, firstErr error) {
+	for _, st := range due {
 		_, cpErr := e.checkpointer.CheckpointStream(ctx, checkpoint.StreamHead{
 			ID:       st.ID,
 			AppID:    st.AppID,
@@ -716,15 +819,21 @@ func (e *Extension) checkpointAllStreams(ctx context.Context) {
 			HeadHash: st.HeadHash,
 		})
 		switch {
-		case cpErr == nil, errors.Is(cpErr, checkpoint.ErrNothingToCheckpoint), errors.Is(cpErr, checkpoint.ErrExists):
-			// Taken, quiet, or lost a race: all ordinary, not faults.
+		case cpErr == nil:
+			taken++
+		case errors.Is(cpErr, checkpoint.ErrNothingToCheckpoint), errors.Is(cpErr, checkpoint.ErrExists):
+			// Quiet, or lost a race: both ordinary, not faults.
 		default:
 			e.Logger().Error("checkpoint scheduler: checkpoint failed",
 				forge.F("stream_id", st.ID.String()),
 				forge.F("error", cpErr.Error()),
 			)
+			if firstErr == nil {
+				firstErr = cpErr
+			}
 		}
 	}
+	return taken, firstErr
 }
 
 // streamCheckpointDue reports whether st has crossed Checkpoints.EveryInterval
@@ -734,13 +843,22 @@ func (e *Extension) checkpointAllStreams(ctx context.Context) {
 // reasoned about, and tested, without a live store or a running scheduler.
 // Both are covered directly by checkpoint_due_test.go, the one test file in
 // this package that is package extension rather than extension_test.
+//
+// A stream also has to have gained an event since that checkpoint (or have
+// any events at all, when it has none). Without one, CheckpointStream can
+// only return ErrNothingToCheckpoint: st.HeadSeq is the same snapshot it
+// would be handed, and the latest checkpoint only ever moves forward. A quiet
+// stream past its interval used to be locked and re-read on every tick for
+// that answer, and it made every tick look like work.
 func (e *Extension) streamCheckpointDue(ctx context.Context, st *stream.Stream) (bool, error) {
 	latest, err := e.store.LatestCheckpoint(ctx, st.ID)
 	switch {
 	case err == nil:
-		return checkpointDue(time.Now(), true, latest.CreatedAt, latest.ToSeq, st.HeadSeq, e.config.Checkpoints), nil
+		return st.HeadSeq > latest.ToSeq &&
+			checkpointDue(time.Now(), true, latest.CreatedAt, latest.ToSeq, st.HeadSeq, e.config.Checkpoints), nil
 	case errors.Is(err, checkpoint.ErrNotFound):
-		return checkpointDue(time.Now(), false, time.Time{}, 0, st.HeadSeq, e.config.Checkpoints), nil
+		return st.HeadSeq > 0 &&
+			checkpointDue(time.Now(), false, time.Time{}, 0, st.HeadSeq, e.config.Checkpoints), nil
 	default:
 		return false, err
 	}
@@ -751,11 +869,11 @@ func (e *Extension) streamCheckpointDue(ctx context.Context, st *stream.Stream) 
 // asserted, is this stream due?
 //
 //   - Never checkpointed (hasCheckpoint false): due immediately. There is no
-//     "elapsed since last checkpoint" to measure yet, and CheckpointStream
-//     itself returns ErrNothingToCheckpoint cheaply if the stream has no
-//     events at all, so attempting on every poll costs nothing on an empty
-//     stream and covers a new one within one poll period of its first event
-//     rather than waiting out a full EveryInterval.
+//     "elapsed since last checkpoint" to measure yet, and a new stream is
+//     covered within one poll period of its first event rather than waiting
+//     out a full EveryInterval. An empty stream never gets this far:
+//     streamCheckpointDue only asks once HeadSeq is above zero, so a stream
+//     with no events is not attempted at all.
 //   - Otherwise due when either EveryInterval has elapsed since the last
 //     checkpoint's CreatedAt, or the stream has gained at least EveryEvents
 //     sequences since the last checkpoint's ToSeq.
@@ -1216,7 +1334,7 @@ func (e *Extension) buildCheckpointer(s store.Store) (*checkpoint.Checkpointer, 
 		return nil, nil, nil, fmt.Errorf("%w (store type %T)", ErrCheckpointsUnsupportedByStore, s)
 	}
 
-	return checkpoint.NewCheckpointer(s, signer, e.Logger()), s, signer, nil
+	return checkpoint.NewCheckpointer(s, signer, e.Logger(), checkpoint.WithMetrics(e.Metrics())), s, signer, nil
 }
 
 // checkpointStore returns the store the dashboard should read checkpoints

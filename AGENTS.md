@@ -77,6 +77,8 @@ The Forge extension is `extension.New(opts...)`, embedding `*forge.BaseExtension
 
 Logging uses `github.com/xraph/go-utils/log`. A component takes a `log.Logger` through `WithLogger` and falls back to `log.NewNoopLogger()`. Messages start with the package name (`"chronicle: checkpoint taken"`, `"retention: policy enforced"`) and carry typed fields like `log.String("stream_id", ...)`. Inside the extension, use `e.Logger()` with `forge.F`.
 
+Tracing and metrics go through `internal/telemetry`. Start spans with `telemetry.Start` (tracer `github.com/xraph/chronicle`, kind internal), name them "verb object" with no IDs, and mark failures with `telemetry.Fail`, which records the error's class and never its message. Background runs in the extension start a root span with `trace.WithNewRoot()`, because Start's ctx carries forge's boot span. Metrics take a go-utils `metrics.Metrics` through a `WithMetrics` option (root, `retention`, `checkpoint`), registered up front in `internal/telemetry/metrics.go`, never `otel.Meter`. No span attribute or metric label may carry a user, subject, IP, payload, key or error text, and labels never carry IDs. `internal/telemetrytest` has the span recorder, a fake sink and `Leaks`, and `docs/content/docs/subsystems/observability.mdx` lists every span and metric, so update it when you add one.
+
 Tests use the standard `testing` package with `t.Helper()` and `t.Fatalf`. Testify isn't in `go.mod`, and new tests shouldn't pull it in.
 
 ### Lint rules that bite

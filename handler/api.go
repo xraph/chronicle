@@ -7,8 +7,6 @@ import (
 
 	"github.com/xraph/forge"
 	log "github.com/xraph/go-utils/log"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/chronicle/audit"
 	"github.com/xraph/chronicle/checkpoint"
@@ -19,8 +17,6 @@ import (
 	"github.com/xraph/chronicle/stream"
 	"github.com/xraph/chronicle/verify"
 )
-
-const tracerName = "github.com/xraph/chronicle/handler"
 
 // Dependencies defines the handler dependencies.
 type Dependencies struct {
@@ -83,10 +79,15 @@ type Dependencies struct {
 }
 
 // API wires all Forge-style HTTP handlers together for the Chronicle system.
+//
+// It starts no spans of its own. Forge already traces every route, and the
+// work a route hands off (verifying a chain, taking a checkpoint, erasing a
+// subject, enforcing retention, building a report) is traced where it runs,
+// so the same spans appear whether the API, the dashboard or your own code
+// called it.
 type API struct {
 	deps   Dependencies
 	router forge.Router
-	tracer trace.Tracer
 }
 
 // New creates an API from handler dependencies and a Forge router.
@@ -100,7 +101,6 @@ func New(deps Dependencies, router forge.Router) *API {
 	return &API{
 		deps:   deps,
 		router: router,
-		tracer: otel.Tracer(tracerName),
 	}
 }
 
