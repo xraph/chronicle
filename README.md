@@ -323,6 +323,6 @@ The Postgres, MongoDB and Redis tests skip unless you set `CHRONICLE_TEST_POSTGR
 
 ## License
 
-See the [Chronicle repository](https://github.com/xraph/chronicle) for license terms.
+MIT. See [LICENSE](LICENSE).
 
 Chronicle is part of the [Forge](https://github.com/xraph/forge) forgery stack, built by [Rex Raphael](https://github.com/juicycleff) and [contributors](https://github.com/xraph/chronicle/graphs/contributors).
