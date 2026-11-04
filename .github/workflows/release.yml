@@ -49,9 +49,31 @@ jobs:
 
       - name: Verify build
         run: |
-          go mod download
-          go build ./...
-          go test -race -count=1 ./...
+          set -e
+          for dir in $(make -s print-modules); do
+            echo "==> $dir"
+            (cd "$dir" && go mod download && go build ./... && go test -race -count=1 ./...)
+          done
+
+      # The nested modules release with the root, at the same version, on the
+      # same commit. Without their tags a consumer can't fetch
+      # store/postgres@<tag>. The list matches TAGGED in the Makefile;
+      # internal/backendtest only holds tests and is never tagged.
+      - name: Tag nested modules
+        env:
+          TAG: ${{ steps.set-tag.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          TAGGED=$(make -s print-tagged)
+          for dir in $TAGGED; do
+            if git rev-parse -q --verify "refs/tags/$dir/$TAG" >/dev/null; then
+              echo "$dir/$TAG already exists"
+              continue
+            fi
+            git tag "$dir/$TAG"
+            git push origin "$dir/$TAG"
+          done
 
       - name: Generate release notes
         id: notes
@@ -83,5 +105,12 @@ jobs:
 
             ```bash
             go get github.com/xraph/chronicle@${{ steps.set-tag.outputs.tag }}
+            ```
+
+            The stores, the handler and the Forge extension are their own modules. Get the ones you import at the same version, for example:
+
+            ```bash
+            go get github.com/xraph/chronicle/store/postgres@${{ steps.set-tag.outputs.tag }}
+            go get github.com/xraph/chronicle/extension@${{ steps.set-tag.outputs.tag }}
             ```
           generate_release_notes: true

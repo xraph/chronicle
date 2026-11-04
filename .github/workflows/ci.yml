@@ -20,13 +20,60 @@ jobs:
   # test, lint, verify and security now come from the shared workflow. It
   # probes for Makefile targets per step and falls back to the plain go
   # commands these jobs used to run inline.
+  #
+  # One run per Go module. The root is Chronicle's core; the stores, the
+  # handler, the Forge extension, the test helpers and the cross-backend tests
+  # are nested modules with their own go.mod. prefer-makefile is off because
+  # the Makefile targets sweep every module, and each run here covers one.
   ci:
+    name: Go (${{ matrix.module }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { module: ".", flag: chronicle }
+          - { module: internal/pgtest, flag: chronicle-pgtest }
+          - { module: internal/redistest, flag: chronicle-redistest }
+          - { module: store/postgres, flag: chronicle-store-postgres }
+          - { module: store/sqlite, flag: chronicle-store-sqlite }
+          - { module: store/mongo, flag: chronicle-store-mongo }
+          - { module: store/redis, flag: chronicle-store-redis }
+          - { module: handler, flag: chronicle-handler }
+          - { module: extension, flag: chronicle-extension }
+          - { module: internal/backendtest, flag: chronicle-backendtest }
     uses: xraph/workflows/.github/workflows/go-ci.yml@v1
     with:
       go-versions: '["1.26"]'
       os: '["ubuntu-latest"]'
+      working-directory: ${{ matrix.module }}
+      prefer-makefile: false
+      codecov-flag-name: ${{ matrix.flag }}
+      # The check reads every nested go.mod from the repo root, so one run is enough.
+      check-nested-modules: ${{ matrix.module == '.' }}
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # ─── Core Dependencies ─────────────────────────────────────────────
+  # The root module must not pull in Forge, Grove, a database driver or
+  # Redis, and every nested module must require the root at the release
+  # version. See scripts/check-core-deps.sh.
+  core-deps:
+    name: Core dependencies
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Check the root module stays light
+        run: make check-core-deps
 
   # ─── Format Check ──────────────────────────────────────────────────
   format:

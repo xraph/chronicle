@@ -1,4 +1,4 @@
-.PHONY: help build run test clean fmt lint lint-fix vet tidy deps install dev hot check coverage b r t c f l lf v check-deps check-core-deps
+.PHONY: help build run test clean fmt lint lint-fix vet tidy deps install dev hot check coverage b r t c f l lf v check-deps check-core-deps print-modules print-tagged
 
 # Default target
 .DEFAULT_GOAL := help
@@ -10,6 +10,15 @@ BUILD_DIR=./bin
 GO=go
 GOFLAGS=-v
 LDFLAGS=-ldflags "-s -w"
+
+# Every Go module in the repo. The root is Chronicle's core; the rest are nested
+# modules with their own go.mod. TAGGED is the set the release tags alongside
+# the root (internal/backendtest only holds tests and is never tagged).
+MODULES=. internal/pgtest internal/redistest store/postgres store/sqlite store/mongo store/redis handler extension internal/backendtest
+TAGGED=internal/pgtest internal/redistest store/postgres store/sqlite store/mongo store/redis handler extension
+
+# each runs a command in every module, stopping at the first failure.
+each=set -e; for m in $(MODULES); do echo "$(BLUE)==> $$m$(NC)"; (cd $$m && $(1)); done
 
 # Colors for output
 RED=\033[0;31m
@@ -107,49 +116,58 @@ fmt f:
 lint l:
 	@echo "$(BLUE)Running linter...$(NC)"
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "$(RED)golangci-lint not found. Install: https://golangci-lint.run/usage/install/$(NC)"; exit 1; }
-	golangci-lint run ./...
+	@$(call each,golangci-lint run ./...)
 	@echo "$(GREEN)✓ Linting complete$(NC)"
 
 ## lint-fix (lf): Run linter with auto-fix
 lint-fix lf:
 	@echo "$(BLUE)Running linter with auto-fix...$(NC)"
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "$(RED)golangci-lint not found. Install: https://golangci-lint.run/usage/install/$(NC)"; exit 1; }
-	golangci-lint run --fix ./...
+	@$(call each,golangci-lint run --fix ./...)
 	@echo "$(GREEN)✓ Linting with fixes complete$(NC)"
 
 ## vet (v): Run go vet
 vet v:
 	@echo "$(BLUE)Running go vet...$(NC)"
-	$(GO) vet ./...
+	@$(call each,$(GO) vet ./...)
 	@echo "$(GREEN)✓ Vet complete$(NC)"
+
+## print-modules: Print every Go module directory (used by the release workflow)
+print-modules:
+	@echo $(MODULES)
+
+## print-tagged: Print the nested module directories the release tags
+print-tagged:
+	@echo $(TAGGED)
 
 ## check-core-deps: Fail if the root module pulls in Forge, Grove, a database driver or Redis
 check-core-deps:
 	@bash scripts/check-core-deps.sh
 
-## check: Run fmt, vet, and lint
+## check: Run fmt, vet, lint and the core dependency guard
 check:
 	@echo "$(BLUE)Running all checks...$(NC)"
 	@$(MAKE) fmt
 	@$(MAKE) vet
 	@$(MAKE) lint
+	@$(MAKE) check-core-deps
 	@echo "$(GREEN)✓ All checks passed$(NC)"
 
 ## test (t): Run tests
 test t:
 	@echo "$(BLUE)Running tests...$(NC)"
-	$(GO) test -v ./...
+	@$(call each,$(GO) test -v ./...)
 	@echo "$(GREEN)✓ Tests complete$(NC)"
 
 ## test-verbose: Run tests with verbose output
 test-verbose:
 	@echo "$(BLUE)Running tests (verbose)...$(NC)"
-	$(GO) test -v -count=1 ./...
+	@$(call each,$(GO) test -v -count=1 ./...)
 
 ## test-race: Run tests with race detector
 test-race:
 	@echo "$(BLUE)Running tests with race detector...$(NC)"
-	$(GO) test -race -v ./...
+	@$(call each,$(GO) test -race -v ./...)
 	@echo "$(GREEN)✓ Race tests complete$(NC)"
 
 ## coverage: Generate test coverage
@@ -169,8 +187,7 @@ coverage-html: coverage
 ## tidy: Tidy and verify modules
 tidy:
 	@echo "$(BLUE)Tidying modules...$(NC)"
-	$(GO) mod tidy
-	$(GO) mod verify
+	@$(call each,$(GO) mod tidy && $(GO) mod verify)
 	@echo "$(GREEN)✓ Modules tidied$(NC)"
 
 ## deps: Install development dependencies
@@ -194,13 +211,13 @@ check-deps:
 ## mod-download: Download modules
 mod-download:
 	@echo "$(BLUE)Downloading modules...$(NC)"
-	$(GO) mod download
+	@$(call each,$(GO) mod download)
 	@echo "$(GREEN)✓ Modules downloaded$(NC)"
 
 ## mod-verify: Verify modules
 mod-verify:
 	@echo "$(BLUE)Verifying modules...$(NC)"
-	$(GO) mod verify
+	@$(call each,$(GO) mod verify)
 	@echo "$(GREEN)✓ Modules verified$(NC)"
 
 ## docs: Serve documentation locally
