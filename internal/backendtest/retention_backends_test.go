@@ -1,4 +1,4 @@
-package chronicle_test
+package backendtest_test
 
 import (
 	"context"
@@ -53,9 +53,9 @@ func forEachBackend(t *testing.T, fn func(t *testing.T, s store.Store)) {
 		name, env string
 		open      func(t *testing.T, dsn string) store.Store
 	}{
-		{"postgres", "CHRONICLE_TEST_POSTGRES_DSN", openPostgres},
-		{"mongo", "CHRONICLE_TEST_MONGO_URI", openMongo},
-		{"redis", "CHRONICLE_TEST_REDIS_DSN", openRedis},
+		{"postgres", "CHRONICLE_TEST_POSTGRES_DSN", openChainPostgres},
+		{"mongo", "CHRONICLE_TEST_MONGO_URI", openChainMongo},
+		{"redis", "CHRONICLE_TEST_REDIS_DSN", openChainRedis},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			dsn := os.Getenv(b.env)
@@ -134,10 +134,10 @@ func runProbe(t *testing.T, s store.Store, app string) {
 	}
 }
 
-// openPostgres opens a store confined to a schema of its own, so the store
+// openChainPostgres opens a store confined to a schema of its own, so the store
 // package's tests migrating the same database at the same time cannot
 // deadlock this one.
-func openPostgres(t *testing.T, dsn string) store.Store {
+func openChainPostgres(t *testing.T, dsn string) store.Store {
 	t.Helper()
 	dsn = pgtest.Schema(t, dsn)
 	drv := pgdriver.New()
@@ -152,7 +152,7 @@ func openPostgres(t *testing.T, dsn string) store.Store {
 	return pgstore.New(db)
 }
 
-func openMongo(t *testing.T, uri string) store.Store {
+func openChainMongo(t *testing.T, uri string) store.Store {
 	t.Helper()
 	drv := mongodriver.New()
 	if err := drv.Open(context.Background(), uri); err != nil {
@@ -166,10 +166,10 @@ func openMongo(t *testing.T, uri string) store.Store {
 	return mongostore.New(db)
 }
 
-// openRedis keeps the store's keys under a prefix of this test's own and
+// openChainRedis keeps the store's keys under a prefix of this test's own and
 // deletes that prefix when the test ends. Before that it refuses a database
 // holding any key outside "chronicle:" (see redistest.Isolate).
-func openRedis(t *testing.T, dsn string) store.Store {
+func openChainRedis(t *testing.T, dsn string) store.Store {
 	t.Helper()
 	ctx := context.Background()
 	drv := redisdriver.New()

@@ -175,3 +175,5 @@ replace github.com/xraph/chronicle/store/mongo => ../store/mongo
 replace github.com/xraph/chronicle/store/redis => ../store/redis
 
 replace github.com/xraph/chronicle/internal/pgtest => ../internal/pgtest
+
+replace github.com/xraph/chronicle/internal/redistest => ../internal/redistest

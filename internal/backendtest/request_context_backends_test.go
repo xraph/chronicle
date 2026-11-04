@@ -1,4 +1,4 @@
-package chronicle_test
+package backendtest_test
 
 import (
 	"context"
