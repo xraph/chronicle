@@ -75,6 +75,9 @@ jobs:
       - name: Check the root module stays light
         run: make check-core-deps
 
+      - name: Test the release tagging script
+        run: bash scripts/release-tags_test.sh
+
   # ─── Format Check ──────────────────────────────────────────────────
   format:
     name: Format
