@@ -10,6 +10,12 @@
 // Nothing here ever puts personal data, secrets, payloads or error text on a
 // span or a metric. Attributes are counts, booleans, enum strings and opaque
 // stream IDs. Metric labels are fixed enums.
+//
+// The Forge extension imports this package, and it is a separate module. A user
+// can end up with this root module at a newer version than an older extension,
+// so treat everything exported here as public API between Chronicle's own
+// modules: add to it, but don't rename, remove or change the signature of
+// anything an older extension might still call.
 package telemetry
 
 import (

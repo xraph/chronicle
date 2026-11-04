@@ -12,6 +12,13 @@
 // wrote them. So a number stays float64 whenever float64 holds it exactly,
 // which also keeps the type callers already get for small values, and only an
 // integer float64 would round becomes int64 or uint64.
+//
+// The stores in store/postgres, store/sqlite and store/redis import this
+// package, and they are separate modules. A user can end up with this root
+// module at a newer version than an older store module, so treat everything
+// exported here as public API between Chronicle's own modules: add to it, but
+// don't rename, remove or change the signature of anything an older store
+// module might still call.
 package metajson
 
 import (

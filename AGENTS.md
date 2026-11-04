@@ -2,21 +2,36 @@
 
 Chronicle is an audit trail library for Go. You record events and each one lands in a SHA-256 hash chain (HMAC-keyed if you give it a key), scoped to an app and tenant, with GDPR crypto-erasure, retention, signed checkpoints and compliance reports built on that chain. It ships as a plain library plus a Forge extension, so there's no daemon to run.
 
-Module path: `github.com/xraph/chronicle`. There's one `go.mod`, at the root. `_examples/` is part of that module, but Go skips directories whose names start with an underscore, so `./...` never builds or tests anything in there.
+Module path: `github.com/xraph/chronicle`. The root module is the core, and it must never depend on Forge, Grove, a database driver or Redis, not even from a test. `make check-core-deps` (and its CI job) fails the build if it does. Everything heavy is a nested module with its own `go.mod`:
+
+| Module | Directory | Tagged on release |
+|---|---|---|
+| `github.com/xraph/chronicle` | root | yes |
+| `.../store/postgres`, `.../store/sqlite`, `.../store/mongo`, `.../store/redis` | `store/<name>` | yes |
+| `.../handler` | `handler` | yes |
+| `.../extension` (with `extension/contract`) | `extension` | yes |
+| `.../internal/pgtest`, `.../internal/redistest` | `internal/<name>` | yes, because store and extension tests require them |
+| `.../internal/backendtest` | `internal/backendtest` | no, it only holds the tests that run Chronicle against every backend |
+
+`store/memory` stays in the root. Each nested `go.mod` has `replace github.com/xraph/chronicle => <path to root>` and requires the root at the release version, the same pattern Grove uses. `MODULES` and `TAGGED` in the Makefile are the one list of modules; the Makefile, CI and the release workflow all read it. `_examples/` belongs to the root module, but Go skips directories whose names start with an underscore, so `./...` never builds or tests anything in there.
+
+Nested modules import two root packages: the stores use `internal/metajson`, and the extension uses `internal/telemetry`. A user can run a newer root with an older store or extension, so treat what those two export as API between modules. Add to them, never rename or remove.
 
 ## Commands
 
 ```sh
-GOWORK=off go test ./...                  # memory and sqlite backends always run
-GOWORK=off go test -race -count=1 ./...   # what release.yml runs
-GOWORK=off go vet ./...
-golangci-lint run ./...                   # v2, configured by .golangci.yml
+make test        # go test -v ./... in every module
+make test-race   # with -race, every module
+make vet         # every module
+make lint        # golangci-lint v2, configured by .golangci.yml, every module
+make tidy        # go mod tidy and verify, every module
+make check-core-deps
 gofmt -s -w . && goimports -w -local github.com/xraph/chronicle .
 ```
 
-If you prefer make, the Makefile wraps these as `make test` (`go test -v ./...`), `make test-race`, `make vet`, `make lint`, `make lint-fix`, `make fmt`, `make check` (fmt, vet, lint) and `make coverage`. Skip `make build`, `make run`, `make install`, `make dev` and `make all`. They point at `./cmd/chronicle`, and there is no such directory.
+Use the make targets. A plain `go test ./...` at the root only tests the core: it never reaches a store, the handler or the extension, and it still goes green. If you want one module, `cd` into it first (`cd store/sqlite && GOWORK=off go test ./...`). `make check` runs fmt, vet, lint and the core dependency guard, and `make coverage` covers the root only. Skip `make build`, `make run`, `make install`, `make dev` and `make all`. They point at `./cmd/chronicle`, and there is no such directory.
 
-CI lives in `.github/workflows/ci.yml`, which calls the shared `xraph/workflows` `go-ci.yml@v1`. That workflow runs `make test`, a race-enabled coverage pass, golangci-lint at whatever version it pins, `gofmt -l .`, `make vet`, gosec and govulncheck, plus a tidiness check that runs `go mod tidy` and fails if `go.mod` or `go.sum` changed. Gosec and govulncheck findings fail the build. `ci.yml` adds two jobs of its own: Format, which runs `goimports -l -local github.com/xraph/chronicle .`, and Docs, which runs `pnpm install --frozen-lockfile`, `pnpm types:check`, `pnpm lint` and `pnpm build` inside `docs/`.
+CI lives in `.github/workflows/ci.yml`, which calls the shared `xraph/workflows` `go-ci.yml@v1` once per module (the `Go (<module>)` jobs), with that module as its working directory and `prefer-makefile: false`, because the make targets sweep every module. Each run does the module's tests, a race-enabled coverage pass, golangci-lint at whatever version it pins, `gofmt -l .`, `go vet`, gosec and govulncheck, plus a tidiness check that runs `go mod tidy` and fails if `go.mod` or `go.sum` changed. Gosec and govulncheck findings fail the build. The root's run also checks that every nested `go.mod` requires its siblings at a version the proxy can serve. `ci.yml` adds three jobs of its own: Core dependencies, which runs `make check-core-deps` and the release tagging test (`scripts/release-tags_test.sh`), Format, which runs `goimports -l -local github.com/xraph/chronicle .`, and Docs, which runs `pnpm install --frozen-lockfile`, `pnpm types:check`, `pnpm lint` and `pnpm build` inside `docs/`.
 
 ## Tests that need a database
 
@@ -24,14 +39,14 @@ Postgres, MongoDB and Redis tests read a DSN from the environment:
 
 | Variable | Read by |
 |---|---|
-| `CHRONICLE_TEST_POSTGRES_DSN` | `store/postgres`, `store`, `extension`, root package |
-| `CHRONICLE_TEST_MONGO_URI` | `store/mongo`, root package |
-| `CHRONICLE_TEST_MONGO_DSN` | `store/scope_behaviour_test.go` only |
-| `CHRONICLE_TEST_REDIS_DSN` | `store/redis`, `store`, root package |
+| `CHRONICLE_TEST_POSTGRES_DSN` | `store/postgres`, `extension`, `internal/backendtest` |
+| `CHRONICLE_TEST_MONGO_URI` | `store/mongo`, `internal/backendtest` |
+| `CHRONICLE_TEST_MONGO_DSN` | `internal/backendtest/scope_behaviour_test.go` only |
+| `CHRONICLE_TEST_REDIS_DSN` | `store/redis`, `internal/backendtest` |
 
 Leave a variable unset and those tests quietly call `t.Skip`. A plain `go test ./...` goes green with every live backend skipped, and you'll only notice if you run with `-v` and read the SKIP lines. CI sets none of these variables, so a green CI run tells you nothing about Postgres, Mongo or Redis. Set one and you've asked for that backend by name: from then on, every dial, ping or migrate failure is a `t.Fatalf`.
 
-Most helpers refuse a default port. `internal/pgtest`, `store/postgres/live_test.go`, `store/mongo/live_test.go` and the root package's backend loop fail the test on a DSN containing `:5432`, `:27017` or (in that loop) `:6379`, and `internal/redistest` refuses any Redis database that holds a key outside the `chronicle:` prefix. A few helpers don't check at all, including `store/postgres/store_test.go` and both `purge_scope_test.go` files, so treat the guard as a backstop and never point these variables at a database you care about. Nothing in the repo starts testcontainers. You run throwaway containers yourself, on other ports:
+Most helpers refuse a default port. `internal/pgtest`, `store/postgres/live_test.go`, `store/mongo/live_test.go` and the backend loop in `internal/backendtest` fail the test on a DSN containing `:5432`, `:27017` or (in that loop) `:6379`, and `internal/redistest` refuses any Redis database that holds a key outside the `chronicle:` prefix. A few helpers don't check at all, including `store/postgres/store_test.go` and both `purge_scope_test.go` files, so treat the guard as a backstop and never point these variables at a database you care about. Nothing in the repo starts testcontainers. You run throwaway containers yourself, on other ports:
 
 ```sh
 docker run -d --rm -p 55432:5432 -e POSTGRES_PASSWORD=test postgres
@@ -51,14 +66,15 @@ Postgres tests each get a random schema (`internal/pgtest`), the `store/mongo` t
 | root (`package chronicle`) | `Chronicle`, `New` and its options, sentinel errors, `Storer`, `Emitter`, retention records and backfill |
 | `audit/`, `stream/`, `verify/`, `erasure/`, `retention/`, `checkpoint/` | One subsystem each: its entities plus its own `Store` interface |
 | `store/` | `store.Store`, the composite that embeds every subsystem store plus `Migrate`, `Ping`, `Close` |
-| `store/memory`, `store/sqlite`, `store/postgres`, `store/mongo`, `store/redis` | The five backends. `store/sealedstore` decrypts sealed events on the way out |
+| `store/memory`, `store/sqlite`, `store/postgres`, `store/mongo`, `store/redis` | The five backends. Memory is in the root module, the other four are modules of their own. `store/sealedstore` decrypts sealed events on the way out |
+| `internal/backendtest` | Tests that run the root and `store` behaviour against every backend, in a module of their own so the root never needs a driver |
 | `hash/`, `keys/`, `crypto/` | Chain digests (plain and HMAC), key material for keyed digests and signed checkpoints, AES-256-GCM sealing for crypto-erasure |
 | `acceptance/` | Recoverable ingestion contracts. `internal/acceptancetest` is the shared suite each backend runs |
 | `compliance/` | SOC2, HIPAA, EU AI Act and custom reports, plus export |
 | `sink/`, `plugin/`, `batcher/` | Event outputs (stdout, file, S3, archive), plugin hooks (`BeforeRecord`, `AfterRecord`, `SinkProvider` and the rest), batched writes |
 | `scope/` | Pulls app, tenant, user, IP and request ID out of the context |
-| `handler/` | The admin HTTP API on `forge.Router` |
-| `extension/` | The Forge extension. `extension/contract` wires the dashboard contract (`manifest.yaml`) |
+| `handler/` | The admin HTTP API on `forge.Router` (own module) |
+| `extension/` | The Forge extension (own module). `extension/contract` wires the dashboard contract (`manifest.yaml`) |
 | `id/` | TypeID identifiers |
 | `docs/` | Fumadocs site (Next.js, pnpm). `make docs` serves it |
 | `plans/`, `specs/`, `docs/architecture/` | Design notes |
@@ -92,18 +108,18 @@ Tests use the standard `testing` package with `t.Helper()` and `t.Fatalf`. Testi
 
 ## Dependencies
 
-Chronicle depends on grove (`grove`, `drivers/mongodriver`, `drivers/pgdriver`, `drivers/sqlitedriver`, `kv`, `kv/drivers/redisdriver`), forge and `forge/extensions/auth`, plus `go-utils` and `vessel`. Herald, dispatch, `trove/extension` and authsome consume it. Versions live in `go.mod`, nowhere else.
+The root depends on `go-utils`, typeid, uuid and OpenTelemetry, and nothing heavier. Grove lives in the store modules (`drivers/pgdriver` in `store/postgres`, `drivers/sqlitedriver` in `store/sqlite`, `drivers/mongodriver` in `store/mongo`, `kv` and `kv/drivers/redisdriver` in `store/redis`). Forge lives in `handler` and `extension`, and `forge/extensions/auth` and `vessel` in `extension` alone. Herald, dispatch, `trove/extension` and authsome consume it. Versions live in `go.mod`, nowhere else.
 
 Grove and forge tag every submodule with the same version. When you bump one line from either, bump all of that repo's lines to the same tag:
 
 ```sh
-GOWORK=off go get github.com/xraph/grove@vX.Y.Z github.com/xraph/grove/drivers/pgdriver@vX.Y.Z  # and every other grove line
-GOWORK=off go get github.com/xraph/forge@vA.B.C github.com/xraph/forge/extensions/auth@vA.B.C
+(cd store/postgres && GOWORK=off go get github.com/xraph/grove@vX.Y.Z github.com/xraph/grove/drivers/pgdriver@vX.Y.Z)  # and the other store modules
+(cd extension && GOWORK=off go get github.com/xraph/forge@vA.B.C github.com/xraph/forge/extensions/auth@vA.B.C)  # and handler
 ./updatemod.sh   # go mod tidy in every directory with a go.mod
-GOWORK=off go test ./...
+make test
 ```
 
-Keep `GOWORK=off` on your Go commands so a `go.work` somewhere above the checkout can't change what resolves. CI has none. Never commit a `go.work`, and never commit a `replace` pointing at a sibling checkout: it builds on your machine and breaks for everyone who runs `go get`. Run `./updatemod.sh` before you push, since CI fails on an untidy `go.mod` or `go.sum`.
+Keep `GOWORK=off` on your Go commands so a `go.work` somewhere above the checkout can't change what resolves. CI has none. Never commit a `go.work`, and never commit a `replace` pointing at a sibling checkout outside this repo: it builds on your machine and breaks for everyone who runs `go get`. The `replace` lines between this repo's own modules are fine, because Go ignores them once a module is someone else's dependency, and the require version beside each one is what a consumer resolves. `./bumpmod.sh vX.Y.Z` moves those require versions. When you do, change `RELEASE` in `scripts/check-core-deps.sh` to match. Run `./updatemod.sh` before you push, since CI fails on an untidy `go.mod` or `go.sum`.
 
 ## Releasing
 
@@ -114,7 +130,7 @@ gh run list --workflow ci.yml --branch main --limit 1   # wait for green
 gh workflow run release.yml --ref main -f tag=vX.Y.Z
 ```
 
-`release.yml` tags the dispatched commit and pushes the tag first, then runs `go mod download`, `go build ./...` and `go test -race -count=1 ./...`, and only then creates the GitHub release with notes from `git log` since the previous tag. If that build or test step fails, you're left with a pushed tag and no release, and the module proxy may already have recorded the tag, so fix forward with the next patch version.
+A release tags the root and every module in `TAGGED` at the same version on the same commit (`vX.Y.Z`, `store/postgres/vX.Y.Z` and so on). A dispatched run builds and race-tests every module first, then `scripts/release-tags.sh` pushes all the tags in one atomic push, so the remote gets the whole set or none of it. If you push a root tag yourself, the root is already public, so the workflow pushes the nested tags straight away and verifies after. Either way it then creates the GitHub release with notes from `git log` since the previous tag. If verify fails after tags are out, the module proxy may already have recorded them, so fix forward with the next patch version.
 
 Release chronicle only after the grove and forge versions it needs are tagged and pinned here. Once it's out, the consumers (herald, dispatch, `trove/extension`, authsome) re-pin to it.
 
