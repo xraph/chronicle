@@ -1,4 +1,4 @@
-.PHONY: help build run test clean fmt lint lint-fix vet tidy deps install dev hot check coverage b r t c f l lf v check-deps
+.PHONY: help build run test clean fmt lint lint-fix vet tidy deps install dev hot check coverage b r t c f l lf v check-deps check-core-deps
 
 # Default target
 .DEFAULT_GOAL := help
@@ -122,6 +122,10 @@ vet v:
 	@echo "$(BLUE)Running go vet...$(NC)"
 	$(GO) vet ./...
 	@echo "$(GREEN)✓ Vet complete$(NC)"
+
+## check-core-deps: Fail if the root module pulls in Forge, Grove, a database driver or Redis
+check-core-deps:
+	@bash scripts/check-core-deps.sh
 
 ## check: Run fmt, vet, and lint
 check:
