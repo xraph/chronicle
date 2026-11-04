@@ -14,6 +14,13 @@ description: Install Chronicle and record your first audit event in under five m
 go get github.com/xraph/chronicle@latest
 ```
 
+That's the core, and it's all you need for the in-memory store this page starts with. Each database store and the Forge extension is its own module. When you get to them, add the ones you import at the same version:
+
+```bash
+go get github.com/xraph/chronicle/store/postgres@latest
+go get github.com/xraph/chronicle/extension@latest
+```
+
 ## Step 1: Create the store and adapter
 
 Every Chronicle instance requires a store backend. For development and testing, use the in-memory store:

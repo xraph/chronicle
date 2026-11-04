@@ -1,3 +1,38 @@
+# The stores and the Forge extension are their own modules (v1.11.0)
+
+From v1.11.0 the root module, `github.com/xraph/chronicle`, is the core: recording, hashing, checkpoints, verification, retention, erasure, compliance reports and the in-memory store. It doesn't pull in Forge, Grove or any database driver anymore, so you can embed Chronicle in a library and your users won't download Postgres, Mongo and Redis drivers they never asked for.
+
+The heavy parts moved into modules of their own. Their import paths are the same, so your Go code doesn't change, but your `go.mod` needs a line for each one you use.
+
+## What to do when you upgrade
+
+Get the core and every Chronicle module you import, all at v1.11.0, in one go:
+
+```bash
+go get github.com/xraph/chronicle@v1.11.0 github.com/xraph/chronicle/store/postgres@v1.11.0
+```
+
+Add a module for each of these imports you have:
+
+| If you import | Add this module |
+|---|---|
+| `github.com/xraph/chronicle/store/postgres` | `github.com/xraph/chronicle/store/postgres` |
+| `github.com/xraph/chronicle/store/sqlite` | `github.com/xraph/chronicle/store/sqlite` |
+| `github.com/xraph/chronicle/store/mongo` | `github.com/xraph/chronicle/store/mongo` |
+| `github.com/xraph/chronicle/store/redis` | `github.com/xraph/chronicle/store/redis` |
+| `github.com/xraph/chronicle/extension` or `extension/contract` | `github.com/xraph/chronicle/extension` |
+| `github.com/xraph/chronicle/handler` | `github.com/xraph/chronicle/handler` |
+
+If you bump only the core, the build stops at your first store or extension import with `no required module provides package github.com/xraph/chronicle/store/postgres`. That's the signal to add the module, and `go get` on that path fixes it.
+
+You don't need to pin the core by hand. Each of these modules requires `github.com/xraph/chronicle` v1.11.0, so getting one brings the core up with it.
+
+If you only use the core and `store/memory`, there's nothing to add. The memory store stayed in the core.
+
+## If you work on Chronicle itself
+
+The repo now has a `go.mod` per module, and each nested one points back at the checkout with a `replace`, the same way Grove does it. `make test`, `make vet`, `make lint` and `make tidy` run in every module. `make check-core-deps` fails if the core picks up Forge, Grove, a database driver or Redis again, including through a test. The tests that run Chronicle against every backend live in `internal/backendtest`, a module that only holds tests.
+
 # Moving off the templ dashboard
 
 Chronicle's server-rendered dashboard, the `dashboard/` package, is gone. A React plugin replaced it. This file is the only record of what the templ pages showed and did, written while they could still be opened, so every page, column, action, filter, badge and empty state has a line here.

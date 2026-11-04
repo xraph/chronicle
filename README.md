@@ -18,6 +18,8 @@ You need [Go 1.26 or later](https://go.dev/dl/).
 go get github.com/xraph/chronicle@latest
 ```
 
+That's the core. It doesn't pull in Forge, Grove or any database driver. The stores, the HTTP handler and the Forge extension are modules of their own, so you add the ones you use, for example `go get github.com/xraph/chronicle/store/postgres@latest`. The in-memory store below is in the core, so this example needs nothing else.
+
 Save this as `main.go`. It records two events into an in-memory store and then verifies the chain:
 
 ```go
@@ -185,7 +187,7 @@ Retention lives in `retention/`. A policy names a category, a duration and wheth
 The `extension` package turns Chronicle into a [Forge extension](https://github.com/xraph/forge#extensions). It reads `extensions.chronicle` from your config (falling back to a top-level `chronicle` key), builds the store, mounts the admin API under `/chronicle`, runs the retention and checkpoint schedulers, and registers `chronicle.Emitter` in the container so other extensions can record events with `vessel.Inject[chronicle.Emitter]`.
 
 ```bash
-go get github.com/xraph/chronicle@latest github.com/xraph/grove/extension@latest
+go get github.com/xraph/chronicle@latest github.com/xraph/chronicle/extension@latest github.com/xraph/grove/extension@latest
 ```
 
 ```go

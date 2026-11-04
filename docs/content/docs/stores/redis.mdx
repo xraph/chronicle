@@ -5,6 +5,16 @@ description: High-throughput Redis store for latency-sensitive Chronicle workloa
 
 The `store/redis` package implements Chronicle's `store.Store` interface using Grove KV backed by the Redis driver. All entities are stored as JSON via Grove KV, making it suitable for high-throughput, low-latency audit and event logging.
 
+## Install
+
+The Redis store is its own module, so you get it next to the core. Keep both at the same version:
+
+```bash
+go get github.com/xraph/chronicle@latest github.com/xraph/chronicle/store/redis@latest
+```
+
+If you mount it through Forge, add `github.com/xraph/chronicle/extension` as well.
+
 ## Import
 
 ```go

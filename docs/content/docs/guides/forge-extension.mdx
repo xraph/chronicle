@@ -5,6 +5,14 @@ description: Mount Chronicle into a Forge application as a first-class extension
 
 Chronicle ships as a `forge.Extension` that integrates with the Forge framework's lifecycle, DI container, and router. This is the recommended approach for Forge applications.
 
+## Install
+
+The extension is its own module, and it's the only part of Chronicle that brings Forge in. Get it at the same version as the core:
+
+```bash
+go get github.com/xraph/chronicle@latest github.com/xraph/chronicle/extension@latest
+```
+
 ## Register the extension
 
 ```go

@@ -40,6 +40,8 @@ c, err := chronicle.New(chronicle.WithStore(adapter))
 
 ## Usage with the Forge extension
 
+The memory store is in the core, but the extension is its own module: `go get github.com/xraph/chronicle/extension@latest`.
+
 ```go
 import chronicleext "github.com/xraph/chronicle/extension"
 
