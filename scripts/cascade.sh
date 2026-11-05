@@ -145,7 +145,7 @@ repo_of() { awk -F'\t' -v m="$1" '$3==m{print $1; exit}' "$WORK/index.tsv"; }
 
 # The upstream's modules that this release tagged.
 UP_TAGS=$(git ls-remote --tags --refs "$(url "$UPSTREAM")" | awk '{sub("refs/tags/","",$2); print $2}')
-: > changed.txt; : > released.tsv
+: > changed.txt; : > released.tsv; : > failed_repos.txt
 awk -F'\t' -v r="$UPSTREAM" '$1==r{print $2"\t"$3}' index.tsv | while IFS=$'\t' read -r dir mod; do
   tag=$VERSION; [ "$dir" != . ] && tag="$dir/$VERSION"
   if in_list "$tag" "$UP_TAGS"; then
@@ -362,15 +362,33 @@ for repo in $ORDER; do
     && grep -q golangci "$dest/.github/workflows/$(release_wf "$repo")" 2>/dev/null; then
     lint=true
   fi
+  # Each step exits on its own failure. set -e doesn't reach inside a
+  # subshell that sits on the left of ||, so without the explicit exits the
+  # last step's status would hide an earlier failure.
+  : > "$WORK/verify_failed.txt"
   { printf '%s\n' "$mods" | cut -f1; cat "$WORK/tidied.txt"; } | sort -u | while read -r dir; do
     log "    verify $dir"
     (
-      cd "$dest/$dir"
-      go build ./... && go vet ./...
-      if [ "$TESTS" = true ]; then go test -count=1 ./...; fi
-      if [ "$lint" = true ]; then golangci-lint run ./...; fi
-    ) >&2 || die "$repo/$dir: build, vet, tests or lint failed on the new versions"
+      cd "$dest/$dir" || exit 1
+      go build ./... || exit 1
+      go vet ./... || exit 1
+      if [ "$TESTS" = true ]; then go test -count=1 ./... || exit 1; fi
+      if [ "$lint" = true ]; then golangci-lint run ./... || exit 1; fi
+    ) >&2 || echo "$dir" >> "$WORK/verify_failed.txt"
   done
+  if [ -s "$WORK/verify_failed.txt" ]; then
+    where=$(paste -sd' ' "$WORK/verify_failed.txt")
+    # Nothing depends on a repo that is never released (the plan checks
+    # that), so the cascade can leave it behind and carry on. A repo others
+    # wait on has to stop the run.
+    if [ -n "$nv" ]; then
+      die "$repo ($where): build, vet, tests or lint failed on the new versions"
+    fi
+    log "::error::$repo ($where): build, vet, tests or lint failed on the new versions; not pushed"
+    row "verify failed in $where, not pushed"
+    echo "$repo" >> "$WORK/failed_repos.txt"
+    continue
+  fi
 
   if [ "$bumped" = true ]; then
     # The subject names each upstream repo once: "move to chronicle v1.11.0 and dispatch v1.9.4".
@@ -437,4 +455,7 @@ for repo in $ORDER; do
   row "[$nv](https://github.com/$OWNER/$repo/actions/runs/$run)"
 done
 
+if [ -s "$WORK/failed_repos.txt" ]; then
+  die "finished, but these repos were left behind: $(paste -sd' ' "$WORK/failed_repos.txt")"
+fi
 log "==> Done"
