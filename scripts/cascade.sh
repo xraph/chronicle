@@ -323,6 +323,21 @@ for repo in $ORDER; do
     ) || die "$repo/$dir: go mod tidy failed"
   done
 
+  # A release tags every module in the repo, and release workflows check that
+  # each one is tidy. Tidy the ones the bump didn't touch as well, so a stale
+  # go.sum fails here, before anything is pushed, and not halfway through a
+  # release that has already tagged the root.
+  : > "$WORK/tidied.txt"
+  if [ -n "$nv" ]; then
+    awk -F'\t' -v r="$repo" '$1==r{print $2}' index.tsv | while read -r dir; do
+      printf '%s\n' "$mods" | cut -f1 | grep -qxF "$dir" && continue
+      (cd "$dest/$dir" && go mod tidy) >&2 || die "$repo/$dir: go mod tidy failed"
+      if [ -n "$(git -C "$dest" status --porcelain -- "$dir/go.mod" "$dir/go.sum")" ]; then
+        echo "$dir" >> "$WORK/tidied.txt"
+      fi
+    done
+  fi
+
   bumped=false
   [ -n "$(git -C "$dest" status --porcelain)" ] && bumped=true
   head=$(git -C "$dest" rev-parse HEAD)
@@ -337,7 +352,7 @@ for repo in $ORDER; do
     log "    already on the new versions, but $prev doesn't include them; releasing"
   fi
 
-  printf '%s\n' "$mods" | while IFS=$'\t' read -r dir mod; do
+  { printf '%s\n' "$mods" | cut -f1; cat "$WORK/tidied.txt"; } | sort -u | while read -r dir; do
     log "    verify $dir"
     (
       cd "$dest/$dir"
@@ -355,6 +370,8 @@ for repo in $ORDER; do
     if [ -n "$names" ]; then
       n=$(printf '%s\n' "$names" | wc -l | tr -d ' ')
       subject="build(deps): move to $(printf '%s\n' "$names" | awk -v n="$n" 'NR>1{printf (NR==n?" and ":", ")} {printf "%s",$0}')"
+    elif [ -s "$WORK/tidied.txt" ]; then
+      subject="build(deps): tidy the nested modules"
     else
       subject="build(deps): tidy after the $UPSTREAM $VERSION release"
     fi
@@ -364,6 +381,9 @@ for repo in $ORDER; do
       if [ -s "$WORK/moved.txt" ]; then
         echo; echo "Cascade from $UPSTREAM $VERSION."; echo
         sort -u "$WORK/moved.txt" | awk '{ if ($2=="none") printf "- add %s %s\n", $1, $3; else printf "- %s %s to %s\n", $1, $2, $3 }'
+      fi
+      if [ -s "$WORK/tidied.txt" ]; then
+        echo; echo "Also tidies $(paste -sd' ' "$WORK/tidied.txt" | sed 's/ /, /g'), so the release's tidy check passes."
       fi
     } > "$WORK/msg.txt"
     git -C "$dest" add -A
