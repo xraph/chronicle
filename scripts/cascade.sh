@@ -67,6 +67,10 @@ export GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0=
 export GIT_CONFIG_KEY_1=credential.https://github.com.helper GIT_CONFIG_VALUE_1='!gh auth git-credential'
 export GOPRIVATE="github.com/$OWNER/*${GOPRIVATE:+,$GOPRIVATE}"
 export GOFLAGS=-mod=mod
+# A repo's go.work is for working on it locally, and -mod=mod is refused in
+# workspace mode. Each module is checked on its own, the way a consumer
+# builds it.
+export GOWORK=off
 export GIT_TERMINAL_PROMPT=0
 export LC_ALL=C
 
