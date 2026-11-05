@@ -34,6 +34,8 @@
 # the bump commit and nothing more.
 #
 # Needs bash 3.2+, git, go, gh, jq, tsort and a sort that knows -V.
+# golangci-lint is optional: with it on PATH, repos whose release lints are
+# linted before they're pushed.
 set -euo pipefail
 
 UPSTREAM=${1:?usage: cascade.sh <upstream-repo> <version>}
@@ -352,13 +354,22 @@ for repo in $ORDER; do
     log "    already on the new versions, but $prev doesn't include them; releasing"
   fi
 
+  # When the repo's release lints, lint here too, so a lint failure stops
+  # the cascade before anything is pushed rather than after the release has
+  # tagged the root.
+  lint=false
+  if [ -n "$nv" ] && command -v golangci-lint >/dev/null \
+    && grep -q golangci "$dest/.github/workflows/$(release_wf "$repo")" 2>/dev/null; then
+    lint=true
+  fi
   { printf '%s\n' "$mods" | cut -f1; cat "$WORK/tidied.txt"; } | sort -u | while read -r dir; do
     log "    verify $dir"
     (
       cd "$dest/$dir"
       go build ./... && go vet ./...
       if [ "$TESTS" = true ]; then go test -count=1 ./...; fi
-    ) >&2 || die "$repo/$dir: build, vet or tests failed on the new versions"
+      if [ "$lint" = true ]; then golangci-lint run ./...; fi
+    ) >&2 || die "$repo/$dir: build, vet, tests or lint failed on the new versions"
   done
 
   if [ "$bumped" = true ]; then

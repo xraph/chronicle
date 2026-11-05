@@ -66,6 +66,14 @@ jobs:
           go-version: stable
           cache: false
 
+      # Several release workflows lint, so the cascade lints those repos
+      # before it pushes to them.
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          install-only: true
+
       - name: Cascade
         env:
           GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
