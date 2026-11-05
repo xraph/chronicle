@@ -1,5 +1,9 @@
 {
-  "exclude_repos": ["hallproof", "dql-history", "dtl-history"],
+  "exclude_repos": [
+    "hallproof",
+    "dql-history",
+    "dtl-history"
+  ],
   "exclude_paths": [
     "(^|/)qualification(/|$)",
     "(^|/)_?examples?(/|$)",
@@ -9,11 +13,22 @@
     "(^|/)\\.superpowers(/|$)",
     "(^|/)\\.claude(/|$)"
   ],
-  "bump_only": ["loomplane", "tap", "twinos"],
+  "bump_only": [
+    "loomplane",
+    "tap",
+    "twinos"
+  ],
   "release_workflow": {
-    "foundry": "release-dispatch.yml"
+    "foundry": "release-dispatch.yml",
+    "fabriq": "release-dispatch.yml",
+    "kgkit": "release-dispatch.yml"
   },
   "release_inputs": {
-    "authsome": { "modules": "go" }
+    "authsome": {
+      "modules": "go"
+    },
+    "fabriq": {
+      "dry_run": "false"
+    }
   }
 }
