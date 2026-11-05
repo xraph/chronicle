@@ -1,0 +1,76 @@
+name: Cascade
+
+# Releases every xraph repo that depends on chronicle, in dependency order,
+# after a chronicle release. scripts/cascade.sh does the work; its header says
+# how it decides which repos change, and .github/cascade.json holds the
+# exclusions and per-repo overrides.
+#
+# CASCADE_TOKEN is a token that can push to and dispatch workflows in every
+# xraph repo (contents and actions write). It has to belong to a user allowed
+# to bypass the rulesets on main, or the push to a repo that requires status
+# checks is rejected.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+    secrets:
+      CASCADE_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Chronicle release to cascade, e.g. v1.11.0'
+        required: true
+        type: string
+      dry-run:
+        description: 'Bump and verify what can be checked now, push nothing'
+        type: boolean
+        default: true
+      bump:
+        description: 'How dependents move'
+        type: choice
+        options: [patch, minor]
+        default: patch
+
+concurrency:
+  group: cascade
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cascade:
+    name: Cascade
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Require the token
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::CASCADE_TOKEN is not set. Add it as a repository or organization secret."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Cascade
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry-run && 'true' || 'false' }}
+          CASCADE_BUMP: ${{ inputs.bump || 'patch' }}
+          UPSTREAM: ${{ github.event.repository.name }}
+        run: scripts/cascade.sh "$UPSTREAM" "$VERSION"

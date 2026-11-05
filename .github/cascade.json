@@ -1,0 +1,19 @@
+{
+  "exclude_repos": ["hallproof", "dql-history", "dtl-history"],
+  "exclude_paths": [
+    "(^|/)qualification(/|$)",
+    "(^|/)_?examples?(/|$)",
+    "(^|/)testdata(/|$)",
+    "(^|/)demo(/|$)",
+    "(^|/)spikes(/|$)",
+    "(^|/)\\.superpowers(/|$)",
+    "(^|/)\\.claude(/|$)"
+  ],
+  "bump_only": ["loomplane", "tap", "twinos"],
+  "release_workflow": {
+    "foundry": "release-dispatch.yml"
+  },
+  "release_inputs": {
+    "authsome": { "modules": "go" }
+  }
+}
