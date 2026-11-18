@@ -10,6 +10,11 @@ on:
         description: 'Release tag (e.g., v1.0.0)'
         required: true
         type: string
+      cascade:
+        description: 'Cascade the release to dependents. A cascade from another upstream that releases chronicle along the way turns this off, or the two would race.'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -114,11 +119,14 @@ jobs:
           generate_release_notes: true
 
   # Once the release is out, move every repo that depends on chronicle onto
-  # it and release them in dependency order. Prereleases don't cascade.
+  # it and release them in dependency order. Prereleases don't cascade, and
+  # neither does a release dispatched with cascade=false. A tag push has no
+  # inputs, so the event is checked first: a null input compares equal to
+  # false in Actions expressions.
   cascade:
     name: Cascade to dependents
     needs: release
-    if: ${{ !contains(needs.release.outputs.tag, '-') }}
+    if: ${{ !contains(needs.release.outputs.tag, '-') && (github.event_name != 'workflow_dispatch' || inputs.cascade) }}
     uses: ./.github/workflows/cascade.yml
     with:
       version: ${{ needs.release.outputs.tag }}

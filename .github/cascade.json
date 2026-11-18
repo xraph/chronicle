@@ -33,6 +33,9 @@
     },
     "nexus": {
       "module": "all"
+    },
+    "chronicle": {
+      "cascade": "false"
     }
   }
 }
