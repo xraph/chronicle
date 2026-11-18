@@ -316,7 +316,18 @@ wait_for_release() { # wait_for_release <repo> <sha> <since>
   done
   [ -n "$id" ] || die "$repo: release run did not start"
   log "    watching https://github.com/$OWNER/$repo/actions/runs/$id"
-  gh run watch "$id" -R "$OWNER/$repo" --exit-status --interval 30 > /dev/null \
+  # gh run watch exits non-zero on a network error as well as a failed run,
+  # so a failure is confirmed against the run itself before it stops the
+  # cascade. A watch that broke off early is resumed.
+  local concl=""
+  for _ in 1 2 3 4 5; do
+    gh run watch "$id" -R "$OWNER/$repo" --exit-status --interval 30 > /dev/null && { concl=success; break; }
+    concl=$(gh run view "$id" -R "$OWNER/$repo" --json status,conclusion \
+      --jq 'if .status == "completed" then .conclusion else "running" end' 2>/dev/null || echo unknown)
+    case $concl in success|failure|cancelled|timed_out|startup_failure|action_required) break ;; esac
+    sleep 15
+  done
+  [ "$concl" = success ] \
     || die "$repo: release run failed: https://github.com/$OWNER/$repo/actions/runs/$id"
   echo "$id"
 }
