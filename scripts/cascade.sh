@@ -535,10 +535,24 @@ process_repo() {
     $(jq -r --arg r "$repo" '.release_inputs[$r] // {} | to_entries[] | "-f \(.key)=\(.value)"' "$CONFIG")
   run=$(wait_for_release "$repo" "$sha" "$since")
 
+  # Some release workflows tag only the module they were asked for (shield
+  # releases integrations/nexusguard with its own dispatch). When a changed
+  # nested module's tag is missing and the workflow takes a tag input, ask it
+  # for that tag too, on the same commit.
   tags=$(git ls-remote --tags --refs "$(url "$repo")" | awk '{sub("refs/tags/","",$2); print $2}')
   printf '%s\n' "$mods" | while IFS=$'\t' read -r dir mod; do
     tag=$nv; [ "$dir" != . ] && tag="$dir/$nv"
-    in_list "$tag" "$tags" || die "$repo: release finished but tag $tag is missing"
+    in_list "$tag" "$tags" && continue
+    if [ "$dir" = . ] || [ "$(release_input "$repo")" != tag ]; then
+      die "$repo: release finished but tag $tag is missing"
+    fi
+    log "    release $tag (its own dispatch)"
+    since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # shellcheck disable=SC2086
+    gh workflow run "$(release_wf "$repo")" -R "$OWNER/$repo" --ref "$(git -C "$dest" rev-parse --abbrev-ref HEAD)" -f "tag=$tag" $skip_args
+    wait_for_release "$repo" "$sha" "$since" > /dev/null
+    git ls-remote --tags --refs "$(url "$repo")" "refs/tags/$tag" | grep -q . \
+      || die "$repo: release of $tag finished but the tag is missing"
   done
   record "$mods" "$nv" real
   row "[$nv](https://github.com/$OWNER/$repo/actions/runs/$run)"
