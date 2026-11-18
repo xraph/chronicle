@@ -4,8 +4,11 @@
 # Releases every repo in the org that depends on <upstream-repo>@<version>,
 # in dependency order. For each one it moves the go.mod files onto the new
 # versions, builds, vets and tests, commits to the default branch, then runs
-# that repo's own release workflow and waits for it before moving on, so a
-# repo is only bumped once everything it depends on has been released.
+# that repo's own release workflow and waits for it, so a repo is only bumped
+# once everything it depends on has been released. Repos are grouped into
+# waves by dependency; the repos in one wave don't wait on each other, so
+# they run side by side, and each wave starts when the one before has
+# finished.
 #
 # Which modules change is worked out from the go.mod files, not a list:
 #   - every module of the upstream repo that got a <version> tag has changed;
@@ -19,6 +22,8 @@
 #   CASCADE_WORKDIR  scratch directory (default: a new temp dir)
 #   CASCADE_BUMP     patch | minor (default patch)
 #   CASCADE_TESTS    true | false: run go test before pushing (default true)
+#   CASCADE_PARALLEL repos released side by side within a wave (default 4;
+#                    1 releases them one at a time)
 #   DRY_RUN          true: bump and verify the first wave, push nothing
 #   GH_TOKEN         token with contents and actions write on every repo
 #
@@ -28,6 +33,10 @@
 #   bump_only        repos that get the bump commit but are never released
 #   release_workflow {"repo": "file.yml"} when it isn't release.yml
 #   release_inputs   {"repo": {"input": "value"}} extra release workflow inputs
+#   release_tests    repos whose release keeps its own tests. Any other repo
+#                    whose release workflow has a skip-tests (or skip_tests)
+#                    input is dispatched with it set, since the cascade has
+#                    already tested it
 #
 # A repo is released only when its release workflow can be dispatched with a
 # `tag` input (given vX.Y.Z) or a `version` input (given X.Y.Z). Anything else
@@ -126,10 +135,12 @@ for repo in $REPOS; do
 
   rel="$dest/.github/workflows/$(release_wf "$repo")"
   if [ -f "$rel" ] && grep -q 'workflow_dispatch:' "$rel"; then
+    # The input that skips the release's own tests, if it has one.
+    skip=$(grep -oE '^[[:space:]]+skip[-_]tests?:[[:space:]]*$' "$rel" | head -1 | tr -d ' :' || true)
     if grep -Eq '^[[:space:]]+tag:[[:space:]]*$' "$rel"; then
-      printf '%s\ttag\n' "$repo" >> releasable.txt
+      printf '%s\ttag\t%s\n' "$repo" "${skip:--}" >> releasable.txt
     elif grep -Eq '^[[:space:]]+version:[[:space:]]*$' "$rel"; then
-      printf '%s\tversion\n' "$repo" >> releasable.txt
+      printf '%s\tversion\t%s\n' "$repo" "${skip:--}" >> releasable.txt
     fi
   fi
 
@@ -202,6 +213,15 @@ ORDER=$(printf '%s\n' "$ORDER" | grep -vxF "$UPSTREAM" || true)
 releasable() { in_list "$1" "$(cut -f1 "$WORK/releasable.txt")" && ! in_list "$1" "$BUMP_ONLY"; }
 # release_input <repo>: "tag" or "version", whichever its release workflow takes.
 release_input() { awk -F'\t' -v r="$1" '$1==r{print $2; exit}' "$WORK/releasable.txt"; }
+# skip_tests_input <repo>: the release workflow's skip-tests input, or nothing
+# when it has none or the repo is listed in release_tests. The cascade has
+# already built, vetted, tested and linted the repo before pushing, so its
+# release need not run the tests again.
+RELEASE_TESTS=$(cfg '.release_tests // [] | .[]')
+skip_tests_input() {
+  in_list "$1" "$RELEASE_TESTS" && return 0
+  awk -F'\t' -v r="$1" '$1==r && $3!="-" && $3!=""{print $3; exit}' "$WORK/releasable.txt"
+}
 
 # A repo that is never released can't be a dependency of another changed repo.
 while read -r from to; do
@@ -234,7 +254,7 @@ done < skipped.tsv
 log ""
 
 # ---------------------------------------------------------------------------
-# 3. Release, one repo at a time.
+# 3. Release in waves: repos that don't wait on each other run side by side.
 # ---------------------------------------------------------------------------
 released_version() { awk -F'\t' -v m="$1" '$1==m{print $2"\t"$3; exit}' "$WORK/released.tsv"; }
 
@@ -296,7 +316,18 @@ wait_for_release() { # wait_for_release <repo> <sha> <since>
   done
   [ -n "$id" ] || die "$repo: release run did not start"
   log "    watching https://github.com/$OWNER/$repo/actions/runs/$id"
-  gh run watch "$id" -R "$OWNER/$repo" --exit-status --interval 30 > /dev/null \
+  # gh run watch exits non-zero on a network error as well as a failed run,
+  # so a failure is confirmed against the run itself before it stops the
+  # cascade. A watch that broke off early is resumed.
+  local concl=""
+  for _ in 1 2 3 4 5; do
+    gh run watch "$id" -R "$OWNER/$repo" --exit-status --interval 30 > /dev/null && { concl=success; break; }
+    concl=$(gh run view "$id" -R "$OWNER/$repo" --json status,conclusion \
+      --jq 'if .status == "completed" then .conclusion else "running" end' 2>/dev/null || echo unknown)
+    case $concl in success|failure|cancelled|timed_out|startup_failure|action_required) break ;; esac
+    sleep 15
+  done
+  [ "$concl" = success ] \
     || die "$repo: release run failed: https://github.com/$OWNER/$repo/actions/runs/$id"
   echo "$id"
 }
@@ -309,12 +340,17 @@ record() { # record <mods> <version> <real|planned>
 }
 reqs() { go mod edit -json | jq -r '.Require[]? | "\(.Path) \(.Version)"' | sort; }
 
-for repo in $ORDER; do
+# process_repo <repo>: bump, verify, push and release one repo. It runs in a
+# subshell of its own, so die stops this repo only; the wave driver below
+# reports it and stops the run once the rest of the wave has finished.
+process_repo() {
+  local repo=$1
   log "==> $repo"
-  : > "$WORK/moved.txt"
+  RW="$WORK/r/$repo"; mkdir -p "$RW"
+  : > "$RW/moved.txt"
   mods=$(awk -F'\t' -v r="$repo" 'FILENAME=="changed.txt"{c[$1]=1;next} $1==r && ($3 in c){print $2"\t"$3}' changed.txt index.tsv)
   dirs=$(printf '%s\n' "$mods" | cut -f1 | paste -sd' ' -)
-  row() { summary "| $repo | $dirs | $1 |"; }
+  row() { printf '| %s | %s | %s |\n' "$repo" "$dirs" "$1" >> "$RW/row"; }
   prev=""; nv=""
   if releasable "$repo"; then
     prev=$(latest_tag "$repo")
@@ -336,7 +372,7 @@ for repo in $ORDER; do
     else
       row "dry run: would bump"
     fi
-    continue
+    return 0
   fi
 
   dest="full/$repo"
@@ -348,11 +384,11 @@ for repo in $ORDER; do
     log "    bump $mod"
     (
       cd "$dest/$dir"
-      reqs > "$WORK/before.txt"
+      reqs > "$RW/before.txt"
       pin_released && go mod tidy && pin_released && go mod tidy
-      reqs > "$WORK/after.txt"
-      join -a2 -e none -o '0,1.2,2.2' "$WORK/before.txt" "$WORK/after.txt" | while read -r p old new; do
-        [ "$old" != "$new" ] && [ -n "$(released_version "$p")" ] && echo "$p $old $new" >> "$WORK/moved.txt"
+      reqs > "$RW/after.txt"
+      join -a2 -e none -o '0,1.2,2.2' "$RW/before.txt" "$RW/after.txt" | while read -r p old new; do
+        [ "$old" != "$new" ] && [ -n "$(released_version "$p")" ] && echo "$p $old $new" >> "$RW/moved.txt"
         true
       done
     ) || die "$repo/$dir: go mod tidy failed"
@@ -362,13 +398,13 @@ for repo in $ORDER; do
   # each one is tidy. Tidy the ones the bump didn't touch as well, so a stale
   # go.sum fails here, before anything is pushed, and not halfway through a
   # release that has already tagged the root.
-  : > "$WORK/tidied.txt"
+  : > "$RW/tidied.txt"
   if [ -n "$nv" ]; then
     awk -F'\t' -v r="$repo" '$1==r{print $2}' index.tsv | while read -r dir; do
       printf '%s\n' "$mods" | cut -f1 | grep -qxF "$dir" && continue
       (cd "$dest/$dir" && go mod tidy) >&2 || die "$repo/$dir: go mod tidy failed"
       if [ -n "$(git -C "$dest" status --porcelain -- "$dir/go.mod" "$dir/go.sum")" ]; then
-        echo "$dir" >> "$WORK/tidied.txt"
+        echo "$dir" >> "$RW/tidied.txt"
       fi
     done
   fi
@@ -379,7 +415,7 @@ for repo in $ORDER; do
 
   if [ "$bumped" = false ]; then
     if [ -z "$nv" ]; then
-      log "    already on the new versions"; row "already up to date"; continue
+      log "    already on the new versions"; row "already up to date"; return 0
     fi
     # The tag counts when it is HEAD, or when every go.mod and go.sum is the
     # same at the tag as at HEAD: commits since then (CI, docs, code) don't
@@ -388,7 +424,7 @@ for repo in $ORDER; do
       git -C "$dest" fetch -q --depth 1 origin "refs/tags/$prev:refs/tags/$prev" \
         && git -C "$dest" diff --quiet "$prev" HEAD -- ':(glob)**/go.mod' ':(glob)**/go.sum'
     }; then
-      log "    already released as $prev"; record "$mods" "$prev" real; row "already released as $prev"; continue
+      log "    already released as $prev"; record "$mods" "$prev" real; row "already released as $prev"; return 0
     fi
     log "    already on the new versions, but $prev doesn't include them; releasing"
   fi
@@ -404,8 +440,8 @@ for repo in $ORDER; do
   # Each step exits on its own failure. set -e doesn't reach inside a
   # subshell that sits on the left of ||, so without the explicit exits the
   # last step's status would hide an earlier failure.
-  : > "$WORK/verify_failed.txt"
-  { printf '%s\n' "$mods" | cut -f1; cat "$WORK/tidied.txt"; } | sort -u | while read -r dir; do
+  : > "$RW/verify_failed.txt"
+  { printf '%s\n' "$mods" | cut -f1; cat "$RW/tidied.txt"; } | sort -u | while read -r dir; do
     log "    verify $dir"
     (
       cd "$dest/$dir" || exit 1
@@ -419,10 +455,10 @@ for repo in $ORDER; do
       go vet ./... || exit 1
       if [ "$TESTS" = true ]; then go test -count=1 ./... || exit 1; fi
       if [ "$lint" = true ]; then golangci-lint run ./... || exit 1; fi
-    ) >&2 || echo "$dir" >> "$WORK/verify_failed.txt"
+    ) >&2 || echo "$dir" >> "$RW/verify_failed.txt"
   done
-  if [ -s "$WORK/verify_failed.txt" ]; then
-    where=$(paste -sd' ' "$WORK/verify_failed.txt")
+  if [ -s "$RW/verify_failed.txt" ]; then
+    where=$(paste -sd' ' "$RW/verify_failed.txt")
     # Nothing depends on a repo that is never released (the plan checks
     # that), so the cascade can leave it behind and carry on. A repo others
     # wait on has to stop the run.
@@ -432,19 +468,19 @@ for repo in $ORDER; do
     log "::error::$repo ($where): build, vet, tests or lint failed on the new versions; not pushed"
     row "verify failed in $where, not pushed"
     echo "$repo" >> "$WORK/failed_repos.txt"
-    continue
+    return 0
   fi
 
   if [ "$bumped" = true ]; then
     # The subject names each upstream repo once: "move to chronicle v1.11.0 and dispatch v1.9.4".
-    names=$(sort -u "$WORK/moved.txt" | while read -r p _ new; do
+    names=$(sort -u "$RW/moved.txt" | while read -r p _ new; do
       r=$(repo_of "$p"); root=$(awk -F'\t' -v r="$r" '$1==r && $2=="."{print $3}' index.tsv)
       printf '%s %s\n' "${root:-$p}" "$new"
     done | sed "s|^github.com/$OWNER/||" | sort -u)
     if [ -n "$names" ]; then
       n=$(printf '%s\n' "$names" | wc -l | tr -d ' ')
       subject="build(deps): move to $(printf '%s\n' "$names" | awk -v n="$n" 'NR>1{printf (NR==n?" and ":", ")} {printf "%s",$0}')"
-    elif [ -s "$WORK/tidied.txt" ]; then
+    elif [ -s "$RW/tidied.txt" ]; then
       subject="build(deps): tidy the nested modules"
     else
       subject="build(deps): tidy after the $UPSTREAM $VERSION release"
@@ -452,17 +488,17 @@ for repo in $ORDER; do
     [ ${#subject} -gt 72 ] && subject="build(deps): move to the $UPSTREAM $VERSION releases"
     {
       echo "$subject"
-      if [ -s "$WORK/moved.txt" ]; then
+      if [ -s "$RW/moved.txt" ]; then
         echo; echo "Cascade from $UPSTREAM $VERSION."; echo
-        sort -u "$WORK/moved.txt" | awk '{ if ($2=="none") printf "- add %s %s\n", $1, $3; else printf "- %s %s to %s\n", $1, $2, $3 }'
+        sort -u "$RW/moved.txt" | awk '{ if ($2=="none") printf "- add %s %s\n", $1, $3; else printf "- %s %s to %s\n", $1, $2, $3 }'
       fi
-      if [ -s "$WORK/tidied.txt" ]; then
-        echo; echo "Also tidies $(paste -sd' ' "$WORK/tidied.txt" | sed 's/ /, /g'), so the release's tidy check passes."
+      if [ -s "$RW/tidied.txt" ]; then
+        echo; echo "Also tidies $(paste -sd' ' "$RW/tidied.txt" | sed 's/ /, /g'), so the release's tidy check passes."
       fi
-    } > "$WORK/msg.txt"
+    } > "$RW/msg.txt"
     # Only module files: anything else in the tree is a verify side effect.
     git -C "$dest" add -A -- ':(glob)**/go.mod' ':(glob)**/go.sum'
-    git -C "$dest" commit -q -F "$WORK/msg.txt"
+    git -C "$dest" commit -q -F "$RW/msg.txt"
     log "    $subject"
   fi
 
@@ -473,7 +509,7 @@ for repo in $ORDER; do
     else
       row "dry run: would push the bump"
     fi
-    continue
+    return 0
   fi
 
   if [ "$bumped" = true ]; then
@@ -482,24 +518,96 @@ for repo in $ORDER; do
   sha=$(git -C "$dest" rev-parse HEAD)
 
   if [ -z "$nv" ]; then
-    log "    pushed $sha, not released (bump only)"; row "bumped, not released"; continue
+    log "    pushed $sha, not released (bump only)"; row "bumped, not released"; return 0
   fi
 
   since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   log "    release $nv"
   # shellcheck disable=SC2046
   if [ "$(release_input "$repo")" = version ]; then input="version=${nv#v}"; else input="tag=$nv"; fi
+  skip_args=""
+  skip=$(skip_tests_input "$repo")
+  if [ -n "$skip" ] && ! jq -e --arg r "$repo" --arg k "$skip" '.release_inputs[$r][$k] != null' "$CONFIG" >/dev/null; then
+    skip_args="-f $skip=true"
+  fi
   gh workflow run "$(release_wf "$repo")" -R "$OWNER/$repo" --ref "$(git -C "$dest" rev-parse --abbrev-ref HEAD)" -f "$input" \
+    $skip_args \
     $(jq -r --arg r "$repo" '.release_inputs[$r] // {} | to_entries[] | "-f \(.key)=\(.value)"' "$CONFIG")
   run=$(wait_for_release "$repo" "$sha" "$since")
 
+  # Some release workflows tag only the module they were asked for (shield
+  # releases integrations/nexusguard with its own dispatch). When a changed
+  # nested module's tag is missing and the workflow takes a tag input, ask it
+  # for that tag too, on the same commit.
   tags=$(git ls-remote --tags --refs "$(url "$repo")" | awk '{sub("refs/tags/","",$2); print $2}')
   printf '%s\n' "$mods" | while IFS=$'\t' read -r dir mod; do
     tag=$nv; [ "$dir" != . ] && tag="$dir/$nv"
-    in_list "$tag" "$tags" || die "$repo: release finished but tag $tag is missing"
+    in_list "$tag" "$tags" && continue
+    if [ "$dir" = . ] || [ "$(release_input "$repo")" != tag ]; then
+      die "$repo: release finished but tag $tag is missing"
+    fi
+    log "    release $tag (its own dispatch)"
+    since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # shellcheck disable=SC2086
+    gh workflow run "$(release_wf "$repo")" -R "$OWNER/$repo" --ref "$(git -C "$dest" rev-parse --abbrev-ref HEAD)" -f "tag=$tag" $skip_args
+    wait_for_release "$repo" "$sha" "$since" > /dev/null
+    git ls-remote --tags --refs "$(url "$repo")" "refs/tags/$tag" | grep -q . \
+      || die "$repo: release of $tag finished but the tag is missing"
   done
   record "$mods" "$nv" real
   row "[$nv](https://github.com/$OWNER/$repo/actions/runs/$run)"
+}
+
+# Waves: a repo's wave is one more than the latest wave of anything it waits
+# on, so every repo in a wave depends only on earlier waves. ORDER is already
+# topologically sorted, so one pass assigns them.
+: > waves.tsv
+for r in $ORDER; do
+  w=0
+  for from in $(awk -v r="$r" '$2==r && $1!=r {print $1}' edges.txt); do
+    fw=$(awk -F'\t' -v r="$from" '$1==r{print $2; exit}' waves.tsv)
+    if [ -n "$fw" ] && [ $((fw + 1)) -gt "$w" ]; then w=$((fw + 1)); fi
+  done
+  printf '%s\t%s\n' "$r" "$w" >> waves.tsv
+done
+
+# Each wave runs up to CASCADE_PARALLEL repos at a time (default 4; 1 runs
+# them one by one as before). A repo's output is held and printed as one
+# block, in order, as soon as it and every repo started before it in its
+# batch are done. A failure lets the rest of the wave finish, then stops the
+# run: later waves may need what failed.
+PARALLEL=${CASCADE_PARALLEL:-4}
+case $PARALLEL in ''|*[!0-9]*|0) die "CASCADE_PARALLEL must be a positive number" ;; esac
+mkdir -p "$WORK/r"
+last_wave=$(cut -f2 waves.tsv | sort -n | tail -1)
+for w in $(seq 0 "$last_wave"); do
+  wave=$(awk -F'\t' -v w="$w" '$2==w{print $1}' waves.tsv)
+  [ -n "$wave" ] || continue
+  log "==> wave $w: $(printf '%s\n' "$wave" | paste -sd' ' - | sed 's/ /, /g')"
+  failed=""
+  # shellcheck disable=SC2086
+  set -- $wave
+  while [ $# -gt 0 ]; do
+    batch=""; pids=""; n=0
+    while [ $# -gt 0 ] && [ "$n" -lt "$PARALLEL" ]; do
+      r=$1; shift; n=$((n + 1))
+      mkdir -p "$WORK/r/$r"; : > "$WORK/r/$r/row"
+      ( process_repo "$r" ) > "$WORK/r/$r/log" 2>&1 &
+      batch="$batch $r"; pids="$pids $!"
+    done
+    i=0
+    for pid in $pids; do
+      i=$((i + 1))
+      # shellcheck disable=SC2086
+      r=$(printf '%s\n' $batch | sed -n "${i}p")
+      if ! wait "$pid"; then failed="$failed $r"; fi
+      cat "$WORK/r/$r/log" >&2
+      while IFS= read -r line; do summary "$line"; done < "$WORK/r/$r/row"
+    done
+  done
+  if [ -n "$failed" ]; then
+    die "stopped after wave $w; failed:$failed"
+  fi
 done
 
 if [ -s "$WORK/failed_repos.txt" ]; then
