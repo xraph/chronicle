@@ -33,6 +33,10 @@
 #   bump_only        repos that get the bump commit but are never released
 #   release_workflow {"repo": "file.yml"} when it isn't release.yml
 #   release_inputs   {"repo": {"input": "value"}} extra release workflow inputs
+#   release_tests    repos whose release keeps its own tests. Any other repo
+#                    whose release workflow has a skip-tests (or skip_tests)
+#                    input is dispatched with it set, since the cascade has
+#                    already tested it
 #
 # A repo is released only when its release workflow can be dispatched with a
 # `tag` input (given vX.Y.Z) or a `version` input (given X.Y.Z). Anything else
@@ -131,10 +135,12 @@ for repo in $REPOS; do
 
   rel="$dest/.github/workflows/$(release_wf "$repo")"
   if [ -f "$rel" ] && grep -q 'workflow_dispatch:' "$rel"; then
+    # The input that skips the release's own tests, if it has one.
+    skip=$(grep -oE '^[[:space:]]+skip[-_]tests?:[[:space:]]*$' "$rel" | head -1 | tr -d ' :' || true)
     if grep -Eq '^[[:space:]]+tag:[[:space:]]*$' "$rel"; then
-      printf '%s\ttag\n' "$repo" >> releasable.txt
+      printf '%s\ttag\t%s\n' "$repo" "${skip:--}" >> releasable.txt
     elif grep -Eq '^[[:space:]]+version:[[:space:]]*$' "$rel"; then
-      printf '%s\tversion\n' "$repo" >> releasable.txt
+      printf '%s\tversion\t%s\n' "$repo" "${skip:--}" >> releasable.txt
     fi
   fi
 
@@ -207,6 +213,15 @@ ORDER=$(printf '%s\n' "$ORDER" | grep -vxF "$UPSTREAM" || true)
 releasable() { in_list "$1" "$(cut -f1 "$WORK/releasable.txt")" && ! in_list "$1" "$BUMP_ONLY"; }
 # release_input <repo>: "tag" or "version", whichever its release workflow takes.
 release_input() { awk -F'\t' -v r="$1" '$1==r{print $2; exit}' "$WORK/releasable.txt"; }
+# skip_tests_input <repo>: the release workflow's skip-tests input, or nothing
+# when it has none or the repo is listed in release_tests. The cascade has
+# already built, vetted, tested and linted the repo before pushing, so its
+# release need not run the tests again.
+RELEASE_TESTS=$(cfg '.release_tests // [] | .[]')
+skip_tests_input() {
+  in_list "$1" "$RELEASE_TESTS" && return 0
+  awk -F'\t' -v r="$1" '$1==r && $3!="-" && $3!=""{print $3; exit}' "$WORK/releasable.txt"
+}
 
 # A repo that is never released can't be a dependency of another changed repo.
 while read -r from to; do
@@ -499,7 +514,13 @@ process_repo() {
   log "    release $nv"
   # shellcheck disable=SC2046
   if [ "$(release_input "$repo")" = version ]; then input="version=${nv#v}"; else input="tag=$nv"; fi
+  skip_args=""
+  skip=$(skip_tests_input "$repo")
+  if [ -n "$skip" ] && ! jq -e --arg r "$repo" --arg k "$skip" '.release_inputs[$r][$k] != null' "$CONFIG" >/dev/null; then
+    skip_args="-f $skip=true"
+  fi
   gh workflow run "$(release_wf "$repo")" -R "$OWNER/$repo" --ref "$(git -C "$dest" rev-parse --abbrev-ref HEAD)" -f "$input" \
+    $skip_args \
     $(jq -r --arg r "$repo" '.release_inputs[$r] // {} | to_entries[] | "-f \(.key)=\(.value)"' "$CONFIG")
   run=$(wait_for_release "$repo" "$sha" "$since")
 
