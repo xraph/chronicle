@@ -111,7 +111,16 @@ EXCLUDE_PATHS=$(cfg '.exclude_paths // [] | join("|")')
 # ---------------------------------------------------------------------------
 log "==> Scanning $OWNER repos"
 : > index.tsv; : > requires.tsv; : > releasable.txt; : > blocked.tsv
-REPOS=$(gh repo list "$OWNER" --no-archived --source --limit 1000 --json name,isEmpty --jq '.[] | select(.isEmpty | not) | .name' | sort)
+# Retried: one dropped connection here used to end the run before it began.
+REPOS=""
+for _ in 1 2 3 4 5; do
+  if REPOS=$(gh repo list "$OWNER" --no-archived --source --limit 1000 --json name,isEmpty --jq '.[] | select(.isEmpty | not) | .name'); then
+    break
+  fi
+  REPOS=""; sleep 10
+done
+[ -n "$REPOS" ] || die "could not list the $OWNER repos"
+REPOS=$(printf '%s\n' "$REPOS" | sort)
 
 for repo in $REPOS; do
   in_list "$repo" "$EXCLUDE_REPOS" && continue
