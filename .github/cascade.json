@@ -11,7 +11,8 @@
     "(^|/)demo(/|$)",
     "(^|/)spikes(/|$)",
     "(^|/)\\.superpowers(/|$)",
-    "(^|/)\\.claude(/|$)"
+    "(^|/)\\.claude(/|$)",
+    "(^|/)inttest(/|$)"
   ],
   "bump_only": [
     "loomplane",
@@ -29,6 +30,9 @@
     },
     "fabriq": {
       "dry_run": "false"
+    },
+    "nexus": {
+      "module": "all"
     }
   }
 }

@@ -30,8 +30,14 @@
 #   release_inputs   {"repo": {"input": "value"}} extra release workflow inputs
 #
 # A repo is released only when its release workflow can be dispatched with a
-# `tag` input. Anything else (apps that deploy, repos with no release) gets
-# the bump commit and nothing more.
+# `tag` input (given vX.Y.Z) or a `version` input (given X.Y.Z). Anything else
+# (apps that deploy, repos with no release) gets the bump commit and nothing
+# more.
+#
+# The next version is a patch (or minor) bump of the newest vX.Y.Z tag. A repo
+# in the middle of a prerelease series, one whose newest tag is vX.Y.Z-rc.N
+# above its newest stable tag, gets vX.Y.Z-rc.N+1 instead, so a cascade never
+# cuts a stable release out from under one.
 #
 # Needs bash 3.2+, git, go, gh, jq, tsort and a sort that knows -V.
 # golangci-lint is optional: with it on PATH, repos whose release lints are
@@ -119,8 +125,12 @@ for repo in $REPOS; do
   [ "$ok" = true ] || die "could not read $repo after three tries"
 
   rel="$dest/.github/workflows/$(release_wf "$repo")"
-  if [ -f "$rel" ] && grep -q 'workflow_dispatch:' "$rel" && grep -Eq '^[[:space:]]+tag:[[:space:]]*$' "$rel"; then
-    echo "$repo" >> releasable.txt
+  if [ -f "$rel" ] && grep -q 'workflow_dispatch:' "$rel"; then
+    if grep -Eq '^[[:space:]]+tag:[[:space:]]*$' "$rel"; then
+      printf '%s\ttag\n' "$repo" >> releasable.txt
+    elif grep -Eq '^[[:space:]]+version:[[:space:]]*$' "$rel"; then
+      printf '%s\tversion\n' "$repo" >> releasable.txt
+    fi
   fi
 
   (cd "$dest" && find . -name go.mod -not -path '*/node_modules/*') | sed 's|^\./||; s|/\{0,1\}go.mod$||' | while read -r dir; do
@@ -189,12 +199,14 @@ ORDER=$(printf '%s\n' "$ORDER" | grep -vxF "$UPSTREAM" || true)
 
 [ -n "$ORDER" ] || { log "Nothing depends on $UPSTREAM@$VERSION."; summary "Nothing depends on \`$UPSTREAM@$VERSION\`."; exit 0; }
 
-releasable() { in_list "$1" "$(cat "$WORK/releasable.txt")" && ! in_list "$1" "$BUMP_ONLY"; }
+releasable() { in_list "$1" "$(cut -f1 "$WORK/releasable.txt")" && ! in_list "$1" "$BUMP_ONLY"; }
+# release_input <repo>: "tag" or "version", whichever its release workflow takes.
+release_input() { awk -F'\t' -v r="$1" '$1==r{print $2; exit}' "$WORK/releasable.txt"; }
 
 # A repo that is never released can't be a dependency of another changed repo.
 while read -r from to; do
   [ "$from" = "$to" ] || [ "$from" = "$UPSTREAM" ] && continue
-  releasable "$from" || die "$to needs a release of $from, but $from has no release workflow that takes a tag input (or is bump_only)"
+  releasable "$from" || die "$to needs a release of $from, but $from has no release workflow that takes a tag or version input (or is bump_only)"
 done < edges.txt
 
 log ""
@@ -226,12 +238,29 @@ log ""
 # ---------------------------------------------------------------------------
 released_version() { awk -F'\t' -v m="$1" '$1==m{print $2"\t"$3; exit}' "$WORK/released.tsv"; }
 
-latest_tag() { # newest plain vX.Y.Z tag of a repo
-  git ls-remote --tags --refs "$(url "$1")" 'refs/tags/v*' | awk '{sub("refs/tags/","",$2); print $2}' \
-    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
+# latest_tag <repo>: the newest vX.Y.Z tag, or the newest vX.Y.Z-pre.N tag
+# when that prerelease series sits above every stable tag. sort -V puts
+# v1.2.0 before v1.2.0-rc.1, so stable and prerelease tags are compared by
+# their X.Y.Z alone.
+latest_tag() {
+  local tags stable pre base
+  tags=$(git ls-remote --tags --refs "$(url "$1")" 'refs/tags/v*' | awk '{sub("refs/tags/","",$2); print $2}')
+  stable=$(printf '%s\n' "$tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+  pre=$(printf '%s\n' "$tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]*\.[0-9]+$' | sort -V | tail -1)
+  base=${pre%%-*}
+  if [ -n "$pre" ] && [ "$base" != "$stable" ] \
+    && [ "$(printf '%s\n%s\n' "$stable" "$base" | sed '/^$/d' | sort -V | tail -1)" = "$base" ]; then
+    echo "$pre"
+  else
+    echo "$stable"
+  fi
 }
 
-next_version() { # next_version <vX.Y.Z> <patch|minor>
+next_version() { # next_version <vX.Y.Z|vX.Y.Z-pre.N> <patch|minor>
+  case $1 in
+    # A prerelease moves to the next one in its series whatever the bump.
+    v*-*) echo "${1%.*}.$((${1##*.} + 1))"; return ;;
+  esac
   local v=${1#v} major minor patch
   IFS=. read -r major minor patch <<EOF
 $v
@@ -352,7 +381,13 @@ for repo in $ORDER; do
     if [ -z "$nv" ]; then
       log "    already on the new versions"; row "already up to date"; continue
     fi
-    if [ "$(tag_commit "$repo" "$prev")" = "$head" ]; then
+    # The tag counts when it is HEAD, or when every go.mod and go.sum is the
+    # same at the tag as at HEAD: commits since then (CI, docs, code) don't
+    # change what the release requires, so they are no reason to cut another.
+    if [ "$(tag_commit "$repo" "$prev")" = "$head" ] || {
+      git -C "$dest" fetch -q --depth 1 origin "refs/tags/$prev:refs/tags/$prev" \
+        && git -C "$dest" diff --quiet "$prev" HEAD -- ':(glob)**/go.mod' ':(glob)**/go.sum'
+    }; then
       log "    already released as $prev"; record "$mods" "$prev" real; row "already released as $prev"; continue
     fi
     log "    already on the new versions, but $prev doesn't include them; releasing"
@@ -374,7 +409,13 @@ for repo in $ORDER; do
     log "    verify $dir"
     (
       cd "$dest/$dir" || exit 1
-      go build ./... || exit 1
+      # -o /dev/null: in a module that is a single main package, a plain
+      # go build would write the binary into the tree, and the commit below
+      # would carry it.
+      go build -o /dev/null ./... || exit 1
+      # A module whose only files sit behind a build tag (integration tests)
+      # has nothing for vet or test to look at.
+      [ -n "$(go list ./... 2>/dev/null)" ] || exit 0
       go vet ./... || exit 1
       if [ "$TESTS" = true ]; then go test -count=1 ./... || exit 1; fi
       if [ "$lint" = true ]; then golangci-lint run ./... || exit 1; fi
@@ -419,7 +460,8 @@ for repo in $ORDER; do
         echo; echo "Also tidies $(paste -sd' ' "$WORK/tidied.txt" | sed 's/ /, /g'), so the release's tidy check passes."
       fi
     } > "$WORK/msg.txt"
-    git -C "$dest" add -A
+    # Only module files: anything else in the tree is a verify side effect.
+    git -C "$dest" add -A -- ':(glob)**/go.mod' ':(glob)**/go.sum'
     git -C "$dest" commit -q -F "$WORK/msg.txt"
     log "    $subject"
   fi
@@ -446,7 +488,8 @@ for repo in $ORDER; do
   since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   log "    release $nv"
   # shellcheck disable=SC2046
-  gh workflow run "$(release_wf "$repo")" -R "$OWNER/$repo" --ref "$(git -C "$dest" rev-parse --abbrev-ref HEAD)" -f tag="$nv" \
+  if [ "$(release_input "$repo")" = version ]; then input="version=${nv#v}"; else input="tag=$nv"; fi
+  gh workflow run "$(release_wf "$repo")" -R "$OWNER/$repo" --ref "$(git -C "$dest" rev-parse --abbrev-ref HEAD)" -f "$input" \
     $(jq -r --arg r "$repo" '.release_inputs[$r] // {} | to_entries[] | "-f \(.key)=\(.value)"' "$CONFIG")
   run=$(wait_for_release "$repo" "$sha" "$since")
 
