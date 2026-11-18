@@ -14,15 +14,15 @@ require (
 	github.com/xraph/chronicle/store/postgres v1.11.0
 	github.com/xraph/chronicle/store/redis v1.11.0
 	github.com/xraph/chronicle/store/sqlite v1.11.0
-	github.com/xraph/forge v1.14.0
-	github.com/xraph/forge/extensions/auth v1.14.0
+	github.com/xraph/forge v1.14.1
+	github.com/xraph/forge/extensions/auth v1.14.1
 	github.com/xraph/go-utils v1.5.1
 	github.com/xraph/grove v1.10.2
 	github.com/xraph/grove/drivers/pgdriver v1.10.2
 	github.com/xraph/grove/drivers/sqlitedriver v1.10.2
 	github.com/xraph/grove/kv v1.10.2
 	github.com/xraph/grove/kv/drivers/redisdriver v1.10.2
-	github.com/xraph/vessel v1.0.7
+	github.com/xraph/vessel v1.0.8
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
